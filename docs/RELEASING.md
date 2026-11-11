@@ -29,7 +29,8 @@ scripts/release/release.sh nightly --e2e     # nightly with the e2e suite too
 scripts/release/release.sh stable --dry-run  # test and build only, publish nothing
 ```
 
-In Claude Code, the `release` skill does the same: "release nightly".
+In Claude Code, the `release-nightly` and `release-stable` skills do the same
+("release nightly", "ship stable"); `release-stable` confirms before it publishes.
 
 Needs: `go`, `node`, `gh` signed in (`gh auth login`) and npm signed in with
 an account that can publish `crowdvm` and `@crowdvm/*` (`npm login`).

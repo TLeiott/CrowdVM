@@ -49,7 +49,9 @@ if [ "$dry" = 0 ]; then
 fi
 git fetch --quiet origin
 git rev-parse --verify --quiet "origin/$source" >/dev/null || die "origin/$source does not exist"
-if [ "$(git rev-parse "$source" 2>/dev/null || true)" != "$(git rev-parse "origin/$source")" ]; then
+# A local copy of the source branch must not hold unpushed or unpulled work
+# (the release takes origin/$source). No local copy (often nightly) is fine.
+if local=$(git rev-parse --verify --quiet "refs/heads/$source") && [ "$local" != "$(git rev-parse "origin/$source")" ]; then
   die "$source here and on origin differ: push or pull $source first (a release takes origin/$source)"
 fi
 
