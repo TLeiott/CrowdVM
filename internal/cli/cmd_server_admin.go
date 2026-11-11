@@ -436,7 +436,7 @@ Run it again to change the deadline, or with --cancel during the grace period
 	update.Flags().StringArrayVar(&labels, "label", nil, "label KEY=VALUE (repeatable; replaces all labels; --label \"\" removes them all)")
 	var force, yes bool
 	remove := &cobra.Command{
-		Use: "remove NODE", Aliases: []string{"evict", "rm"}, Short: "Remove a node (--force evicts it while it runs sandboxes)", Args: cobra.ExactArgs(1),
+		Use: "remove NODE", Aliases: []string{"evict", "rm"}, Short: "Remove a node (--force evicts it while it runs sandboxes or holds snapshots not uploaded yet)", Args: cobra.ExactArgs(1),
 		RunE: a.withClient(func(cmd *cobra.Command, c *client.Client, args []string) error {
 			if err := a.confirm(yes, "Remove node "+args[0]+"? It must join again to host sandboxes."); err != nil {
 				return err
@@ -445,7 +445,7 @@ Run it again to change the deadline, or with --cancel during the grace period
 			return nodeOut(cmd, r, err, "removed")
 		}),
 	}
-	remove.Flags().BoolVar(&force, "force", false, "remove even while it runs sandboxes")
+	remove.Flags().BoolVar(&force, "force", false, "remove even while it runs sandboxes or holds the only copy of snapshots (they are lost)")
 	remove.Flags().BoolVarP(&yes, "yes", "y", false, "do not ask for confirmation")
 	tokens := &cobra.Command{
 		Use: "join-tokens", Short: "List node join tokens (admins)", Args: cobra.NoArgs,

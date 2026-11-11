@@ -183,3 +183,144 @@ func TestEvacuateNoRoomStaysStopped(t *testing.T) {
 		t.Fatalf("stranded sandbox: %s", r)
 	}
 }
+
+func nodeEvacuation(env *servertest.Env, key, nodeID string) any {
+	return env.Do(key, "GET", "/api/v1/nodes/"+nodeID, nil).Get("node.evacuation")
+}
+
+// The stop's layer uploads in the background: until it is on the server the
+// evacuation goes on (the node page keeps saying so), and removing the node
+// is refused unless forced.
+func TestEvacuateWaitsForUploads(t *testing.T) {
+	env := servertest.New(t)
+	key := env.AdminKey
+	a := env.StartNode(servertest.NodeOptions{})
+	id := createSandbox(t, env, key, nil)
+	env.WaitState(key, id, "ready")
+	a.HoldUploads()
+	if r := env.Do(key, "POST", "/api/v1/nodes/"+a.ID+"/evacuate", map[string]any{"graceSec": 0}); r.Status != 200 {
+		t.Fatalf("evacuate: %s", r)
+	}
+	env.WaitState(key, id, "archived")
+	sb, err := env.S.SandboxByID(id)
+	if err != nil || sb.HeadSnapshotID == "" {
+		t.Fatalf("no head snapshot: %v", err)
+	}
+	head := sb.HeadSnapshotID
+	env.Eventually("upload asked for", func() bool {
+		for _, s := range a.UploadRequests() {
+			if s == head {
+				return true
+			}
+		}
+		return false
+	})
+	if nodeEvacuation(env, key, a.ID) == nil {
+		t.Fatal("evacuation ended while the only copy of a layer was on the node")
+	}
+	env.Eventually("evacuation in the heartbeat", func() bool { return a.LastHeartbeatResponse().Evacuation != nil })
+	r := env.Do(key, "DELETE", "/api/v1/nodes/"+a.ID, nil)
+	if r.Status != 409 || r.Code() != "node_holds_snapshots" {
+		t.Fatalf("remove with an un-uploaded layer: %s", r)
+	}
+
+	a.ReleaseUploads()
+	env.Eventually("evacuation ends after the upload", func() bool { return nodeEvacuation(env, key, a.ID) == nil })
+	if r := env.Do(key, "DELETE", "/api/v1/nodes/"+a.ID, nil); r.Status != 200 {
+		t.Fatalf("remove: %s", r)
+	}
+}
+
+// A node that goes offline during the grace period does not end the
+// evacuation: its sandboxes are still there.
+func TestEvacuateNodeOffline(t *testing.T) {
+	env := servertest.New(t)
+	key := env.AdminKey
+	a := env.StartNode(servertest.NodeOptions{})
+	id := createSandbox(t, env, key, nil)
+	env.WaitState(key, id, "ready")
+	if r := env.Do(key, "POST", "/api/v1/nodes/"+a.ID+"/evacuate", map[string]any{"graceSec": 3600}); r.Status != 200 {
+		t.Fatalf("evacuate: %s", r)
+	}
+	a.Disconnect()
+	env.WaitFor(key, "/api/v1/sandboxes/"+id, "sandbox.error", servertest.WaitTimeout, "node_offline")
+	time.Sleep(200 * time.Millisecond) // a few reaper passes
+	if nodeEvacuation(env, key, a.ID) == nil {
+		t.Fatal("the evacuation ended while the node was offline")
+	}
+	if err := a.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	env.WaitState(key, id, "ready")
+	if nodeEvacuation(env, key, a.ID) == nil {
+		t.Fatal("no evacuation after the node came back")
+	}
+}
+
+// A stop the owner asked for stays a stop: not turned into a move.
+func TestEvacuateKeepsUserStop(t *testing.T) {
+	env := servertest.New(t)
+	key := env.AdminKey
+	a := env.StartNode(servertest.NodeOptions{})
+	refused := createSandbox(t, env, key, nil)
+	during := createSandbox(t, env, key, nil)
+	env.WaitState(key, refused, "ready")
+	env.WaitState(key, during, "ready")
+	b := env.StartNode(servertest.NodeOptions{})
+
+	// The owner's stop is refused (save failed) and retried; the evacuation
+	// starts meanwhile and leaves it alone.
+	a.FailNext("POST /v1/vms/" + refused + "/snapshot")
+	if r := env.Do(key, "POST", "/api/v1/sandboxes/"+refused+"/stop", nil); r.Status/100 != 2 {
+		t.Fatalf("stop: %s", r)
+	}
+	env.Eventually("stop refused", func() bool { return noticeCount(t, env, refused, "stop_failing") == 1 })
+	// The owner stops one whose evacuation stop is under way.
+	if err := env.S.SetSandboxExtra(during, "evacuateFrom", a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if r := env.Do(key, "POST", "/api/v1/sandboxes/"+during+"/stop", nil); r.Status/100 != 2 {
+		t.Fatalf("stop: %s", r)
+	}
+	if r := env.Do(key, "POST", "/api/v1/nodes/"+a.ID+"/evacuate", map[string]any{"graceSec": 0}); r.Status != 200 {
+		t.Fatalf("evacuate: %s", r)
+	}
+	env.WaitState(key, refused, "archived")
+	env.WaitState(key, during, "archived")
+	env.Eventually("evacuation ends", func() bool { return nodeEvacuation(env, key, a.ID) == nil })
+	time.Sleep(200 * time.Millisecond)
+	for _, id := range []string{refused, during} {
+		if r := env.Do(key, "GET", "/api/v1/sandboxes/"+id, nil); r.Str("sandbox.state") != "archived" {
+			t.Fatalf("user-stopped sandbox moved: %s", r)
+		}
+	}
+	if b.Called("POST /v1/vms") {
+		t.Fatal("a user-stopped sandbox was booted on the other node")
+	}
+}
+
+// Undraining an evacuating node is refused until the evacuation is
+// cancelled.
+func TestEvacuateUndrainRefused(t *testing.T) {
+	env := servertest.New(t)
+	key := env.AdminKey
+	a := env.StartNode(servertest.NodeOptions{})
+	id := createSandbox(t, env, key, nil)
+	env.WaitState(key, id, "ready")
+	path := "/api/v1/nodes/" + a.ID
+	if r := env.Do(key, "POST", path+"/evacuate", map[string]any{"graceSec": 3600}); r.Status != 200 {
+		t.Fatalf("evacuate: %s", r)
+	}
+	if r := env.Do(key, "PATCH", path, map[string]any{"disabled": false, "name": "renamed"}); r.Status != 409 || r.Code() != "node_evacuating" {
+		t.Fatalf("undrain while evacuating: %s", r)
+	}
+	if r := env.Do(key, "GET", path, nil); r.Str("node.name") == "renamed" {
+		t.Fatal("a refused update was partly applied")
+	}
+	if r := env.Do(key, "DELETE", path+"/evacuate", nil); r.Status != 200 {
+		t.Fatalf("cancel: %s", r)
+	}
+	if r := env.Do(key, "PATCH", path, map[string]any{"disabled": false}); r.Status != 200 || r.Str("node.disabled") != "false" {
+		t.Fatalf("undrain after cancel: %s", r)
+	}
+}

@@ -7,10 +7,13 @@ package server
 // hook, disk saved; a failed save refuses the stop and it is retried, never
 // forced), and afterStopResume boots each one on another node
 // (extra.evacuateFrom). --no-snapshots sandboxes are erased by their stop.
-// The evacuation ends when no sandbox is left on the node; the node stays
-// drained. Node earnings for the heartbeat live here too.
+// The evacuation ends when no sandbox is left on the node and no layer
+// something needs has its only copy there (a stop's layer uploads in the
+// background); the node stays drained. Node earnings for the heartbeat
+// live here too.
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"time"
@@ -26,7 +29,8 @@ CREATE TABLE node_evacuations (
   node_id TEXT PRIMARY KEY,
   started_at INTEGER NOT NULL,
   deadline INTEGER NOT NULL
-);`})
+);`}, store.Migration{Version: 2, SQL: `
+CREATE INDEX IF NOT EXISTS credit_ledger_node ON credit_ledger(node_id, kind, created_at);`})
 }
 
 // MaxEvacuationGrace caps the grace period of an evacuation.
@@ -34,6 +38,10 @@ const MaxEvacuationGrace = 24 * time.Hour
 
 // onNodeStates: a sandbox in one of these states still occupies its node.
 const onNodeStates = `state NOT IN ('archived','error','cancelled')`
+
+// offlineOnNode: a sandbox whose node went offline is still there (it comes
+// back to ready when the node reconnects).
+const offlineOnNode = `(state='error' AND error='node_offline')`
 
 // evacuation returns node id's active evacuation (nil: none).
 func (s *Server) evacuation(nodeID string) *proto.Evacuation {
@@ -93,13 +101,19 @@ func (s *Server) handleEvacuateNode(c *Ctx) error {
 	}
 	now := store.Now()
 	deadline := now + int64(grace)*1000
+	prev := s.evacuation(n.ID)
 	_, _ = s.DB.Exec(`UPDATE nodes SET disabled=1 WHERE id=?`, n.ID)
 	if _, err := s.DB.Exec(`INSERT INTO node_evacuations(node_id,started_at,deadline) VALUES(?,?,?)
 		ON CONFLICT(node_id) DO UPDATE SET deadline=excluded.deadline`, n.ID, now, deadline); err != nil {
 		return err
 	}
 	at := clockUTC(store.Time(deadline))
+	// Owners are told once, and again only when the deadline moves earlier.
+	notify := prev == nil || store.Time(deadline).Before(prev.Deadline)
 	for _, sb := range s.sandboxesOn(n.ID, "") {
+		if !notify {
+			break // a re-POST that only moves the deadline later
+		}
 		if sb.SnapshotsEnabled {
 			s.notifySandbox(sb, "node_evacuation", "warning", 0, "Sandbox will move to another node",
 				"The machine hosting "+sb.Name+" is being reclaimed at "+at+". Stop or snapshot it before then to choose the moment; after that it is stopped and resumed on another node.")
@@ -109,7 +123,7 @@ func (s *Server) handleEvacuateNode(c *Ctx) error {
 		}
 	}
 	s.Log.Info("node evacuation", "node", n.ID, "graceSec", grace, "by", c.P.User.ID)
-	s.evacuateStep(n.ID, deadline) // ends at once on an empty node; stops now when grace is 0
+	s.evacuateStep(n.ID) // ends at once on an empty node; stops now when grace is 0
 	n, _ = s.NodeByID(n.ID)
 	return c.OK(200, "node.evacuating", map[string]any{"node": s.nodeJSON(n, true)})
 }
@@ -138,43 +152,98 @@ func (s *Server) handleCancelEvacuation(c *Ctx) error {
 
 // reapEvacuations runs every evacuation one step (reaper pass).
 func (s *Server) reapEvacuations() {
-	rows, err := s.DB.Query(`SELECT node_id, deadline FROM node_evacuations`)
+	rows, err := s.DB.Query(`SELECT node_id FROM node_evacuations`)
 	if err != nil {
 		return
 	}
-	type ev struct {
-		node     string
-		deadline int64
-	}
-	var list []ev
+	var list []string
 	for rows.Next() {
-		var e ev
-		if rows.Scan(&e.node, &e.deadline) == nil {
-			list = append(list, e)
+		var id string
+		if rows.Scan(&id) == nil {
+			list = append(list, id)
 		}
 	}
 	rows.Close()
-	for _, e := range list {
-		s.evacuateStep(e.node, e.deadline)
+	for _, id := range list {
+		s.evacuateStep(id)
 	}
 }
 
-// evacuateStep ends the evacuation once the node is empty, and from the
-// deadline on stops every sandbox still running there. A stop that is
-// refused (its save failed) stays pending and is retried by the reaper; a
-// sandbox a resume brought back is stopped again on the next pass.
-func (s *Server) evacuateStep(nodeID string, deadline int64) {
+// onlyCopiesOn returns the layers something still needs (snapshotsNeeded)
+// whose only copy is on node id: not stored on the server yet, no other
+// node holds them. Removing the node loses them.
+func (s *Server) onlyCopiesOn(nodeID string) []string {
+	rows, err := s.DB.Query(`SELECT s.id FROM snapshot_locations l JOIN snapshots s ON s.id=l.snapshot_id
+		WHERE l.node_id=? AND s.uploaded_at IS NULL AND s.purged_at IS NULL
+		AND NOT EXISTS (SELECT 1 FROM snapshot_locations o WHERE o.snapshot_id=s.id AND o.node_id<>l.node_id)
+		ORDER BY s.generation, s.created_at`, nodeID)
+	if err != nil {
+		return nil
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	rows.Close()
+	if len(ids) == 0 {
+		return nil
+	}
+	needed, _ := s.snapshotsNeeded(false)
+	if needed == nil {
+		return ids // database error: keep them all
+	}
+	out := ids[:0]
+	for _, id := range ids {
+		if needed[id] {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// evacuateStep ends the evacuation once no sandbox is on the node (one
+// whose node is offline counts) and no needed layer is only there (it asks
+// the node to upload those), and from the deadline on stops every sandbox
+// still running there. A stop that is refused (its save failed) stays
+// pending and is retried by the reaper; a sandbox a resume brought back is
+// stopped again on the next pass.
+func (s *Server) evacuateStep(nodeID string) {
+	ev := s.evacuation(nodeID) // re-read: a cancel just before the deadline wins
+	if ev == nil {
+		return
+	}
+	var offline int
+	_ = s.DB.QueryRow(`SELECT COUNT(*) FROM sandboxes WHERE node_id=? AND deleted_at IS NULL AND `+offlineOnNode, nodeID).Scan(&offline)
 	left := s.sandboxesOn(nodeID, "")
-	if len(left) == 0 {
+	only := s.onlyCopiesOn(nodeID)
+	if len(only) > 0 {
+		s.Go(func(ctx context.Context) {
+			for _, id := range only {
+				s.requestUpload(ctx, id)
+			}
+		})
+	}
+	if len(left) == 0 && offline == 0 && len(only) == 0 {
 		_, _ = s.DB.Exec(`DELETE FROM node_evacuations WHERE node_id=?`, nodeID)
 		return
 	}
-	if store.Now() < deadline {
+	if time.Now().Before(ev.Deadline) {
 		return
 	}
 	for _, sb := range left {
 		if !sb.Usable() && sb.State != api.StateProvisioned {
 			continue // starting (stopped on a later pass) or already stopping
+		}
+		if sb.StopID != "" {
+			if o, err := s.stopByID(sb.StopID); err == nil && o.Status == "failing" {
+				// A refused stop still waits: its own (retried by the reaper),
+				// or the owner's / a TTL stop, which takes it off the node
+				// when it completes. Not turned into a move.
+				continue
+			}
 		}
 		if sb.SnapshotsEnabled {
 			_ = s.SetSandboxExtra(sb.ID, "evacuateFrom", nodeID)

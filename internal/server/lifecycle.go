@@ -1382,6 +1382,10 @@ func (s *Server) handleStop(c *Ctx) error {
 			return Err(403, "owner_only", "Only the creator (or the organization owner) can run a stop that deletes data.")
 		}
 	}
+	if sb.Extra["evacuateFrom"] != nil {
+		// The owner's stop wins over an evacuation's move: it stays stopped.
+		_ = s.SetSandboxExtra(sb.ID, "evacuateFrom", nil)
+	}
 	op, err := s.requestStop(sb, req.Force, "")
 	if err != nil {
 		return err

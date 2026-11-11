@@ -1036,6 +1036,9 @@ func (s *Server) handleUpdateNode(c *Ctx) error {
 	if err := c.Bind(&req); err != nil {
 		return err
 	}
+	if req.Disabled != nil && !*req.Disabled && s.evacuation(n.ID) != nil {
+		return Err(409, "node_evacuating", "The node is being evacuated: cancel the evacuation first.")
+	}
 	if req.Trust != nil {
 		if !c.P.IsAdmin() {
 			return Err(403, "admin_required", "Only an administrator can mark a node trusted (its owner can read the disks it hosts).")
@@ -1081,6 +1084,10 @@ func (s *Server) handleDeleteNode(c *Ctx) error {
 	if r := s.reservedOn(n.ID); r.VMs > 0 && c.Query("force") != "true" {
 		return Err(409, "node_busy", "The node still runs sandboxes. Stop them first or pass force=true.")
 	}
+	if only := s.onlyCopiesOn(n.ID); len(only) > 0 && c.Query("force") != "true" {
+		return ErrD(409, "node_holds_snapshots", fmt.Sprintf("%d snapshot(s) exist only on this node; wait for them to upload, or pass force=true (they are lost).", len(only)),
+			map[string]any{"snapshots": len(only)})
+	}
 	// m5: a removed node can no longer be reached. When online it erases
 	// every snapshot copy the server can do without (deleted ones, and ones
 	// stored on the server) first. Copies it keeps stay recorded as its
@@ -1099,6 +1106,9 @@ func (s *Server) handleDeleteNode(c *Ctx) error {
 	}
 	_, _ = s.DB.Exec(`DELETE FROM nodes WHERE id=?`, n.ID)
 	_, _ = s.DB.Exec(`DELETE FROM node_evacuations WHERE node_id=?`, n.ID)
+	s.earnMu.Lock()
+	delete(s.earned, n.ID)
+	s.earnMu.Unlock()
 	s.fallBackFromRemovedNode()
 	// m-b: pins to the removed node would keep its sandboxes from ever
 	// being placed again.

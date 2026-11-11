@@ -83,8 +83,8 @@ export default async function (ctx) {
     return menuButton(() => [
       n.disabled ? { label: 'Resume scheduling', ico: 'play', onClick: () => update(n, { disabled: false }, `${n.name} takes new sandboxes again`) }
         : { label: 'Drain (no new sandboxes)', ico: 'pause', onClick: () => update(n, { disabled: true }, `${n.name} takes no new sandboxes`) },
-      evacuating(n) ? { label: 'Cancel evacuation', ico: 'x', onClick: () => cancelEvacuation(n) }
-        : { label: 'Evacuate…', ico: 'upload', onClick: () => evacuate(n) },
+      !evacuating(n) ? { label: 'Evacuate…', ico: 'upload', onClick: () => evacuate(n) }
+        : inGrace(n) ? { label: 'Cancel evacuation', ico: 'x', onClick: () => cancelEvacuation(n) } : null,
       { label: 'Rename…', ico: 'edit', onClick: () => editNode(n, 'name') },
       { label: 'Labels…', ico: 'edit', onClick: () => editNode(n, 'labels') },
       '-',
@@ -146,8 +146,17 @@ export default async function (ctx) {
       if (next !== 'remove') return;
     }
     if (!(await confirmDialog({ title: `Remove ${n.name}?`, danger: true, confirm: 'Remove', typeToConfirm: busy ? n.name : undefined,
-      desc: busy ? 'It still runs sandboxes. They lose their machine and go to error; resume them elsewhere from their last snapshot.' : 'It disconnects and must join again with a new token to come back.' }))) return;
-    try { await api.del(`/nodes/${encodeURIComponent(n.id)}`, busy ? { force: 'true' } : undefined); toast(`Removed ${n.name}`); detail.delete(n.id); load(); } catch (e) { toastErr(e); }
+      desc: busy ? 'It still runs sandboxes. They lose their machine and are rebuilt on other nodes from their last snapshot; changes since then are lost.' : 'It disconnects and must join again with a new token to come back.' }))) return;
+    const del = (force) => api.del(`/nodes/${encodeURIComponent(n.id)}`, force ? { force: 'true' } : undefined);
+    const done = () => { toast(`Removed ${n.name}`); detail.delete(n.id); load(); };
+    try { await del(busy); done(); } catch (e) {
+      // Snapshots only this node holds (not uploaded yet): wait, or lose them.
+      if (e.code !== 'node_holds_snapshots') return toastErr(e);
+      const k = e.details?.snapshots || 0;
+      if (!(await confirmDialog({ title: `Remove ${n.name} anyway?`, danger: true, confirm: 'Remove anyway',
+        desc: `${k ? plural(k, 'snapshot', 'snapshots') : 'Some snapshots'} exist only on this node and are still uploading. Wait a few minutes and try again, or remove it now and lose them: their sandboxes go back to an older snapshot or can't be restored.` }))) return;
+      try { await del(true); done(); } catch (e2) { toastErr(e2); }
+    }
   }
 
   async function addMachine() {
@@ -180,18 +189,19 @@ export default async function (ctx) {
 
 const pct = (u, t) => (t > 0 ? Math.min(100, (u / t) * 100) : 0);
 const evacuating = (n) => !!n.evacuation;
+const inGrace = (n) => !!n.evacuation && new Date(n.evacuation.deadline) > Date.now();
 const hhmm = (t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 const PAUSED = { owner: 'paused by its owner', schedule: 'outside its schedule', hold: 'on hold' };
 
 // stateChips: drained, evacuating (with Cancel during the grace period) and
 // paused by the node's owner.
 function stateChips(n, manage) {
-  const ev = n.evacuation, inGrace = ev && new Date(ev.deadline) > Date.now();
+  const ev = n.evacuation, grace = inGrace(n);
   return [
     n.disabled && !ev ? h('span.chip.warn.plain', { title: 'Drained: takes no new sandboxes' }, 'drained') : null,
-    ev ? h('span.chip.warn', { title: inGrace ? 'Its sandboxes are stopped and moved to other nodes at this time' : 'Moving its sandboxes to other nodes' },
-      inGrace ? `evacuating · until ${hhmm(ev.deadline)}` : 'evacuating') : null,
-    ev && inGrace && manage ? btn('Cancel', { size: 'sm', kind: 'ghost', title: 'Cancel the evacuation (the node stays drained)', onClick: manage.cancelEvac }) : null,
+    ev ? h('span.chip.warn', { title: grace ? 'Its sandboxes are stopped and moved to other nodes at this time' : 'Moving its sandboxes and their snapshots off this node' },
+      grace ? `evacuating · until ${hhmm(ev.deadline)}` : 'evacuating') : null,
+    ev && grace && manage ? btn('Cancel', { size: 'sm', kind: 'ghost', title: 'Cancel the evacuation (the node stays drained)', onClick: manage.cancelEvac }) : null,
     n.paused || n.info?.paused ? h('span.chip.plain', { title: 'Takes no new sandboxes until its owner resumes it; running ones continue' }, PAUSED[n.pauseReason || n.info?.pauseReason] || 'paused') : null,
   ];
 }
