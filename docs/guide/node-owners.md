@@ -1,9 +1,20 @@
 # Node owner guide
 
 A node is a machine that lends CPU, RAM and disk to the pool. You decide how much,
-and you can take it back at any time. Setup is in
+when, and you can take it back at any time. Setup is in
 [Getting started](getting-started.md#3-add-a-node-on-linux); this page covers
 running a node.
+
+## The local page
+
+`crowdvm-node open` opens the node's page (`http://127.0.0.1:8421`) in your browser,
+logged in. From there you pause and resume, set a schedule, change the shared
+resources, see what runs on the machine and what it earned, and follow the steps to
+leave the pool. Without the login the page is read-only.
+
+The login uses the control token in the data dir (`ui-token`, readable only by you).
+The CLI uses the same token, so the page and `crowdvm-node config set` change the same
+settings. Delete the file and restart the node to issue a new token.
 
 ## Benchmark, categories and tier
 
@@ -52,10 +63,14 @@ crowdvm-node config set max-sandboxes 4      # default: cpus / 2
 crowdvm-node config get                       # all settings
 ```
 
-Restart the daemon to apply (`systemctl --user restart crowdvm-node`, or restart the
-Windows service). Running sandboxes keep running through the restart; the node picks
-them up again when it is back. Pass `""` to go back to a default. (A node installed
-before this behavior: run `crowdvm-node install-service` once to update its unit.)
+`cpus`, `memory`, `disk` and `max-sandboxes` apply at once while the node runs. A lower
+limit only keeps new sandboxes out; running ones are never stopped. Pass `""` to go back
+to a default. Other settings (network, GPU, driver) apply after a restart: the local
+page shows a Restart button when the node runs as an installed service, or use
+`systemctl --user restart crowdvm-node` (on Windows, restart the service). Running
+sandboxes keep running through the restart; the node picks them up again when it is
+back. (A node installed before this behavior: run `crowdvm-node install-service` once
+to update its unit.)
 
 Disks are thin: a sandbox only uses the space it wrote. The node therefore accepts
 sandbox disk sizes that add up to `disk × disk-overcommit` (default 4). It still
@@ -124,14 +139,68 @@ The dashboard's Credits & usage page shows the daily balance of earned and spent
 credits. Admins can grant credits (`crowdvm-server user grant-credits`). Unless the
 server runs with `--enforce-credits`, a negative balance blocks nothing.
 
+## When the node offers
+
+The node offers compute unless one of these says no:
+
+| Setting | Who | Effect |
+|---|---|---|
+| `paused` | you, on the page or `crowdvm-node config set paused true` | No new sandboxes until you resume. Applies at once. |
+| `schedule` | you | Offers only inside these weekly windows, in local time. |
+| `schedule-hold` | you, "Offer until 08:00" / "Pause until 19:00" on the page | Overrides the schedule until its next boundary. |
+| drain | you or an admin, `crowdvm nodes drain <node>` or the dashboard | No new sandboxes, and no request waits for this node. |
+
+```sh
+crowdvm-node config set schedule "mon-fri 19:00-08:00; sat,sun"   # evenings and weekends
+crowdvm-node config set schedule "daily 22:00-07:00"              # nights
+crowdvm-node config set schedule-hold offer                        # offer now, until the next boundary
+crowdvm-node config set schedule ""                                # always
+```
+
+Days are `mon` to `sun`, ranges (`mon-fri`), lists (`sat,sun`), `daily`, `weekdays` and
+`weekends`. A range that ends before it starts, like `19:00-08:00`, runs past midnight.
+Without a time the whole day counts.
+
+Pausing never stops a running sandbox: it keeps running until its user stops it or it
+auto-stops (1 hour by default). Note that a request that only fits your machine waits
+while it is paused (by you or by the schedule), but not while it is drained.
+
+## Taking the machine back
+
+| You want to… | Do this | Running sandboxes |
+|---|---|---|
+| Stop for a while | Pause, or let the schedule pause it | keep running |
+| Stop for good | Drain | keep running |
+| Have it back now | `crowdvm nodes evacuate <node>` (`--grace 10m` by default, `--grace 0` for now) or Evacuate on the dashboard | after the grace period: stopped with their disks saved, then resumed on other nodes |
+
+Evacuating drains the node and warns everyone with a sandbox on it. At the deadline
+each one is stopped as if its user had stopped it (the disk is saved as a snapshot;
+running processes end) and resumed on another node. Sandboxes created with
+`--no-snapshots` cannot be moved: they are erased at the deadline, after the same
+warning. `crowdvm nodes evacuate <node> --cancel` stops an evacuation before its
+deadline.
+
+**Do not stop the node service to get your machine back.** Its sandboxes go offline,
+and after 3 minutes they are rebuilt elsewhere from their latest snapshot, losing up to
+about a minute of work.
+
+## Leaving the pool
+
+The page's "Leave the pool" box walks through it:
+
+1. Drain: `crowdvm nodes drain <node>`.
+2. Wait for the sandboxes to stop, or evacuate: `crowdvm nodes evacuate <node>`.
+3. Remove: `crowdvm nodes remove <node>` (or on the dashboard).
+4. `crowdvm-node uninstall-service`, then delete the data dir.
+
 ## Day to day
 
 | Task | Command |
 |---|---|
-| See what runs here | `crowdvm-node status`, or the status page at `http://127.0.0.1:8421` |
-| Stop taking new sandboxes | `crowdvm-node config set paused true` (applies at once; running sandboxes keep running), or `crowdvm nodes drain <node>` |
-| Take new sandboxes again | Clear a local pause on the node with `crowdvm-node config set paused false`; clear a server drain with `crowdvm nodes undrain <node>` |
-| Remove the node | `crowdvm nodes remove <node>` (`--force` while it still hosts sandboxes), then `crowdvm-node uninstall-service` |
+| See what runs here and what it earned | `crowdvm-node open`, or `crowdvm-node status` |
+| Pause / resume | the page's Pause button, or `crowdvm-node config set paused true` / `false` |
+| Drain / undrain | `crowdvm nodes drain <node>` / `crowdvm nodes undrain <node>`, or the dashboard |
+| Remove the node | see [Leaving the pool](#leaving-the-pool) |
 | Rename it | `crowdvm nodes update <node> --name lab-gpu` |
 
 While it hosts sandboxes, a Linux node keeps the machine from going to sleep on its
@@ -143,7 +212,7 @@ Sandboxes on a node that goes offline for more than 3 minutes are rebuilt on oth
 nodes from their latest snapshot. A sandbox pinned to that node (`--node`, labels) is
 not: it waits for the node, and its owner gets a notice. `crowdvm resume <id> --node
 <other>` moves it from its latest snapshot. Data written after that snapshot (up to about a
-minute) is lost, so drain a node before you shut it down for long.
+minute) is lost, so evacuate a node before you shut it down for long.
 
 Removing a node that is online erases the snapshot copies it holds that the server
 no longer needs or also stores. Removing it while it is offline cannot erase
