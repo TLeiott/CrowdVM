@@ -270,6 +270,9 @@ type Server struct {
 
 	hist *histState // coordinator copy of command history (feat_history.go)
 
+	earnMu sync.Mutex
+	earned map[string]nodeEarnings // node id -> cached earnings (nodes_evacuate.go)
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup

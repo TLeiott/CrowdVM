@@ -54,7 +54,7 @@ export default async function (ctx) {
     patch(list, { rows, n: nodes.length }, () => {
       if (!nodes.length) return h('div.card', empty({ ico: 'server', title: 'No machines in the crowd yet', text: 'Install crowdvm-node on any Linux or Windows machine on your LAN or tailnet and join it to this server.', action: btn('Add a machine', { kind: 'primary', ico: 'plus', onClick: addMachine }) }));
       if (!rows.length) return h('div.card', empty({ ico: 'search', title: 'No matches', text: 'No node matches this filter.' }));
-      return h('div.nodes', rows.map((n) => nodeCard(n, canManage(n) ? manageMenu(n) : null)));
+      return h('div.nodes', rows.map((n) => nodeCard(n, canManage(n) ? { menu: manageMenu(n), cancelEvac: () => cancelEvacuation(n) } : null)));
     });
   }
 
@@ -83,6 +83,8 @@ export default async function (ctx) {
     return menuButton(() => [
       n.disabled ? { label: 'Resume scheduling', ico: 'play', onClick: () => update(n, { disabled: false }, `${n.name} takes new sandboxes again`) }
         : { label: 'Drain (no new sandboxes)', ico: 'pause', onClick: () => update(n, { disabled: true }, `${n.name} takes no new sandboxes`) },
+      evacuating(n) ? { label: 'Cancel evacuation', ico: 'x', onClick: () => cancelEvacuation(n) }
+        : { label: 'Evacuate…', ico: 'upload', onClick: () => evacuate(n) },
       { label: 'Rename…', ico: 'edit', onClick: () => editNode(n, 'name') },
       { label: 'Labels…', ico: 'edit', onClick: () => editNode(n, 'labels') },
       '-',
@@ -105,8 +107,44 @@ export default async function (ctx) {
         toast('Node saved'); load();
       } }] });
   }
+  // Evacuate: drain, then after the grace period stop the sandboxes (disks
+  // saved) and resume them on other nodes.
+  async function evacuate(n) {
+    let grace = 600;
+    const warn = h('div');
+    modal({
+      title: `Evacuate ${n.name}?`,
+      desc: 'Takes the machine back. It stops taking new sandboxes at once. When the grace period ends, every sandbox still on it is stopped, which saves its disk, and resumed on another node. Running processes are lost. Their owners get a notice now.',
+      body: h('div.stack',
+        field('Stop the sandboxes', segmented([[0, 'Now'], [600, 'In 10 min'], [3600, 'In 1 hour']], grace, (v) => { grace = v; }, 'Grace period')),
+        warn),
+      actions: [{ label: 'Cancel', onClick: () => true }, { label: 'Evacuate', kind: 'danger solid', onClick: async () => {
+        await api.post(`/nodes/${encodeURIComponent(n.id)}/evacuate`, { graceSec: grace });
+        toast(grace ? `${n.name} is evacuating` : `Moving the sandboxes off ${n.name}`); load();
+      } }],
+    });
+    const d = await api.get(`/nodes/${encodeURIComponent(n.id)}`).catch(() => null);
+    const k = d?.node?.noSnapshotSandboxes || 0;
+    if (k > 0) warn.replaceChildren(h('div.notice.warn', icon('alert'), h('div', `${plural(k, 'sandbox', 'sandboxes')} ${k === 1 ? 'has' : 'have'} snapshots off and will be erased: ${k === 1 ? 'it' : 'they'} can't be moved.`)));
+  }
+  function cancelEvacuation(n) {
+    api.del(`/nodes/${encodeURIComponent(n.id)}/evacuate`).then(() => { toast(`Evacuation of ${n.name} cancelled. It stays drained.`); load(); }, toastErr);
+  }
   async function removeNode(n) {
     const busy = (n.usage?.vms || n.sandboxes || 0) > 0;
+    if (busy && !evacuating(n)) {
+      let next = null;
+      await new Promise((resolve) => modal({
+        title: `Remove ${n.name}?`,
+        desc: `It still runs ${plural(n.usage?.vms || n.sandboxes, 'sandbox', 'sandboxes')}. Evacuate first to stop them with their disks saved and resume them on other nodes. Removing now cuts them off; they are rebuilt elsewhere from their last snapshot and lose recent changes.`,
+        actions: [{ label: 'Cancel', onClick: () => true },
+          { label: 'Remove anyway…', kind: 'danger', onClick: () => { next = 'remove'; } },
+          { label: 'Evacuate first…', kind: 'primary', submit: true, onClick: () => { next = 'evacuate'; } }],
+        onClose: resolve,
+      }));
+      if (next === 'evacuate') return evacuate(n);
+      if (next !== 'remove') return;
+    }
     if (!(await confirmDialog({ title: `Remove ${n.name}?`, danger: true, confirm: 'Remove', typeToConfirm: busy ? n.name : undefined,
       desc: busy ? 'It still runs sandboxes. They lose their machine and go to error; resume them elsewhere from their last snapshot.' : 'It disconnects and must join again with a new token to come back.' }))) return;
     try { await api.del(`/nodes/${encodeURIComponent(n.id)}`, busy ? { force: 'true' } : undefined); toast(`Removed ${n.name}`); detail.delete(n.id); load(); } catch (e) { toastErr(e); }
@@ -141,8 +179,25 @@ export default async function (ctx) {
 }
 
 const pct = (u, t) => (t > 0 ? Math.min(100, (u / t) * 100) : 0);
+const evacuating = (n) => !!n.evacuation;
+const hhmm = (t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+const PAUSED = { owner: 'paused by its owner', schedule: 'outside its schedule', hold: 'on hold' };
 
-function nodeCard(n, menu) {
+// stateChips: drained, evacuating (with Cancel during the grace period) and
+// paused by the node's owner.
+function stateChips(n, manage) {
+  const ev = n.evacuation, inGrace = ev && new Date(ev.deadline) > Date.now();
+  return [
+    n.disabled && !ev ? h('span.chip.warn.plain', { title: 'Drained: takes no new sandboxes' }, 'drained') : null,
+    ev ? h('span.chip.warn', { title: inGrace ? 'Its sandboxes are stopped and moved to other nodes at this time' : 'Moving its sandboxes to other nodes' },
+      inGrace ? `evacuating · until ${hhmm(ev.deadline)}` : 'evacuating') : null,
+    ev && inGrace && manage ? btn('Cancel', { size: 'sm', kind: 'ghost', title: 'Cancel the evacuation (the node stays drained)', onClick: manage.cancelEvac }) : null,
+    n.paused || n.info?.paused ? h('span.chip.plain', { title: 'Takes no new sandboxes until its owner resumes it; running ones continue' }, PAUSED[n.pauseReason || n.info?.pauseReason] || 'paused') : null,
+  ];
+}
+
+function nodeCard(n, manage) {
+  const menu = manage?.menu;
   const info = n.info || {}, b = info.benchmark || {}, cap = info.capacity || {}, use = n.usage || {};
   const cats = b.categories || {};
   const owner = typeof n.owner === 'string' ? n.owner : n.owner?.displayName || n.owner?.login || n.owner?.name || n.ownerLogin;
@@ -152,7 +207,7 @@ function nodeCard(n, menu) {
   return h('article.card.node', { class: n.online ? '' : 'offline', 'aria-label': `${n.name}, ${n.online ? 'online' : 'offline'}` },
     h('div.card-head',
       h('div', { style: { minWidth: 0 } },
-        h('div.name', h('span.truncate', n.name || n.id), stateChip(n.online ? 'online' : 'offline'), n.disabled ? h('span.chip.warn.plain', { title: 'Drained: takes no new sandboxes' }, 'drained') : null),
+        h('div.name', h('span.truncate', n.name || n.id), stateChip(n.online ? 'online' : 'offline'), stateChips(n, manage)),
         h('div.hw', [owner ? `${owner}’s` : null, `${info.os || '?'}/${info.arch || '?'}`, info.driver === 'process' ? 'process driver (no isolation)' : virt.accel ? virt.accel.toUpperCase() : null, info.version ? `v${info.version}` : null].filter(Boolean).join(' · '))),
       h('div.row', { style: { alignItems: 'flex-start', gap: '10px' } },
         h('div.score', { title: 'Overall benchmark score (0–1000)' }, h('b', b.score != null ? num(b.score) : '—'), h('span', 'score')),
@@ -170,7 +225,8 @@ function nodeCard(n, menu) {
         meter('vCPU', use.vcpu, cap.vcpu),
         meter('Memory', use.memoryMiB, cap.memoryMiB, mib),
         meter('Disk', use.diskGiB, cap.diskGiB, gib),
-        meter('Sandboxes', use.vms, cap.maxSandboxes))),
+        meter('Sandboxes', use.vms, cap.maxSandboxes)),
+      manage ? h('p.small.faint', { style: { margin: 0 } }, 'Control this machine locally: run ', h('code', 'crowdvm-node open'), ' on it.') : null),
     h('div.card-foot', { style: { justifyContent: 'space-between', background: 'transparent' } },
       h('span.small.faint.truncate', n.online ? (b.ranAt ? `Benchmarked ${ago(b.ranAt)}` : 'Not benchmarked yet') : `Last seen ${ago(n.lastSeenAt)}`),
       h('span.row', { style: { gap: '4px' } }, Object.entries(info.labels || {}).slice(0, 3).map(([k, v]) => h('span.tag', `${k}=${v}`)),

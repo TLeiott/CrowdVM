@@ -158,6 +158,10 @@ func (s *Server) tryPlace(id string) bool {
 	if placeErr != nil {
 		if store.Now() > pb.Deadline {
 			_ = s.SetSandboxExtra(id, "pendingBoot", nil)
+			if pb.Reason == "evacuated" {
+				s.evacuationStranded(sb) // its disk is saved: stopped, not failed
+				return false
+			}
 			s.abortBoot(sb, pb.Kind, pb.Parent, "out_of_capacity: no node had room for this sandbox within "+s.Cfg.CapacityWait.String())
 		}
 		return false
@@ -274,12 +278,19 @@ func (s *Server) afterStopResume(id string) {
 	if err != nil || sb.DeletedAt != nil || sb.State != api.StateArchived {
 		return
 	}
-	if v, _ := sb.Extra["resumeAfterStop"].(bool); !v {
+	again, _ := sb.Extra["resumeAfterStop"].(bool)
+	from, _ := sb.Extra["evacuateFrom"].(string) // stopped by an evacuation
+	if !again && from == "" {
 		return
 	}
 	_ = s.SetSandboxExtra(id, "resumeAfterStop", nil)
+	_ = s.SetSandboxExtra(id, "evacuateFrom", nil)
 	if !sb.SnapshotsEnabled {
 		return // nothing was kept; the resume cannot happen
+	}
+	if from != "" {
+		s.evacuationResume(sb, from)
+		return
 	}
 	sets := map[string]any{"error": nil, "stopped_at": nil, "archive_after": nil}
 	if sb.TTLSeconds != nil {

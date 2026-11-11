@@ -1340,6 +1340,7 @@ AND ((s.state='archiving' AND st.status IN ('failing','pending')) OR (s.state IN
 		}
 	}
 	// Waiting boots, lost nodes, long error holds and failing stops.
+	s.reapEvacuations()
 	s.placeWaiting()
 	s.markUnconnected()
 	s.rebuildLost()

@@ -47,6 +47,8 @@ var keyActionAny = map[string]string{
 	"GET /api/v1/nodes/{}":               "account.read",
 	"PATCH /api/v1/nodes/{}":             "account.admin",
 	"DELETE /api/v1/nodes/{}":            "account.admin",
+	"POST /api/v1/nodes/{}/evacuate":     "account.admin",
+	"DELETE /api/v1/nodes/{}/evacuate":   "account.admin",
 	"GET /api/v1/join-tokens":            "account.read",
 	"POST /api/v1/join-tokens":           "account.admin",
 	"DELETE /api/v1/join-tokens/{}":      "account.admin",

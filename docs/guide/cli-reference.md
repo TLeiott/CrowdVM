@@ -254,6 +254,7 @@ Usage:
 
 Available Commands:
   drain       Stop placing new sandboxes on a node (running ones keep running)
+  evacuate    Take a node back: drain it, then stop its sandboxes and resume them on other nodes
   info        Show one node: capacity, benchmark, sandboxes, earned credits
   join-token  Create a token for `crowdvm-node join` (admins)
   join-tokens List node join tokens (admins)
@@ -275,6 +276,31 @@ Usage:
 
 Flags:
   -h, --help   help for drain
+```
+
+### crowdvm admin nodes evacuate
+
+```text
+Drain a node and, after a grace period, stop every sandbox still on it and
+resume it on another node. Stopping saves the disk, so files survive but
+running processes do not. Sandboxes with snapshots off can't be moved and
+are erased. Their owners get a notice when the evacuation starts.
+
+Run it again to change the deadline, or with --cancel during the grace period
+(the node stays drained; undrain it separately).
+
+Usage:
+  crowdvm admin nodes evacuate NODE [flags]
+
+Examples:
+  crowdvm nodes evacuate lab-desktop             # in 10 minutes
+  crowdvm nodes evacuate lab-desktop --grace 0   # now
+  crowdvm nodes evacuate lab-desktop --cancel
+
+Flags:
+      --cancel           cancel the evacuation during its grace period
+      --grace duration   time before the sandboxes are stopped (0 = now, at most 24h) (default 10m0s)
+  -h, --help             help for evacuate
 ```
 
 ### crowdvm admin nodes info
@@ -2126,6 +2152,7 @@ Usage:
 
 Available Commands:
   drain       Stop placing new sandboxes on a node (running ones keep running)
+  evacuate    Take a node back: drain it, then stop its sandboxes and resume them on other nodes
   info        Show one node: capacity, benchmark, sandboxes, earned credits
   join-token  Create a token for `crowdvm-node join` (admins)
   join-tokens List node join tokens (admins)
@@ -2147,6 +2174,31 @@ Usage:
 
 Flags:
   -h, --help   help for drain
+```
+
+### crowdvm nodes evacuate
+
+```text
+Drain a node and, after a grace period, stop every sandbox still on it and
+resume it on another node. Stopping saves the disk, so files survive but
+running processes do not. Sandboxes with snapshots off can't be moved and
+are erased. Their owners get a notice when the evacuation starts.
+
+Run it again to change the deadline, or with --cancel during the grace period
+(the node stays drained; undrain it separately).
+
+Usage:
+  crowdvm nodes evacuate NODE [flags]
+
+Examples:
+  crowdvm nodes evacuate lab-desktop             # in 10 minutes
+  crowdvm nodes evacuate lab-desktop --grace 0   # now
+  crowdvm nodes evacuate lab-desktop --cancel
+
+Flags:
+      --cancel           cancel the evacuation during its grace period
+      --grace duration   time before the sandboxes are stopped (0 = now, at most 24h) (default 10m0s)
+  -h, --help             help for evacuate
 ```
 
 ### crowdvm nodes info

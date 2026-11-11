@@ -192,6 +192,17 @@ func (c *Client) DeleteNode(ctx context.Context, id string, force bool) (Object,
 	return obj(ctx, c, del(p("nodes", id), q))
 }
 
+// EvacuateNode drains a node and, after graceSec, stops its sandboxes and
+// resumes them on other nodes.
+func (c *Client) EvacuateNode(ctx context.Context, id string, graceSec int) (Object, error) {
+	return obj(ctx, c, post(p("nodes", id, "evacuate"), Object{"graceSec": graceSec}))
+}
+
+// CancelEvacuation cancels a node's evacuation during its grace period.
+func (c *Client) CancelEvacuation(ctx context.Context, id string) (Object, error) {
+	return obj(ctx, c, del(p("nodes", id, "evacuate"), nil))
+}
+
 func (c *Client) ListJoinTokens(ctx context.Context) (Object, error) {
 	return obj(ctx, c, get("/join-tokens", nil))
 }
