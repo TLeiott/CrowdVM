@@ -103,6 +103,10 @@ type Config struct {
 	// guest config, secrets included, to the config drive and proxies the
 	// guest API) even on nodes that support the guest channel.
 	NoGuestChannel bool
+	// NodeEgress: channel sandboxes reach the internet through their node
+	// (as legacy ones do) instead of through the guest channel and out of
+	// this server.
+	NodeEgress bool
 
 	// Loop intervals (tests shorten them). Zero = the package defaults
 	// (OTelMetricsInterval, WebhookBackoff, CIPollInterval, CIRetryInterval).

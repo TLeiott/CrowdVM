@@ -116,6 +116,10 @@ type GuestConfig struct {
 	// then authorizes only the node's ops subset (health, prepare-stop,
 	// sync, freeze, thaw, playbook/finish). nil = legacy config drive.
 	Channel *GuestChannel `json:"channel,omitempty"`
+	// Egress (channel guests): "server" sends the sandbox's TCP and DNS
+	// through the guest channel and out of the server; the node's netstack
+	// then lets the VM reach only the server. "" = out through the node.
+	Egress string `json:"egress,omitempty"`
 	// ZeroDataRetention: the owner's account has zero data retention on.
 	// Implies NoMonitoring (the server sets both); in addition the guest
 	// keeps no prompt transcripts/events on disk after a turn ends.

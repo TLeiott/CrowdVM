@@ -353,6 +353,7 @@ func (s *Server) handleGuestConnect(w http.ResponseWriter, r *http.Request) {
 		_ = old.sess.Close()
 	}
 	s.Log.Info("guest channel connected", "sandbox", sb.ID, "node", sb.NodeID)
+	go func() { _ = mux.Serve(sess, s.guestStreams(g, welcome.Config.Egress == "server")) }()
 	s.Go(func(ctx context.Context) { s.followGuestChannelEvents(ctx, g) })
 	s.Go(func(ctx context.Context) { s.pushGuestFirewall(ctx, g) })
 	select {

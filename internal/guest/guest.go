@@ -270,6 +270,13 @@ func (a *Agent) Run(ctx context.Context) error {
 	if !a.inspect() {
 		a.initWorkloads()
 	}
+	if a.cfg.Egress == "server" {
+		// Before Boot: repo clones and logins need the network, and the
+		// node lets this VM reach only the server.
+		if err := a.startEgress(ctx); err != nil {
+			a.log.Printf("egress through the server: %v (the sandbox has no internet)", err)
+		}
+	}
 	a.Boot(ctx)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {

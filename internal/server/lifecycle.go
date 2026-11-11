@@ -456,6 +456,13 @@ func (s *Server) boot(ctx context.Context, id string, o bootOpts) (err error) {
 	// Credentials of a previous owner (or withheld by the environment) go
 	// before the sandbox is reachable.
 	s.scrubForBoot(id, &g)
+	if s.channelNode(n) && !s.Cfg.NodeEgress {
+		// Internet through the server; the node's netstack lets the VM
+		// reach nothing but the server (a kill switch if the guest drops
+		// its egress rules).
+		g.Egress = "server"
+		vs.Net = &proto.NetPolicy{Deny: []string{"0.0.0.0/0"}}
+	}
 	vs.Guest = g
 	if s.channelNode(n) {
 		// Secure layer: the node gets a boot stub, the guest fetches the

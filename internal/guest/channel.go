@@ -163,7 +163,7 @@ func (c *Channel) dial(ctx context.Context) (*tls.Conn, *bufio.Reader, error) {
 	}
 	dctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	raw, err := (&net.Dialer{}).DialContext(dctx, "tcp", host)
+	raw, err := (&net.Dialer{Control: markChannel}).DialContext(dctx, "tcp", host)
 	if err != nil {
 		return nil, nil, err
 	}
