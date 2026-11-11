@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "target": "ES2022", "module": "NodeNext", "moduleResolution": "NodeNext",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"], "types": [],
+    "strict": true, "declaration": true, "outDir": "dist", "rootDir": "src", "skipLibCheck": true,
+    "baseUrl": ".", "paths": { "@crowdvm/sdk": ["../../sdk/typescript/dist/index.d.ts"] }
+  },
+  "include": ["src"]
+}

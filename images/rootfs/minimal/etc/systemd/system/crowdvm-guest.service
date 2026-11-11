@@ -1,0 +1,21 @@
+# CrowdVM guest agent. Contract: docs/ARCHITECTURE.md "Guest bootstrap".
+# Each boot: mount the read-only config drive LABEL=CROWDVM at /run/crowdvm/cfg,
+# install its crowdvm-guest binary to /usr/local/bin and run it as root.
+[Unit]
+Description=CrowdVM guest agent
+After=local-fs.target systemd-udevd.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStartPre=/usr/local/lib/crowdvm/guest-prepare
+ExecStart=/usr/local/bin/crowdvm-guest --config /run/crowdvm/cfg/config.json
+Restart=always
+RestartSec=1
+# Restarting the agent must not kill user commands it started.
+KillMode=process
+# The OOM killer never picks the agent (it resets its children to 0).
+OOMScoreAdjust=-1000
+
+[Install]
+WantedBy=multi-user.target

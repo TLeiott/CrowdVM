@@ -1,0 +1,17 @@
+# Cua Driver: the computer-use daemon behind the `computer` MCP server of every
+# harness (`cua-driver mcp --socket /run/ascii-cua/driver.sock`). It runs as
+# the desktop user on DISPLAY :0 (crowdvm-desktop.service). Enabled globally;
+# `user` lingers, so it starts at boot and again after every resume and fork.
+[Unit]
+Description=Cua Driver computer-use daemon
+StartLimitIntervalSec=0
+
+[Service]
+Environment=DISPLAY=:0
+ExecStartPre=/bin/sh -c 'i=0; while [ ! -S /tmp/.X11-unix/X0 ] && [ $i -lt 600 ]; do i=$((i+1)); sleep 0.5; done'
+ExecStart=/opt/crowdvm/cua-driver/cua-driver serve --socket /run/ascii-cua/driver.sock --dangerously-bypass-approvals
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

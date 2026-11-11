@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crowdvm"
+version = "0.1.0"
+description = "Python SDK for CrowdVM: persistent Ubuntu VMs for coding agents on your LAN or Tailnet (Boat-compatible API)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = []
+keywords = ["crowdvm", "sandbox", "vm", "agents", "boat"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Typing :: Typed",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+crowdvm = ["py.typed"]

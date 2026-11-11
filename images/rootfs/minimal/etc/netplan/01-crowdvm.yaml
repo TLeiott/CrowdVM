@@ -1,0 +1,11 @@
+# DHCP on every en* interface (QEMU user net: guest 10.0.2.15, gateway 10.0.2.2).
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    crowdvm:
+      match:
+        name: "en*"
+      dhcp4: true
+      dhcp6: false
+      optional: true

@@ -1,0 +1,18 @@
+/.ref/
+/bin/
+/dist/
+*.qcow2
+*.img
+/tmp/
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+/data/
+
+# build outputs at the repo root
+/crowdvm
+/crowdvm-node
+/crowdvm-server
+/gendocs
+*.exe

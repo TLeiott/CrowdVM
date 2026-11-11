@@ -1,0 +1,17 @@
+#!/bin/sh
+# Mount the CrowdVM config drive (read-only) and install the guest agent from it.
+set -eu
+dir=/run/crowdvm/cfg
+dev=/dev/disk/by-label/CROWDVM
+mkdir -p "$dir"
+if ! mountpoint -q "$dir"; then
+	i=0
+	while [ ! -e "$dev" ]; do
+		i=$((i + 1))
+		[ "$i" -le 300 ] || { echo "no config drive labelled CROWDVM" >&2; exit 1; }
+		sleep 0.1
+	done
+	mount -o ro "$dev" "$dir"
+fi
+install -m 0755 "$dir/crowdvm-guest" /usr/local/bin/.crowdvm-guest.new
+mv -f /usr/local/bin/.crowdvm-guest.new /usr/local/bin/crowdvm-guest

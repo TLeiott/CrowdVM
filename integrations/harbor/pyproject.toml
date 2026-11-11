@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "harbor-crowdvm"
+version = "0.1.0"
+description = "Harbor environment adapter that runs trials in CrowdVM sandboxes"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = ["crowdvm>=0.1.0"]   # sdk/python of this repository; harbor itself comes with `harbor run`
+
+[tool.setuptools]
+py-modules = ["harbor_crowdvm_environment", "harbor_box_environment", "_harbor_shim"]

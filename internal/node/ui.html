@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CrowdVM Node</title>
+<style>
+:root {
+  --bg: #f6f6f3; --panel: #ffffff; --ink: #1b1d1f; --muted: #6b6f75; --line: #e4e4de;
+  --accent: #2f6f5e; --accent-soft: #e3efe9; --warn: #a0620a; --warn-soft: #fbf0dc;
+  --bad: #a83a32; --bad-soft: #f8e4e1; --bar: #e9e9e3;
+  --low: #8a8f96; --medium: #3b74a8; --high: #2f6f5e; --extreme: #7a4bb0; --none: #b8bbbf;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #131416; --panel: #1b1c1f; --ink: #e8e8e4; --muted: #9a9ea4; --line: #2b2d31;
+    --accent: #6cc3a6; --accent-soft: #1d3029; --warn: #e3a64a; --warn-soft: #33281a;
+    --bad: #ec7d72; --bad-soft: #3a201e; --bar: #2a2c30;
+    --low: #9a9ea4; --medium: #79aee0; --high: #6cc3a6; --extreme: #b892e6; --none: #55595f;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+  font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 980px; margin: 0 auto; padding: 28px 16px 48px; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; margin-bottom: 22px; }
+h1 { font-size: 20px; font-weight: 650; margin: 0; letter-spacing: -0.01em; }
+.sub { color: var(--muted); font-size: 13px; }
+.mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12.5px; }
+.spacer { flex: 1; }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px;
+  font-size: 12.5px; font-weight: 550; background: var(--bar); color: var(--muted); }
+.pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.pill.ok { background: var(--accent-soft); color: var(--accent); }
+.pill.warn { background: var(--warn-soft); color: var(--warn); }
+.pill.bad { background: var(--bad-soft); color: var(--bad); }
+button { font: inherit; font-size: 13px; font-weight: 550; padding: 7px 14px; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink); }
+button:hover { border-color: var(--muted); }
+button:disabled { opacity: .55; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--panel); }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; min-width: 0; }
+section.wide { grid-column: 1 / -1; }
+h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; margin: 0 0 14px; }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
+dt { color: var(--muted); }
+dd { margin: 0; overflow-wrap: anywhere; }
+.meter { margin-bottom: 12px; }
+.meter .row { display: flex; justify-content: space-between; margin-bottom: 5px; }
+.meter .track { height: 8px; border-radius: 4px; background: var(--bar); overflow: hidden; }
+.meter .fill { height: 100%; background: var(--accent); border-radius: 4px; transition: width .4s; }
+.meter .fill.hot { background: var(--warn); }
+.score { display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px; }
+.score b { font-size: 34px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.tier { font-size: 12px; font-weight: 650; text-transform: uppercase; letter-spacing: .08em; padding: 3px 9px; border-radius: 6px; }
+.tier.bronze { background: #f1e2d3; color: #8a5426; } .tier.silver { background: #e6e8eb; color: #535a63; }
+.tier.gold { background: #f6ebc4; color: #7d6210; } .tier.platinum { background: #e2e6f3; color: #3f4f8a; }
+@media (prefers-color-scheme: dark) {
+  .tier.bronze { background: #3a2a1c; color: #e0a46e; } .tier.silver { background: #2c3036; color: #c4cad2; }
+  .tier.gold { background: #3a321a; color: #e8c862; } .tier.platinum { background: #252c44; color: #a9b8ee; }
+}
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 8px 10px 8px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-weight: 550; color: var(--muted); font-size: 12.5px; }
+tr:last-child td { border-bottom: 0; }
+td.num { font-variant-numeric: tabular-nums; }
+.cat { font-size: 12px; font-weight: 600; text-transform: capitalize; }
+.cat::before { content: "●"; margin-right: 5px; }
+.cat.low { color: var(--low); } .cat.medium { color: var(--medium); } .cat.high { color: var(--high); }
+.cat.extreme { color: var(--extreme); } .cat.none { color: var(--none); }
+.empty { color: var(--muted); padding: 6px 0; }
+.err { color: var(--bad); font-size: 12.5px; }
+.scroll { overflow-x: auto; }
+#banner { display: none; margin-bottom: 16px; padding: 10px 14px; border-radius: 10px; background: var(--bad-soft); color: var(--bad); }
+</style>
+</head>
+<body>
+<main>
+  <div id="banner">Cannot reach the node daemon. Retrying…</div>
+  <header>
+    <div>
+      <h1 id="name">CrowdVM Node</h1>
+      <div class="sub mono" id="nodeid">—</div>
+    </div>
+    <span class="pill" id="conn">…</span>
+    <span class="pill" id="accept">…</span>
+    <div class="spacer"></div>
+    <button id="pause">Pause new sandboxes</button>
+    <button id="bench" class="primary">Re-run benchmark</button>
+  </header>
+
+  <div class="grid">
+    <section>
+      <h2>Server</h2>
+      <dl>
+        <dt>Address</dt><dd class="mono" id="server">—</dd>
+        <dt>Connected</dt><dd id="since">—</dd>
+        <dt>Heartbeat</dt><dd id="hb">—</dd>
+        <dt>Driver</dt><dd id="driver">—</dd>
+        <dt>Direct ports</dt><dd class="mono" id="direct">off</dd>
+        <dt>Snapshots</dt><dd id="snapint">—</dd>
+      </dl>
+      <div class="err" id="connerr"></div>
+    </section>
+
+    <section>
+      <h2>Shared capacity</h2>
+      <div id="meters"></div>
+    </section>
+
+    <section class="wide">
+      <h2>Benchmark</h2>
+      <div class="score"><b id="score">—</b><span class="tier" id="tier"></span><span class="sub" id="ranat"></span></div>
+      <div class="scroll"><table>
+        <thead><tr><th>Dimension</th><th>Measured</th><th>Category</th></tr></thead>
+        <tbody id="benchrows"></tbody>
+      </table></div>
+    </section>
+
+    <section class="wide">
+      <h2>Sandboxes</h2>
+      <div class="scroll"><table>
+        <thead><tr><th>Sandbox</th><th>State</th><th>Size</th><th>Started</th><th>Direct</th></tr></thead>
+        <tbody id="vms"></tbody>
+      </table></div>
+    </section>
+
+    <section class="wide" id="xfersec" style="display:none">
+      <h2>Transfers</h2>
+      <div id="xfers"></div>
+    </section>
+  </div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const num = (v, d = 0) => Number(v || 0).toLocaleString(undefined, {maximumFractionDigits: d});
+const gib = (mib) => (mib / 1024).toFixed(mib >= 10240 ? 0 : 1) + " GiB";
+const bytes = (b) => b < 0 ? "?" : b >= 1<<30 ? (b / (1<<30)).toFixed(2) + " GiB" : (b / (1<<20)).toFixed(1) + " MiB";
+function ago(t) {
+  if (!t) return "—";
+  const s = Math.max(0, (Date.now() - new Date(t)) / 1000);
+  if (s < 60) return Math.round(s) + "s ago";
+  if (s < 3600) return Math.round(s / 60) + "m ago";
+  if (s < 86400) return Math.round(s / 3600) + "h ago";
+  return new Date(t).toLocaleString();
+}
+function meter(label, used, total, fmt) {
+  const pct = total > 0 ? Math.min(100, used / total * 100) : 0;
+  return `<div class="meter"><div class="row"><span>${label}</span><span class="sub">${fmt(used)} / ${fmt(total)}</span></div>
+    <div class="track"><div class="fill ${pct > 85 ? "hot" : ""}" style="width:${pct}%"></div></div></div>`;
+}
+const cat = (c) => `<span class="cat ${esc(c || "none")}">${esc(c || "none")}</span>`;
+let state = null;
+
+async function call(path, body) {
+  const r = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json", "X-Crowdvm-Ui": "1"},
+    body: body ? JSON.stringify(body) : undefined});
+  if (!r.ok) alert((await r.text()) || r.statusText);
+  refresh();
+}
+$("pause").onclick = () => state && call("/api/pause", {paused: !state.paused});
+$("bench").onclick = () => call("/api/bench");
+
+function render(s) {
+  state = s;
+  $("name").textContent = s.name || "CrowdVM Node";
+  document.title = (s.name ? s.name + " · " : "") + "CrowdVM Node";
+  $("nodeid").textContent = (s.nodeId || "not joined") + " · v" + s.version + " · " + s.os + "/" + s.arch;
+  const c = s.connection || {};
+  $("conn").className = "pill " + (c.connected ? "ok" : s.server ? "bad" : "warn");
+  $("conn").textContent = c.connected ? "Connected" : s.server ? "Disconnected" : "Not joined";
+  $("accept").className = "pill " + (s.paused ? "warn" : "ok");
+  $("accept").textContent = s.paused ? "Paused" : s.drained ? "Drained by the server admin" : "Accepting sandboxes";
+  $("pause").textContent = s.paused ? "Resume accepting" : "Pause new sandboxes";
+  $("server").textContent = s.server || "—";
+  $("since").textContent = c.connected ? ago(c.since) : "no";
+  $("hb").textContent = ago(c.lastHeartbeat);
+  $("driver").textContent = s.driver;
+  $("direct").textContent = s.directHost || "off";
+  $("snapint").textContent = s.snapshotIntervalSec > 0 ? "every " + Math.round(s.snapshotIntervalSec / 60) + " min" : "off";
+  $("connerr").textContent = !c.connected && c.lastError ? c.lastError : "";
+
+  const cap = s.capacity, u = s.usage;
+  $("meters").innerHTML =
+    meter("vCPU", u.vcpu, cap.vcpu, (v) => num(v)) +
+    meter("Memory", u.memoryMiB, cap.memoryMiB, gib) +
+    meter("Disk (sandbox sizes, thin)", u.diskGiB, cap.diskGiB, (v) => num(v) + " GiB") +
+    (s.disk ? meter("Disk (stored)", s.disk.usedBytes, s.disk.budgetGiB * 2 ** 30, bytes) : "") +
+    meter("Sandboxes", u.vms, cap.maxSandboxes, (v) => num(v));
+
+  const b = s.benchmark || {}, cs = b.categories || {};
+  $("bench").disabled = s.benchmarkRunning;
+  $("bench").textContent = s.benchmarkRunning ? "Benchmarking…" : "Re-run benchmark";
+  if (!b.ranAt || b.ranAt.startsWith("0001")) {
+    $("score").textContent = "—"; $("tier").className = "tier"; $("tier").textContent = "";
+    $("ranat").textContent = s.benchmarkRunning ? "running…" : "not run yet";
+    $("benchrows").innerHTML = "";
+  } else {
+    $("score").textContent = num(b.score);
+    $("tier").className = "tier " + esc(b.tier); $("tier").textContent = b.tier;
+    $("ranat").textContent = "of 1000 · " + ago(b.ranAt) + " · took " + (b.durationMs / 1000).toFixed(1) + "s";
+    const n = b.network || {}, v = b.virtualization || {};
+    const gpus = (b.gpus || []).map((g) => esc(g.model) + (g.vramMiB ? " · " + gib(g.vramMiB) : "") + (g.compute ? " · CC " + esc(g.compute) : "")).join("<br>") || "none";
+    const rows = [
+      ["CPU", `${esc(b.cpu.model)}<br><span class="sub">${b.cpu.cores} cores / ${b.cpu.threads} threads · single ${num(b.cpu.singleScore)} · multi ${num(b.cpu.multiScore)} units/s</span>`, cs.cpu],
+      ["Memory", `${gib(b.memory.totalMiB)} <span class="sub">(${gib(b.memory.availableMiB)} free) · ${num(b.memory.bandwidthMBps / 1000, 1)} GB/s copy</span>`, cs.memory],
+      ["Disk", `${num(b.disk.freeGiB)} GiB free <span class="sub">· write ${num(b.disk.writeMBps)} MB/s · read ${num(b.disk.readMBps)} MB/s</span>`, cs.disk],
+      ["Network", n.downMbps ? `${num(n.downMbps)} ↓ / ${num(n.upMbps)} ↑ Mbps <span class="sub">· ${num(n.latencyMs, 2)} ms · ${esc(n.via)}</span>` : `<span class="sub">not measured</span>`, cs.network],
+      ["GPU", gpus, cs.gpu],
+      ["Virtualization", `${esc(v.accel)}${v.nested ? " · nested" : ""} <span class="sub">${v.qemu ? "· QEMU " + esc(v.qemu) : "· QEMU not found"}</span>`, ["kvm","whpx","hvf"].includes(v.accel) ? "high" : v.accel === "tcg" ? "low" : "none"],
+    ];
+    $("benchrows").innerHTML = rows.map((r) => `<tr><td>${r[0]}</td><td>${r[1]}</td><td>${cat(r[2])}</td></tr>`).join("");
+  }
+
+  $("vms").innerHTML = (s.vms || []).length ? s.vms.map((v) => `<tr>
+      <td class="mono">${esc(v.sandboxId)}</td>
+      <td><span class="pill ${v.state === "running" ? "ok" : v.state === "error" ? "bad" : v.state === "stopped" ? "" : "warn"}">${esc(v.state)}${v.state === "starting" && v.guestReady === false ? "" : ""}</span>${v.error ? `<div class="err">${esc(v.error)}</div>` : ""}</td>
+      <td class="num">${esc(v.size.name || "")} <span class="sub">${v.size.vcpu} vCPU · ${gib(v.size.memoryMiB)}</span></td>
+      <td>${v.startedAt && !v.startedAt.startsWith("0001") ? ago(v.startedAt) : "—"}</td>
+      <td class="mono">${esc(Object.entries(v.direct || {}).map(([k, a]) => k + " " + a).join(", ")) || "—"}</td></tr>`).join("")
+    : `<tr><td colspan="5" class="empty">No sandboxes on this node.</td></tr>`;
+
+  const xs = s.transfers || [];
+  $("xfersec").style.display = xs.length ? "" : "none";
+  $("xfers").innerHTML = xs.map((x) => meter(`${x.direction === "upload" ? "↑" : "↓"} ${esc(x.kind)} <span class="mono">${esc(x.id)}</span>`,
+    x.bytes, x.total > 0 ? x.total : x.bytes, bytes)).join("");
+}
+
+async function refresh() {
+  try {
+    const r = await fetch("/api/status", {cache: "no-store"});
+    render(await r.json());
+    $("banner").style.display = "none";
+  } catch (e) {
+    $("banner").style.display = "block";
+  }
+}
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>

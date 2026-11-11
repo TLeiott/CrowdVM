@@ -1,0 +1,20 @@
+# The sandbox desktop: Xvnc on DISPLAY :0 (VNC on 127.0.0.1:5900, no auth,
+# reached through the guest tunnel) running an Xfce session as user.
+# Enabled: up from boot (Boat: every sandbox runs a desktop); the guest agent's
+# POST /v1/internal/desktop/start also starts it if it is down.
+# Size: CROWDVM_DESKTOP_GEOMETRY in /run/crowdvm/desktop.env (default 1920x1080).
+[Unit]
+Description=CrowdVM desktop (Xvnc :0 + Xfce)
+After=network.target
+
+[Service]
+User=user
+PAMName=login
+WorkingDirectory=/home/user
+EnvironmentFile=-/run/crowdvm/desktop.env
+ExecStart=/usr/local/lib/crowdvm/desktop-session
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

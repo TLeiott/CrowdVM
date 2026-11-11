@@ -1,0 +1,70 @@
+CrowdVM Proprietary License — All Rights Reserved
+
+Copyright (c) 2026 Tim Leiott (GitHub: TLeiott). All rights reserved.
+
+This repository and everything in it (source code, binaries, images, scripts,
+SDKs, documentation, designs and any other material, together "the Software")
+are the exclusive property of the copyright holder.
+
+1. No license granted.
+   Except for the single permission in section 2, no right or license of any
+   kind is granted, whether by implication, estoppel or otherwise. Making the
+   Software publicly visible does not grant any permission.
+
+2. Viewing only.
+   You may view the Software in your web browser on the hosting platform
+   where the copyright holder published it, solely to read it. Nothing else.
+
+3. Prohibited without prior written permission of the copyright holder:
+   a. using, running, executing, installing or deploying the Software, in
+      whole or in part, for any purpose;
+   b. copying, cloning, downloading, mirroring or reproducing the Software,
+      in whole or in part, except for the transient copy a browser makes to
+      display it under section 2;
+   c. modifying, translating, adapting, or creating derivative works based on
+      the Software, or reusing any part of it (including snippets, algorithms,
+      designs, documentation or structure) in other works;
+   d. distributing, publishing, sublicensing, selling, renting, lending,
+      hosting, or otherwise making the Software or any part of it available
+      to any third party;
+   e. any commercial use, including offering the Software or any part of it
+      as a service, and any use for the benefit of a business;
+   f. using the Software, in whole or in part, to train, fine-tune, evaluate
+      or otherwise develop any machine learning or artificial intelligence
+      model or system, or including it in any dataset;
+   g. reverse engineering, decompiling or disassembling any binary part of
+      the Software;
+   h. removing or altering this license or any copyright notice.
+
+4. Platform terms.
+   Where the hosting platform's own terms of service give its users a right
+   that cannot be excluded (for example, to view or fork a public repository
+   within that platform), that right is limited to the minimum the terms
+   require. It does not extend to any use, copy or derivative outside the
+   platform, and it does not lift any prohibition in section 3.
+
+5. Contributions.
+   Any contribution submitted to this repository, unless agreed otherwise in
+   writing, is assigned to the copyright holder, who may use it without
+   restriction or compensation.
+
+6. Termination.
+   Any act prohibited by this license is copyright infringement. Any
+   permission given under it ends automatically, without notice, on any
+   breach. On termination you must delete every copy of the Software in your
+   possession or control.
+
+7. No warranty. No liability.
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
+   THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+   WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF
+   OR IN CONNECTION WITH THE SOFTWARE OR ITS USE.
+
+8. No patent license.
+   No license is granted under any patent or other intellectual property
+   right of the copyright holder.
+
+For any permission beyond section 2, contact the copyright holder through
+https://github.com/TLeiott.

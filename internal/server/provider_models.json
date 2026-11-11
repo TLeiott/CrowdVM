@@ -1,0 +1,392 @@
+[
+  {
+    "provider": "claude",
+    "name": "Claude Code",
+    "aliases": [
+      "claude-code"
+    ],
+    "binary": "claude",
+    "defaultModel": "claude-opus-5-5",
+    "steer": "native",
+    "models": [
+      {
+        "id": "claude-opus-5-5",
+        "name": "Claude Opus 5.5",
+        "reasoningEfforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "defaultReasoningEffort": "high",
+        "fastMode": true
+      },
+      {
+        "id": "claude-sonnet-5-5",
+        "name": "Claude Sonnet 5.5",
+        "reasoningEfforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "defaultReasoningEffort": "high",
+        "fastMode": false
+      },
+      {
+        "id": "claude-haiku-5-5",
+        "name": "Claude Haiku 5.5",
+        "reasoningEfforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "fastMode": false
+      },
+      {
+        "id": "deepseek-v4-pro",
+        "name": "DeepSeek V4 Pro (DeepSeek key)",
+        "reasoningEfforts": [],
+        "fastMode": false
+      }
+    ]
+  },
+  {
+    "provider": "codex",
+    "name": "OpenAI Codex",
+    "binary": "codex",
+    "defaultModel": "gpt-6.1-sol",
+    "steer": "native",
+    "models": [
+      {
+        "id": "gpt-6.1-sol",
+        "name": "GPT-6.1 Sol",
+        "reasoningEfforts": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "defaultReasoningEffort": "medium",
+        "fastMode": true
+      },
+      {
+        "id": "gpt-6-sol",
+        "name": "GPT-6 Sol",
+        "reasoningEfforts": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "defaultReasoningEffort": "medium",
+        "fastMode": true
+      },
+      {
+        "id": "gpt-6-astra",
+        "name": "GPT-6 Astra",
+        "reasoningEfforts": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "defaultReasoningEffort": "medium",
+        "fastMode": true
+      },
+      {
+        "id": "gpt-6-luna",
+        "name": "GPT-6 Luna",
+        "reasoningEfforts": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "defaultReasoningEffort": "low",
+        "fastMode": true
+      },
+      {
+        "id": "gpt-5.6-terra",
+        "name": "GPT-5.6 Terra",
+        "reasoningEfforts": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "defaultReasoningEffort": "medium",
+        "fastMode": true
+      }
+    ]
+  },
+  {
+    "provider": "opencode",
+    "name": "OpenCode",
+    "binary": "opencode",
+    "defaultModel": "opencode/beam-free",
+    "steer": "fallback",
+    "models": [
+      {
+        "id": "opencode/beam-free",
+        "name": "Beam (free)",
+        "reasoningEfforts": [],
+        "fastMode": false
+      },
+      {
+        "id": "opencode/deepseek-v4.1-flash-free",
+        "name": "DeepSeek V4.1 Flash (free)",
+        "reasoningEfforts": [],
+        "fastMode": false
+      },
+      {
+        "id": "opencode/glm-5.3-flash-free",
+        "name": "GLM 5.3 Flash (free)",
+        "reasoningEfforts": [],
+        "fastMode": false
+      },
+      {
+        "id": "claude-opus-5-5",
+        "name": "Claude Opus 5.5",
+        "reasoningEfforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "defaultReasoningEffort": "high",
+        "fastMode": false
+      },
+      {
+        "id": "claude-sonnet-5-5",
+        "name": "Claude Sonnet 5.5",
+        "reasoningEfforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "defaultReasoningEffort": "high",
+        "fastMode": false
+      },
+      {
+        "id": "gpt-6.1-sol",
+        "name": "GPT-6.1 Sol",
+        "reasoningEfforts": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "defaultReasoningEffort": "medium",
+        "fastMode": false
+      },
+      {
+        "id": "openrouter:deepseek/deepseek-v4-pro",
+        "name": "DeepSeek V4 Pro (OpenRouter)",
+        "reasoningEfforts": [],
+        "fastMode": false
+      },
+      {
+        "id": "mistral-large-4",
+        "name": "Mistral Large 4",
+        "reasoningEfforts": [],
+        "fastMode": false
+      }
+    ]
+  },
+  {
+    "provider": "pi",
+    "name": "pi",
+    "binary": "pi",
+    "steer": "native",
+    "models": [
+      {
+        "id": "claude-opus-5-5",
+        "name": "Claude Opus 5.5",
+        "reasoningEfforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "defaultReasoningEffort": "high",
+        "fastMode": false
+      },
+      {
+        "id": "claude-sonnet-5-5",
+        "name": "Claude Sonnet 5.5",
+        "reasoningEfforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "defaultReasoningEffort": "high",
+        "fastMode": false
+      },
+      {
+        "id": "gpt-6.1-sol",
+        "name": "GPT-6.1 Sol",
+        "reasoningEfforts": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "defaultReasoningEffort": "medium",
+        "fastMode": false
+      },
+      {
+        "id": "openrouter:deepseek/deepseek-v4-pro",
+        "name": "DeepSeek V4 Pro (OpenRouter)",
+        "reasoningEfforts": [],
+        "fastMode": false
+      },
+      {
+        "id": "mistral-large-4",
+        "name": "Mistral Large 4",
+        "reasoningEfforts": [],
+        "fastMode": false
+      }
+    ]
+  },
+  {
+    "provider": "prime-agent",
+    "name": "Prime Agent",
+    "aliases": [
+      "prime"
+    ],
+    "binary": "prime-agent",
+    "steer": "native",
+    "models": [
+      {
+        "id": "claude-opus-5-5",
+        "name": "Claude Opus 5.5",
+        "reasoningEfforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "defaultReasoningEffort": "high",
+        "fastMode": false
+      },
+      {
+        "id": "claude-sonnet-5-5",
+        "name": "Claude Sonnet 5.5",
+        "reasoningEfforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "defaultReasoningEffort": "high",
+        "fastMode": false
+      },
+      {
+        "id": "gpt-6.1-sol",
+        "name": "GPT-6.1 Sol",
+        "reasoningEfforts": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "defaultReasoningEffort": "medium",
+        "fastMode": false
+      },
+      {
+        "id": "openrouter:deepseek/deepseek-v4-pro",
+        "name": "DeepSeek V4 Pro (OpenRouter)",
+        "reasoningEfforts": [],
+        "fastMode": false
+      },
+      {
+        "id": "mistral-large-4",
+        "name": "Mistral Large 4",
+        "reasoningEfforts": [],
+        "fastMode": false
+      }
+    ]
+  },
+  {
+    "provider": "kimi",
+    "name": "Kimi Code",
+    "aliases": [
+      "kimi-code"
+    ],
+    "binary": "kimi",
+    "defaultModel": "kimi-k3",
+    "steer": "fallback",
+    "models": [
+      {
+        "id": "kimi-k3",
+        "name": "Kimi K3",
+        "reasoningEfforts": [],
+        "fastMode": false
+      },
+      {
+        "id": "kimi-for-coding",
+        "name": "Kimi for Coding",
+        "reasoningEfforts": [],
+        "fastMode": false
+      },
+      {
+        "id": "kimi-k2.7-code",
+        "name": "Kimi K2.7 Code",
+        "reasoningEfforts": [],
+        "fastMode": false
+      }
+    ]
+  },
+  {
+    "provider": "mistral",
+    "name": "Mistral Vibe",
+    "aliases": [
+      "vibe",
+      "mistral-vibe"
+    ],
+    "binary": "vibe-acp",
+    "defaultModel": "mistral-medium-3.5",
+    "steer": "fallback",
+    "models": [
+      {
+        "id": "mistral-large-4",
+        "name": "Mistral Large 4",
+        "reasoningEfforts": [],
+        "fastMode": false
+      },
+      {
+        "id": "mistral-medium-3.5",
+        "name": "Mistral Medium 3.5",
+        "reasoningEfforts": [],
+        "fastMode": false
+      },
+      {
+        "id": "mistral-small-4",
+        "name": "Mistral Small 4",
+        "reasoningEfforts": [],
+        "fastMode": false
+      }
+    ]
+  }
+]

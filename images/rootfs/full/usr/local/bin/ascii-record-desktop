@@ -1,0 +1,45 @@
+#!/bin/bash
+# Record the live desktop (DISPLAY :0) to an MP4 from inside the sandbox.
+#   ascii-record-desktop start <file.mp4> | stop | status
+# Boat's name; crowdvm-record-desktop is the same tool. ffmpeg runs as a
+# transient systemd unit, so it outlives the command that started it.
+set -euo pipefail
+unit=crowdvm-record-desktop
+if [ "$(id -u)" = 0 ]; then
+	sd=(--system) jr=()
+else
+	export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+	sd=(--user) jr=(--user)
+fi
+state=${XDG_RUNTIME_DIR:-/run}/$unit.file
+display=${DISPLAY:-:0}
+running() { systemctl "${sd[@]}" -q is-active "$unit.service" 2>/dev/null; }
+usage() { echo "usage: $(basename "$0") start <file.mp4> | stop | status" >&2; exit 2; }
+
+case ${1:-} in
+start)
+	[ $# -eq 2 ] || usage
+	if running; then echo "already recording to $(cat "$state" 2>/dev/null)" >&2; exit 1; fi
+	out=$(realpath -m -- "$2")
+	mkdir -p -- "$(dirname -- "$out")"
+	size=$(DISPLAY=$display xdotool getdisplaygeometry | tr ' ' x) || { echo "no desktop on $display" >&2; exit 1; }
+	systemctl "${sd[@]}" reset-failed "$unit.service" 2>/dev/null || true
+	systemd-run "${sd[@]}" --quiet --collect --unit="$unit" --property=KillSignal=SIGINT -- \
+		ffmpeg -nostdin -hide_banner -loglevel error -y -f x11grab -framerate 30 -video_size "$size" -i "$display" \
+		-c:v libx264 -preset veryfast -pix_fmt yuv420p -movflags +faststart "$out"
+	echo "$out" >"$state"
+	sleep 1
+	running || { echo "recording failed to start:" >&2; journalctl ${jr[@]+"${jr[@]}"} -u "$unit" -n 5 --no-pager >&2 || true; exit 1; }
+	echo "recording $out"
+	;;
+stop)
+	running || { echo "not recording"; exit 0; }
+	systemctl "${sd[@]}" stop "$unit.service" # SIGINT: ffmpeg finishes the file
+	echo "saved $(cat "$state" 2>/dev/null)"
+	rm -f "$state"
+	;;
+status)
+	if running; then echo "recording $(cat "$state" 2>/dev/null)"; else echo "not recording"; fi
+	;;
+*) usage ;;
+esac

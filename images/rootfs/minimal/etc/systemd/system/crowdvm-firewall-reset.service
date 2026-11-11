@@ -1,0 +1,15 @@
+# Every boot (create, resume, fork) starts from the image's firewall defaults
+# (Boat: "Snapshots do not keep firewall rules"). See firewall-reset.
+[Unit]
+Description=CrowdVM firewall defaults
+DefaultDependencies=no
+After=local-fs.target
+Before=ufw.service network-pre.target
+ConditionPathExists=/usr/local/lib/crowdvm/ufw-default.tar
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/crowdvm/firewall-reset
+
+[Install]
+WantedBy=sysinit.target

@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f7f7f5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111312" media="(prefers-color-scheme: dark)">
+<title>CrowdVM</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/css/app.css">
+<script>
+  // Apply the saved theme before first paint.
+  try { const t = localStorage.getItem('crowdvm.theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch {}
+</script>
+<script type="module" src="/js/main.js"></script>
+</head>
+<body>
+<div id="root"><div class="loading" style="min-height:100vh"><span class="spinner"></span></div></div>
+<noscript><p style="padding:24px">The CrowdVM dashboard needs JavaScript. The CLI (<code>crowdvm</code>) and the API at <code>/api/v1</code> work without it.</p></noscript>
+</body>
+</html>

@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crowdvm-evals"
+version = "0.1.0"
+description = "Eval / RL episode helpers for CrowdVM: saved snapshot per environment, fresh sandbox per episode"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = ["crowdvm>=0.1.0"]
+
+[tool.setuptools]
+py-modules = ["crowdvm_evals"]

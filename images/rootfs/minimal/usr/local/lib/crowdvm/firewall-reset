@@ -1,0 +1,19 @@
+#!/bin/sh
+# Reset the firewall to the image defaults: ufw on, deny incoming, allow
+# outgoing, allow 22/tcp (ssh) and 7070/tcp (guest agent). Boat: snapshots keep
+# no firewall rules, so crowdvm-firewall-reset.service runs this on every boot
+# before ufw.service. Anyone may run it again later; extra arguments are ufw
+# "allow" specs (e.g. 7071/tcp for an agent on another port).
+#   firewall-reset [PORT[/PROTO] ...]
+set -eu
+defaults=/usr/local/lib/crowdvm/ufw-default.tar
+[ -f "$defaults" ] || { echo "firewall-reset: $defaults missing" >&2; exit 1; }
+rm -rf /etc/ufw
+tar -C / -xpf "$defaults"
+for spec in "$@"; do
+	ufw allow "$spec" >/dev/null
+done
+# At boot ufw.service has not started yet and loads the restored files itself.
+if systemctl -q is-active ufw.service 2>/dev/null; then
+	ufw reload >/dev/null
+fi

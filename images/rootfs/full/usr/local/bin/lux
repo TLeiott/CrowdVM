@@ -1,0 +1,13 @@
+#!/bin/bash
+# Boat's `lux` (machines/tools: "Desktop and browser automation with demo
+# recording") is Ascii's proprietary GUI agent, driven by their hosted Lux
+# model. It is not published, so CrowdVM ships this pointer instead of it.
+cat >&2 <<'MSG'
+lux is not available on CrowdVM (it is Boat's proprietary desktop agent).
+Use instead:
+  drive the desktop    the `computer` MCP tools of the integrated agents (cua-driver),
+                       or xdotool / wmctrl / scrot with DISPLAY=:0
+  record a demo        ascii-record-desktop start demo.mp4; ...; ascii-record-desktop stop
+  hand off a GUI task  crowdvm prompt <sandbox id> "<task>"  (from outside the sandbox)
+MSG
+exit 127

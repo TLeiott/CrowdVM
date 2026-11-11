@@ -1,0 +1,43 @@
+{
+  "name": "@crowdvm/sdk",
+  "version": "0.1.0",
+  "description": "TypeScript/JavaScript SDK for CrowdVM: persistent Ubuntu VMs for coding agents on your LAN or Tailnet (Boat-compatible API).",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "default": "./dist/node.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsc -p tsconfig.json && tsc -p tsconfig.check.json && node --test test/",
+    "prepublishOnly": "npm run build",
+    "prepare": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  },
+  "keywords": [
+    "crowdvm",
+    "sandbox",
+    "vm",
+    "agents",
+    "boat"
+  ]
+}

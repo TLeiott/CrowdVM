@@ -1,0 +1,17 @@
+#!/bin/sh
+# Xvnc :0 (VNC 127.0.0.1:5900) + an Xfce session. Exits when Xvnc exits.
+set -eu
+geometry=${CROWDVM_DESKTOP_GEOMETRY:-1920x1080}
+Xvnc :0 -geometry "$geometry" -depth 24 -rfbport 5900 -localhost -SecurityTypes None \
+	-AlwaysShared -AcceptSetDesktopSize -BlacklistTimeout 0 -nolisten tcp &
+xvnc=$!
+i=0
+while [ ! -S /tmp/.X11-unix/X0 ]; do
+	i=$((i + 1))
+	[ "$i" -le 100 ] || { echo "Xvnc did not start" >&2; kill "$xvnc"; exit 1; }
+	sleep 0.1
+done
+export DISPLAY=:0
+xset s off -dpms s noblank || true
+dbus-launch --exit-with-session startxfce4 &
+wait "$xvnc"

@@ -1,0 +1,9 @@
+# .agentenv/config.toml: run AgentEnv on CrowdVM with its built-in `boat` sandbox provider.
+# Only `api_url` differs from Boat. CrowdVM API keys (cvm_...) go in the same `api_key` slot.
+[sandbox.providers.boat.config]
+api_key = "env:CROWDVM_API_KEY"
+api_url = "http://192.168.1.10:8420/api/v1"   # your CrowdVM server
+
+[sandbox]
+default = "boat"        # envs and deploy_sandbox steps
+agent_default = "boat"  # agents
