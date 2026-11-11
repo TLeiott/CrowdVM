@@ -1,50 +1,65 @@
 # Releasing
 
-Three branches, one direction:
+Releases run on a developer machine. There is no CI service (GitHub Actions
+is disabled for this repository), so releasing costs nothing: GitHub Releases
+and the npm registry are free for public projects.
 
 ```
-main ──PR──▶ nightly ──PR──▶ stable
- dev          npm @nightly     npm @latest
-              GitHub pre-release   GitHub release
+main ──release nightly──▶ nightly ──release stable──▶ stable
+ dev                      npm @nightly                npm @latest
+                          GitHub pre-release          GitHub release
 ```
 
-- **main**: day-to-day work. Every push and pull request runs the tests (`ci`).
-- **nightly**: takes pull requests from `main` only. Each merge releases a
-  nightly: `crowdvm@<next>-nightly.<yyyymmdd>.<run>`.
-- **stable**: takes pull requests from `nightly` only. Each merge releases
-  `VERSION` as `crowdvm@<VERSION>` (dist-tag `latest`).
+- **main**: day-to-day work.
+- **nightly**: only ever fast-forwarded to `main` by `release.sh nightly`.
+  Version `<next>-nightly.<yyyymmdd>.<commit count>`.
+- **stable**: only ever fast-forwarded to `nightly` by `release.sh stable`.
+  Version: the `VERSION` file.
 
-Both release branches only change through pull requests (no direct pushes, no
-force pushes), and a pull request merges only when `branch-flow` (right
-source branch) and `tests` pass. Use **Create a merge commit**: squash merges
-would make every later promotion conflict.
+Pushing to `nightly` or `stable` by hand is refused by the pre-push hook
+(`make hooks` sets it up; the release targets do it too), and GitHub forbids
+force-pushing or deleting them.
 
-## What a release does (`.github/workflows/release.yml`)
+## Commands
 
-1. Runs the unit tests (Go, TypeScript and Python SDKs).
-2. Builds the CLI for linux, macOS and Windows on x64 and arm64.
-3. Publishes to npm with provenance: `@crowdvm/cli-<os>-<arch>` (one binary
-   each), `crowdvm` (the command; picks the right binary) and
-   `@crowdvm/sdk`. Skipped, with a warning, until the `NPM_TOKEN` secret exists.
-4. Creates the GitHub Release `v<version>` with the archives and `SHA256SUMS`.
-   Nightlies are pre-releases; only the newest 7 are kept.
-5. Deletes old workflow runs (keeps the newest 10). No artifacts or caches
-   are stored, and run logs are kept for 1 day.
+```sh
+make release-nightly                         # main → nightly, about 5 minutes
+make release-stable                          # nightly → stable, with the VM e2e suite
+scripts/release/release.sh nightly --e2e     # nightly with the e2e suite too
+scripts/release/release.sh stable --dry-run  # test and build only, publish nothing
+```
 
-The server and the node app are not published: they stay internal. The VM
-e2e suite needs KVM and the sandbox image, so run `make e2e` locally before
-promoting to stable.
+In Claude Code, the `release` skill does the same: "release nightly".
+
+Needs: `go`, `node`, `gh` signed in (`gh auth login`) and npm signed in with
+an account that can publish `crowdvm` and `@crowdvm/*` (`npm login`).
+
+## What a release does (`scripts/release/release.sh`)
+
+1. Fast-forwards the target branch to the source branch on origin, in a
+   temporary worktree (your checkout is not touched). If the target has
+   commits the source does not, it stops.
+2. Runs the unit tests (Go, TypeScript and Python SDKs), and for stable the
+   VM e2e suite.
+3. Builds the CLI for linux, macOS and Windows on x64 and arm64
+   (`build-cli.sh`) and lays out the npm packages (`npm-pack.mjs`).
+4. Pushes the branch, publishes to npm (`publish.sh`): `@crowdvm/cli-<os>-<arch>`
+   (one binary each), `crowdvm` (the command; it runs the right binary) and
+   `@crowdvm/sdk`. Then the GitHub Release `v<version>` with the archives and
+   `SHA256SUMS` (`github-release.sh`). Nightlies are pre-releases, and only
+   the newest 7 are kept.
+5. Deletes the temporary worktree and build output.
+
+Re-running after a failure is safe: published versions are skipped and an
+existing release gets its missing files.
+
+The server and the node app are not published: they stay internal.
 
 ## Cutting a stable release
 
-1. On `main`, set `VERSION` to the release version (for example `0.2.0`).
-2. Open a pull request `main → nightly`, merge it: nightlies now count up to
-   `0.2.0-nightly.…`.
-3. When a nightly is good, open `nightly → stable`, merge it: `0.2.0` ships.
-   The pull request already fails if `VERSION` was released before.
-
-A failed release can be re-run (Actions → release → Run workflow on that
-branch): anything already published is skipped.
+1. On `main`, set `VERSION` (for example `0.2.0`), commit and push.
+2. `make release-nightly`: nightlies now count up to `0.2.0-nightly.…`.
+3. When a nightly is good: `make release-stable` ships `0.2.0`.
 
 ## Installing
 
@@ -56,4 +71,4 @@ npm i @crowdvm/sdk          # TypeScript client (@nightly for nightly)
 
 A CLI installed with npm updates through npm (`crowdvm self-update` says the
 command). The npm packages are under `LICENSE-npm`: free for personal and
-other non-commercial use.
+other non-commercial use; commercial use needs permission.

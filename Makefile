@@ -4,7 +4,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION) -X github.com/crowdvm/crowdvm/internal/server.Version=$(VERSION) -X github.com/crowdvm/crowdvm/internal/node.Version=$(VERSION) -X github.com/crowdvm/crowdvm/internal/guest.Version=$(VERSION)
 GO ?= go
 
-.PHONY: all build guest test e2e dist clean docs
+.PHONY: all build guest test e2e dist clean docs release-nightly release-stable hooks
 
 all: build
 
@@ -30,3 +30,13 @@ dist: guest
 
 clean:
 	rm -rf bin dist
+
+# Local releases (no CI service): see docs/RELEASING.md.
+hooks:
+	git config core.hooksPath scripts/git-hooks
+
+release-nightly: hooks
+	scripts/release/release.sh nightly
+
+release-stable: hooks
+	scripts/release/release.sh stable
