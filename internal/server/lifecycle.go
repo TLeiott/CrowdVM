@@ -461,7 +461,7 @@ func (s *Server) boot(ctx context.Context, id string, o bootOpts) (err error) {
 		// reach nothing but the server (a kill switch if the guest drops
 		// its egress rules).
 		g.Egress = "server"
-		vs.Net = &proto.NetPolicy{Deny: []string{"0.0.0.0/0"}}
+		vs.Net = &proto.NetPolicy{Deny: []string{"0.0.0.0/0"}, NoDNS: true}
 	}
 	vs.Guest = g
 	if s.channelNode(n) {

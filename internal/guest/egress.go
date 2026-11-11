@@ -98,7 +98,10 @@ func egressRulesPresent() bool {
 		ipt("-t", "nat", "-C", "PREROUTING", "-j", egressChain) == nil &&
 		ipt("-t", "filter", "-C", "OUTPUT", "-j", egressChain) == nil &&
 		ipt("-t", "filter", "-C", "FORWARD", "-j", egressChain) == nil &&
-		ipt("-t", "filter", "-C", "INPUT", "-j", egressChain+"_IN") == nil
+		ipt("-t", "filter", "-C", "INPUT", "-j", egressChain+"_IN") == nil &&
+		// the chains themselves (a flush empties them and keeps the jumps)
+		ipt("-t", "nat", "-C", egressChain, "-p", "tcp", "-j", "REDIRECT", "--to-ports", strconv.Itoa(egressProxyPort)) == nil &&
+		ipt("-t", "filter", "-C", egressChain+"_IN", "-p", "tcp", "--dport", strconv.Itoa(egressProxyPort), "-j", "ACCEPT") == nil
 }
 
 // egressRules (re)builds the chains and puts their jumps first.
@@ -178,7 +181,7 @@ func (a *Agent) proxyEgress(c *net.TCPConn) {
 		return
 	}
 	dst, err := originalDst(c)
-	if err != nil || dst.Port() == egressProxyPort && dst.Addr().IsLoopback() {
+	if err != nil || dst.Port() == egressProxyPort || dst.Port() == egressDNSPort { // not redirected: someone dialed the proxy itself
 		c.Close()
 		return
 	}

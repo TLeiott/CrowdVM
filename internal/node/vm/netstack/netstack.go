@@ -350,7 +350,7 @@ func (n *Network) tcpTargets(dst netip.AddrPort) []string {
 		}
 		return nil
 	case a == DNS:
-		if dst.Port() == 53 {
+		if dst.Port() == 53 && (n.cfg.Sandbox == nil || !n.cfg.Sandbox.NoDNS) {
 			return upstreams()
 		}
 		return nil
@@ -396,6 +396,9 @@ func (n *Network) handleUDP(r *udp.ForwarderRequest) bool {
 	id := r.ID()
 	dst := netip.AddrPortFrom(netAddr(id.LocalAddress), id.LocalPort)
 	isDNS := dst.Addr() == DNS && dst.Port() == 53
+	if isDNS && n.cfg.Sandbox != nil && n.cfg.Sandbox.NoDNS {
+		return false
+	}
 	if !isDNS && (Subnet.Contains(dst.Addr()) || !n.check("udp", dst)) {
 		return false // ICMP port unreachable
 	}

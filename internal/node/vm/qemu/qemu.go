@@ -1125,7 +1125,7 @@ func sandboxPolicy(p *proto.NetPolicy) (*netstack.Sandbox, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sandbox net policy: %w", err)
 	}
-	return &netstack.Sandbox{Allow: allow, Deny: deny}, nil
+	return &netstack.Sandbox{Allow: allow, Deny: deny, NoDNS: p.NoDNS}, nil
 }
 
 func (d *Driver) args(rec vmRecord, dir string, port int, netSock, qmpArg string) ([]string, error) {

@@ -397,6 +397,9 @@ type DirectPortsRequest struct {
 type NetPolicy struct {
 	Allow []string `json:"allow,omitempty"` // if set, only these destinations are reachable
 	Deny  []string `json:"deny,omitempty"`
+	// NoDNS: the node's resolver (10.0.2.3) does not answer this VM (its
+	// DNS goes through the server; a node resolver would be a side channel).
+	NoDNS bool `json:"noDns,omitempty"`
 }
 
 type VMStatus struct {

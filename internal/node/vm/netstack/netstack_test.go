@@ -360,3 +360,48 @@ func BenchmarkDownload(b *testing.B) {
 		c.Close()
 	}
 }
+
+// Secure layer: a VM whose DNS goes through the server gets no answers from
+// the node's resolver (it would be a side channel around the server).
+func TestDNSRelayOffForNoDNS(t *testing.T) {
+	answered := make(chan struct{}, 1)
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	go func() {
+		buf := make([]byte, 512)
+		for {
+			k, from, err := pc.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			answered <- struct{}{}
+			pc.WriteTo(buf[:k], from)
+		}
+	}()
+	upstreams = func() []string { return []string{pc.LocalAddr().String()} }
+	t.Cleanup(func() { upstreams = nameservers })
+	rules, _ := NewRules(Policy{})
+	n, err := New(Config{Rules: rules, Sandbox: &Sandbox{NoDNS: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer n.Close()
+	q, nodeSide := streamPair(t)
+	n.Attach(nodeSide)
+	g := fakeGuest(t, q, DefaultMTU)
+	uc, err := gonet.DialUDP(g, nil, &tcpip.FullAddress{NIC: 1, Addr: tcpAddr(DNS), Port: 53}, ipv4.ProtocolNumber)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := roundTrip(uc, "\xab\xcdquestion0123"); err == nil {
+		t.Fatalf("the node resolver answered: %q", got)
+	}
+	select {
+	case <-answered:
+		t.Fatal("the query reached the node's upstream resolver")
+	default:
+	}
+}
