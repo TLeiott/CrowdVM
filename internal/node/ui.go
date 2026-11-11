@@ -71,11 +71,18 @@ func (n *Node) Status() Status {
 	}
 }
 
-// SetPaused toggles accepting new sandboxes (persisted).
+// SetPaused toggles accepting new sandboxes (persisted). Only "paused"
+// changes in config.json: `crowdvm-node config set` may have changed other
+// keys there since the daemon started, and saving the daemon's copy undid
+// them (node-UI review).
 func (n *Node) SetPaused(p bool) error {
 	n.cfgMu.Lock()
 	n.cfg.Paused = p
-	err := n.cfg.Save()
+	disk, err := LoadConfig(n.cfg.DataDir)
+	if err == nil {
+		disk.Paused = p
+		err = disk.Save()
+	}
 	n.cfgMu.Unlock()
 	n.markInfoDirty()
 	return err

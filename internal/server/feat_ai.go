@@ -1371,9 +1371,10 @@ func (s *Server) handleAISandboxUsage(c *Ctx) error {
 // ---------------------------------------------------------------------------
 
 // aiSandboxProfile: the environment's profile, else the owner's default.
+// An org profile counts only while the owner may use it (bugs-r10-opus 2).
 func (s *Server) aiSandboxProfile(sb *Sandbox, cfg envConfig) (*aiProfile, error) {
 	if cfg.CredentialProfileID != "" {
-		if p, err := s.aiProfileByID(cfg.CredentialProfileID); err == nil {
+		if p, err := s.aiProfileByID(cfg.CredentialProfileID); err == nil && (!p.Org || s.orgCanUse(p.Access, p.OwnerID, sb.OwnerID)) {
 			return p, nil
 		}
 	}
@@ -1418,7 +1419,11 @@ func (s *Server) aiPlan(sb *Sandbox, cfg envConfig, personal, forceProxy, boot b
 	p.ProfileID = prof.ID
 	proxied := forceProxy || s.aiProxyEnabled(prof.OwnerID) || (sb.OrgID != "" && s.aiProxyEnabled(sb.OrgID))
 	if !boot {
-		proxied = envManagedOf(sb).Proxied // the switch applies at the next start
+		// Turning the proxy off applies at the next start, but a live apply
+		// never hands real keys to a sandbox that must be proxied now (safe
+		// for third parties, proxy on): without a boot token it then gets
+		// none (bugs-r10-opus 3).
+		proxied = proxied || envManagedOf(sb).Proxied
 	}
 	p.Proxied = proxied
 	active := s.aiActive(prof.ID)

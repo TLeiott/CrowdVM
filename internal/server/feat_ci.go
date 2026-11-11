@@ -128,7 +128,13 @@ CREATE TABLE ci_jobs (
 );
 CREATE INDEX ci_jobs_link ON ci_jobs(link_id, queued_at);
 CREATE INDEX ci_jobs_state ON ci_jobs(state);
-`}, store.Migration{Version: 2, SQL: `ALTER TABLE ci_links ADD COLUMN provider TEXT NOT NULL DEFAULT 'github';`})
+`}, store.Migration{Version: 2, SQL: `ALTER TABLE ci_links ADD COLUMN provider TEXT NOT NULL DEFAULT 'github';`},
+		// gh_id: the provider's job id. It is unique per provider instance
+		// only (Gitea counts 1, 2, 3 on each), so id, the key, may carry a
+		// link suffix (bugs-r10-sonnet 2).
+		store.Migration{Version: 3, SQL: `ALTER TABLE ci_jobs ADD COLUMN gh_id TEXT NOT NULL DEFAULT '';
+UPDATE ci_jobs SET gh_id=id;
+CREATE INDEX ci_jobs_gh ON ci_jobs(link_id, gh_id);`})
 	RegisterFeature("ci", func(s *Server) error {
 		ci := &ciState{s: s, busy: map[string]bool{}}
 		s.API("GET /ci", "account.read", ci.overview)
@@ -170,6 +176,19 @@ func (e *ciHTTPError) Error() string { return fmt.Sprintf("CI provider API %d: %
 
 // ciHTTP dials through the outbound guard, also on redirects.
 var ciHTTP = &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{DialContext: guardedDial, TLSHandshakeTimeout: 10 * time.Second}}
+
+// orgAdmin reports whether the token's user (login me) administers org.
+func (g ciGH) orgAdmin(ctx context.Context, org, me string) bool {
+	if g.gitea {
+		var p struct {
+			IsOwner bool `json:"is_owner"`
+			IsAdmin bool `json:"is_admin"`
+		}
+		return g.do(ctx, "GET", "/users/"+url.PathEscape(me)+"/orgs/"+url.PathEscape(org)+"/permissions", nil, &p) == nil && (p.IsOwner || p.IsAdmin)
+	}
+	var m struct{ State, Role string }
+	return g.do(ctx, "GET", "/user/memberships/orgs/"+url.PathEscape(org), nil, &m) == nil && m.State == "active" && m.Role == "admin"
+}
 
 func (g ciGH) do(ctx context.Context, method, path string, in, out any) error {
 	var body io.Reader
@@ -479,10 +498,16 @@ func (ci *ciState) pollLink(ctx context.Context, l *ciLink) {
 
 // newJob records a queued job seen for the first time and starts it.
 func (ci *ciState) newJob(ctx context.Context, l *ciLink, r ghRepo, run ghRun, j ghJob, label string) {
-	id := strconv.FormatInt(j.ID, 10)
+	ghID := strconv.FormatInt(j.ID, 10)
 	var n int
-	if ci.s.DB.QueryRow(`SELECT COUNT(*) FROM ci_jobs WHERE id=?`, id).Scan(&n) != nil || n > 0 {
+	if ci.s.DB.QueryRow(`SELECT COUNT(*) FROM ci_jobs WHERE link_id=? AND gh_id=?`, l.ID, ghID).Scan(&n) != nil || n > 0 {
 		return
+	}
+	// Another link (another instance) may hold the same job id: this link's
+	// job then gets a key of its own (bugs-r10-sonnet 2).
+	id := ghID
+	if ci.s.DB.QueryRow(`SELECT COUNT(*) FROM ci_jobs WHERE id=?`, id).Scan(&n) != nil || n > 0 {
+		id = ghID + "-" + l.ID
 	}
 	lb, lerr := parseCILabel(label)
 	size := lb.Size
@@ -494,8 +519,8 @@ func (ci *ciState) newJob(ctx context.Context, l *ciLink, r ghRepo, run ghRun, j
 		queued = store.Now()
 	}
 	now := store.Now()
-	_, err := ci.s.DB.Exec(`INSERT OR IGNORE INTO ci_jobs(id,link_id,owner_id,repo,run_id,job_name,workflow_name,head_branch,head_sha,html_url,label,machine_class,from_snapshot,debug,state,queued_at,updated_at)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, l.ID, l.OwnerID, r.FullName, strconv.FormatInt(j.RunID, 10), j.Name, nz(j.WorkflowName), nz(j.HeadBranch), nz(j.HeadSHA), nz(j.HTMLURL),
+	_, err := ci.s.DB.Exec(`INSERT OR IGNORE INTO ci_jobs(id,gh_id,link_id,owner_id,repo,run_id,job_name,workflow_name,head_branch,head_sha,html_url,label,machine_class,from_snapshot,debug,state,queued_at,updated_at)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, ghID, l.ID, l.OwnerID, r.FullName, strconv.FormatInt(j.RunID, 10), j.Name, nz(j.WorkflowName), nz(j.HeadBranch), nz(j.HeadSHA), nz(j.HTMLURL),
 		label, size, nz(lb.From), boolInt(lb.Debug), "queued", queued, now)
 	if err != nil {
 		return
@@ -537,19 +562,19 @@ func ciUserIn(list []string, u string) bool {
 }
 
 type ciJobRow struct {
-	ID, LinkID, OwnerID, Repo, RunID, JobName, Label, Class, State  string
-	Workflow, Branch, SHA, HTMLURL, From, Error, SandboxID, SbState sql.NullString
-	Debug                                                           bool
-	QueuedAt, UpdatedAt, NextTry                                    int64
-	Started, Finished, KeepUntil                                    sql.NullInt64
-	Cost                                                            sql.NullFloat64
+	ID, GhID, LinkID, OwnerID, Repo, RunID, JobName, Label, Class, State string
+	Workflow, Branch, SHA, HTMLURL, From, Error, SandboxID, SbState      sql.NullString
+	Debug                                                                bool
+	QueuedAt, UpdatedAt, NextTry                                         int64
+	Started, Finished, KeepUntil                                         sql.NullInt64
+	Cost                                                                 sql.NullFloat64
 }
 
-const ciJobCols = `id,link_id,owner_id,repo,run_id,job_name,label,machine_class,state,workflow_name,head_branch,head_sha,html_url,from_snapshot,error,sandbox_id,sandbox_state,debug,queued_at,updated_at,next_try_at,run_started_at,finished_at,keep_until,cost`
+const ciJobCols = `id,gh_id,link_id,owner_id,repo,run_id,job_name,label,machine_class,state,workflow_name,head_branch,head_sha,html_url,from_snapshot,error,sandbox_id,sandbox_state,debug,queued_at,updated_at,next_try_at,run_started_at,finished_at,keep_until,cost`
 
 func scanCIJob(sc interface{ Scan(...any) error }) (*ciJobRow, error) {
 	j := &ciJobRow{}
-	err := sc.Scan(&j.ID, &j.LinkID, &j.OwnerID, &j.Repo, &j.RunID, &j.JobName, &j.Label, &j.Class, &j.State, &j.Workflow, &j.Branch, &j.SHA, &j.HTMLURL,
+	err := sc.Scan(&j.ID, &j.GhID, &j.LinkID, &j.OwnerID, &j.Repo, &j.RunID, &j.JobName, &j.Label, &j.Class, &j.State, &j.Workflow, &j.Branch, &j.SHA, &j.HTMLURL,
 		&j.From, &j.Error, &j.SandboxID, &j.SbState, &j.Debug, &j.QueuedAt, &j.UpdatedAt, &j.NextTry, &j.Started, &j.Finished, &j.KeepUntil, &j.Cost)
 	return j, err
 }
@@ -805,7 +830,7 @@ func (ci *ciState) track(ctx context.Context, l *ciLink) {
 			continue
 		}
 		var g ghJob
-		if err := gh.do(ctx, "GET", "/repos/"+j.Repo+"/actions/jobs/"+j.ID, nil, &g); err != nil {
+		if err := gh.do(ctx, "GET", "/repos/"+j.Repo+"/actions/jobs/"+j.GhID, nil, &g); err != nil {
 			var he *ciHTTPError
 			if errors.As(err, &he) && he.Status == 404 {
 				ci.setJob(j.ID, map[string]any{"state": "cancelled", "finished_at": store.Now()})
@@ -819,7 +844,7 @@ func (ci *ciState) track(ctx context.Context, l *ciLink) {
 		case "in_progress":
 			if j.State != "running" {
 				sets := map[string]any{"state": "running", "run_started_at": nzTime(ghTime(g.StartedAt)), "sandbox_state": "busy"}
-				if sb, ok := strings.CutPrefix(g.RunnerName, "crowdvm-"); ok && sb != "" {
+				if sb := ci.runnerSandbox(l, g.RunnerName); sb != "" {
 					sets["sandbox_id"] = sb // the sandbox that took it (opus-14 B1)
 				}
 				ci.setJob(j.ID, sets)
@@ -848,7 +873,7 @@ func (ci *ciState) track(ctx context.Context, l *ciLink) {
 			// A runner takes any queued job with its label, not necessarily
 			// the one its sandbox was booted for: act on the sandbox that
 			// actually ran this job (opus-14 B1).
-			if sb, ok := strings.CutPrefix(g.RunnerName, "crowdvm-"); ok && sb != "" && sb != j.SandboxID.String {
+			if sb := ci.runnerSandbox(l, g.RunnerName); sb != "" && sb != j.SandboxID.String {
 				j.SandboxID.String, j.SandboxID.Valid = sb, true
 				sets["sandbox_id"] = sb
 			}
@@ -869,6 +894,21 @@ func (ci *ciState) track(ctx context.Context, l *ciLink) {
 			ci.deleteSandbox(j.SandboxID.String)
 		}
 	}
+}
+
+// runnerSandbox is the sandbox a job's runner names ("crowdvm-<id>"), or ""
+// unless CI booted that sandbox for this link. Whoever runs the runner picks
+// its name, so it may name any sandbox (bugs-r10-sonnet 1).
+func (ci *ciState) runnerSandbox(l *ciLink, runner string) string {
+	id, ok := strings.CutPrefix(runner, "crowdvm-")
+	if !ok || id == "" {
+		return ""
+	}
+	var n int
+	if ci.s.DB.QueryRow(`SELECT COUNT(*) FROM ci_jobs WHERE link_id=? AND sandbox_id=?`, l.ID, id).Scan(&n) != nil || n == 0 {
+		return ""
+	}
+	return id
 }
 
 // oomKilled pulls the sandbox's last command history and reports whether
@@ -970,7 +1010,7 @@ func (ci *ciState) connect(c *Ctx) error {
 		return ci.linkResponse(c, req.LinkID)
 	}
 	if strings.TrimSpace(req.Token) == "" {
-		return ErrD(400, "token_required", "CrowdVM has no GitHub App: connect with a GitHub token (fine-grained: Actions read, Administration read/write, Metadata read on the repositories; classic: repo + admin:org for organizations).",
+		return ErrD(400, "token_required", "CrowdVM has no GitHub App: connect with a GitHub token (fine-grained: Actions read, Administration read/write, Metadata read on the repositories, plus Members read for an organization; classic: repo + admin:org for organizations).",
 			map[string]any{"fields": []string{"token", "account", "org", "apiUrl"}})
 	}
 	provider := strings.ToLower(strings.TrimSpace(req.Provider))
@@ -1032,6 +1072,10 @@ func (ci *ciState) connect(c *Ctx) error {
 		if !strings.EqualFold(acct.Login, me.Login) {
 			return Err(400, "account_mismatch", "A personal account can only be linked with its own token.")
 		}
+	} else if !gh.orgAdmin(c.R.Context(), acct.Login, me.Login) {
+		// Anyone can read /users/{org}: without this, any user could link an
+		// organization and lock its real admins out (bugs-r10-sonnet 7).
+		return Err(403, "account_mismatch", "An organization can only be linked with a token of one of its admins (the token must also be allowed to read the organization's members: classic admin:org, fine-grained Members read).")
 	}
 	org, err := c.Scope(req.Org) // jobs bill this org, or the wallet in scope
 	if err != nil {
@@ -1155,14 +1199,22 @@ func (ci *ciState) public(c *Ctx) error {
 	if len(ls) == 0 {
 		return errNotFound("Linked GitHub account " + req.Account)
 	}
-	l := ls[0]
-	allowed := l.OwnerID == c.P.User.ID
-	if !allowed && l.OrgID != "" {
-		role := ci.s.memberRole(l.OrgID, c.P.User.ID)
-		allowed = role == "owner" || role == "admin"
+	// Logins are unique per instance only: take the caller's own link
+	// (bugs-r10-sonnet 8).
+	var l *ciLink
+	for _, x := range ls {
+		allowed := x.OwnerID == c.P.User.ID
+		if !allowed && x.OrgID != "" {
+			role := ci.s.memberRole(x.OrgID, c.P.User.ID)
+			allowed = role == "owner" || role == "admin"
+		}
+		if allowed {
+			l = x
+			break
+		}
 	}
-	if !allowed {
-		return Err(403, "ci_link_forbidden", "Only the person who linked "+l.Login+", or an owner or admin of its organization, can change this.")
+	if l == nil {
+		return Err(403, "ci_link_forbidden", "Only the person who linked "+ls[0].Login+", or an owner or admin of its organization, can change this.")
 	}
 	users, set, err := parseCIUsers(req.Users)
 	if err != nil {
@@ -1265,7 +1317,7 @@ func (ci *ciState) jobLogs(c *Ctx) error {
 		return c.OK(200, "ci.job.logs", map[string]any{"log": "", "unavailable": "The GitHub account " + l.Login + " is unlinked: its logs stay on GitHub " + j.HTMLURL.String + "."})
 	}
 	var b []byte
-	if err := l.gh().do(c.R.Context(), "GET", "/repos/"+j.Repo+"/actions/jobs/"+j.ID+"/logs", nil, &b); err != nil {
+	if err := l.gh().do(c.R.Context(), "GET", "/repos/"+j.Repo+"/actions/jobs/"+j.GhID+"/logs", nil, &b); err != nil {
 		var he *ciHTTPError
 		if errors.As(err, &he) && he.Status == 404 {
 			return c.OK(200, "ci.job.logs", map[string]any{"log": ""})

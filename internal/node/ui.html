@@ -174,7 +174,7 @@ function render(s) {
   $("conn").className = "pill " + (c.connected ? "ok" : s.server ? "bad" : "warn");
   $("conn").textContent = c.connected ? "Connected" : s.server ? "Disconnected" : "Not joined";
   $("accept").className = "pill " + (s.paused ? "warn" : "ok");
-  $("accept").textContent = s.paused ? "Paused" : s.drained ? "Drained by the server admin" : "Accepting sandboxes";
+  $("accept").textContent = s.paused ? "Paused" : s.drained ? "Drained (by you or an admin)" : "Accepting sandboxes";
   $("pause").textContent = s.paused ? "Resume accepting" : "Pause new sandboxes";
   $("server").textContent = s.server || "—";
   $("since").textContent = c.connected ? ago(c.since) : "no";

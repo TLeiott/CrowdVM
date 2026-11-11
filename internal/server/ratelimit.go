@@ -165,7 +165,18 @@ func (s *Server) checkStarts(wallet string, count int) error {
 	return nil
 }
 
-func (s *Server) recordStart(wallet string) {
+// lockLimits holds the limit checks of a start (concurrency, start windows,
+// credits) and the insert or state change that makes it count together:
+// parallel requests all passed the checks before (bugs-r10-sonnet 3). The
+// returned unlock may be called more than once.
+func (s *Server) lockLimits() func() {
+	s.limitMu.Lock()
+	var once sync.Once
+	return func() { once.Do(s.limitMu.Unlock) }
+}
+
+// recordStart counts a start of a sandbox of owner against wallet.
+func (s *Server) recordStart(wallet, owner string) {
 	now := store.Now()
 	_, _ = s.DB.Exec(`INSERT INTO starts(wallet_id,at) VALUES(?,?)`, wallet, now)
 	_, _ = s.DB.Exec(`DELETE FROM starts WHERE at < ?`, now-25*3600_000)
@@ -173,7 +184,7 @@ func (s *Server) recordStart(wallet string) {
 		var n int
 		_ = s.DB.QueryRow(`SELECT COUNT(*) FROM starts WHERE wallet_id=? AND at>?`, wallet, now-w.dur.Milliseconds()).Scan(&n)
 		if w.limit > 0 && n > w.limit {
-			s.chargeExtraStart(wallet) // an extra start (BILL-010)
+			s.chargeExtraStart(wallet, owner) // an extra start (BILL-010)
 			return
 		}
 	}

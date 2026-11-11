@@ -894,6 +894,8 @@ func (s *Server) handleCreateSandbox(c *Ctx) error {
 	}
 
 	// Limits.
+	unlock := s.lockLimits()
+	defer unlock()
 	if err := s.checkCredits(u, org); err != nil {
 		return fail(err)
 	}
@@ -1001,8 +1003,11 @@ func (s *Server) handleCreateSandbox(c *Ctx) error {
 		}
 		created = append(created, sb)
 	}
+	for range created {
+		s.recordStart(wallet, u.ID)
+	}
+	unlock()
 	for _, sb := range created {
-		s.recordStart(wallet)
 		if src != nil && src.ShareID != "" {
 			_, _ = s.DB.Exec(`UPDATE snapshot_shares SET use_count=use_count+1, last_used_at=? WHERE id=?`, store.Now(), src.ShareID)
 		}

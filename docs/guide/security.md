@@ -126,8 +126,8 @@ looks like it came from your network.
 
 ### Taking your machine back
 
-- `crowdvm-node config set paused true` (then restart the node) stops new sandboxes from
-  landing on it; running ones keep running.
+- `crowdvm-node config set paused true` stops new sandboxes from landing on it at once;
+  running ones keep running.
 - `crowdvm nodes drain <node>` does the same from any machine.
 - Stopping the node daemon takes its sandboxes offline. After 3 minutes the server
   rebuilds them on other nodes from their latest snapshots. A `stop` of such a sandbox

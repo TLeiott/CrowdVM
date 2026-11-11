@@ -31,6 +31,7 @@ type meta struct {
 	AckOut [2]int64 `json:"ackOut,omitempty"` // stdout/stderr bytes the server acked
 
 	lastExport time.Time // output last exported (cadence)
+	exitSent   bool      // an attach follower got the exit frame (makeRoom)
 }
 
 // Retention (CMD-015): commands 90 days, other processes 72 hours; with
@@ -282,18 +283,26 @@ func (h *history) dropFiles(drop []string) {
 
 // freeShare: the free share (0..1) of the file system holding h (1 when
 // unknown).
-func (h *history) freeShare() float64 {
+func (h *history) freeShare() float64 { return fsFreeShare(h.dir) }
+
+// fsFreeShare is replaced in tests (a full tmpfs needs root).
+var fsFreeShare = func(dir string) float64 {
 	var st syscall.Statfs_t
-	if syscall.Statfs(h.dir, &st) != nil || st.Blocks == 0 {
+	if syscall.Statfs(dir, &st) != nil || st.Blocks == 0 {
 		return 1
 	}
 	return float64(st.Bavail) / float64(st.Blocks)
 }
 
+// unfollowedGrace: how long makeRoom keeps a finished record whose exit no
+// follower has read yet (the CLI attaches right after the start).
+const unfollowedGrace = 2 * time.Minute
+
 // makeRoom (monitoring off: output lives on the RAM disk /run): when less
 // than a quarter is free, finished records go, oldest first, until 40% is
 // free, so their 10-minute grace cannot fill it (bugs-r9-opus 3). Running
-// commands keep theirs.
+// commands keep theirs, and so do commands that just finished and whose
+// follower has not read the exit yet (bugs-r10-opus 6).
 func (h *history) makeRoom() {
 	if !h.unmonitor || h.freeShare() >= 0.25 {
 		return
@@ -301,7 +310,7 @@ func (h *history) makeRoom() {
 	h.mu.Lock()
 	var done []*meta
 	for _, m := range h.m {
-		if m.Status != "running" && m.FinishedAt != nil {
+		if m.Status != "running" && m.FinishedAt != nil && (m.exitSent || time.Since(*m.FinishedAt) >= unfollowedGrace) {
 			done = append(done, m)
 		}
 	}

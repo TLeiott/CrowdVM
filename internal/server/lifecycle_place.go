@@ -287,7 +287,7 @@ func (s *Server) afterStopResume(id string) {
 		kind, first = proto.BootCreate, true
 	}
 	prev := sb.NodeID
-	s.recordStart(sb.Wallet())
+	s.recordStart(sb.Wallet(), sb.OwnerID)
 	s.queueBoot(id, pendingBoot{Kind: kind, FirstBoot: first, Parent: sb.HeadSnapshotID, Prefer: prev, Reason: "resume_after_stop"})
 	s.Bus.Publish(Event{Type: EvSandboxState, SandboxID: sb.ID, SandboxName: sb.Name, OwnerID: sb.OwnerID, OrgID: sb.OrgID, PreviousState: api.StateArchived, State: api.StateProvisioning})
 }

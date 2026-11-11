@@ -22,6 +22,7 @@ import (
 
 var metadataIPs = []net.IP{
 	net.ParseIP("169.254.169.254"), net.ParseIP("fd00:ec2::254"), net.ParseIP("100.100.100.200"), // AWS/GCP/Azure, AWS IPv6, Alibaba
+	net.ParseIP("168.63.129.16"), // bugs-r10-sonnet 12: Azure WireServer
 }
 
 // blockedTarget names why ip may not be called ("" = allowed).

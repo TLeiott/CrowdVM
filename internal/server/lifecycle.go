@@ -1517,6 +1517,8 @@ func (s *Server) handleResume(c *Ctx) error {
 	if err != nil {
 		return err
 	}
+	unlockLimits := s.lockLimits() // bugs-r10-sonnet 3
+	defer unlockLimits()
 	if err := s.checkCredits(owner, org); err != nil {
 		return err
 	}
@@ -1601,7 +1603,8 @@ func (s *Server) handleResume(c *Ctx) error {
 		s.queueBoot(sb.ID, pendingBoot{Kind: kind, FirstBoot: first, Parent: parent, Cleanup: prevNode, Reason: "capacity"})
 	}
 	s.Bus.Publish(Event{Type: EvSandboxState, SandboxID: sb.ID, SandboxName: sb.Name, OwnerID: sb.OwnerID, OrgID: sb.OrgID, PreviousState: prevState, State: api.StateProvisioning})
-	s.recordStart(sb.Wallet())
+	s.recordStart(sb.Wallet(), sb.OwnerID)
+	unlockLimits()
 	sb, _ = s.SandboxByID(sb.ID)
 	if !waiting {
 		s.startBoot(sb, bootOpts{Kind: kind, FirstBoot: first, Parent: parent, Env: renv, Cleanup: prevNode, FailFast: req.FailFast})
@@ -1700,6 +1703,8 @@ func (s *Server) handleFork(c *Ctx) error {
 	if err != nil {
 		return fail(err)
 	}
+	unlockLimits := s.lockLimits() // bugs-r10-sonnet 3
+	defer unlockLimits()
 	if err := s.checkCredits(u, org); err != nil {
 		return fail(err)
 	}
@@ -1795,7 +1800,8 @@ func (s *Server) handleFork(c *Ctx) error {
 		}
 		forkWaiting = true // SIZE-011: wait for capacity
 	}
-	s.recordStart(walletOf(u, org))
+	s.recordStart(walletOf(u, org), u.ID)
+	unlockLimits()
 	if idemKey != "" {
 		s.idemFinish(u.ID, idemKey, fk.ID)
 	}

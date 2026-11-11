@@ -16,6 +16,15 @@ import (
 
 // walletAdd changes a wallet balance and writes a ledger row.
 func walletAdd(tx *sql.Tx, wallet string, delta float64, kind, reason, sandboxID, nodeID, actor string) error {
+	// bugs-r10-sonnet 11: never store a non-finite balance.
+	if math.IsNaN(delta) || math.IsInf(delta, 0) {
+		return Err(400, "invalid_amount", "amount must be a finite number.")
+	}
+	var cur float64
+	_ = tx.QueryRow(`SELECT balance FROM wallets WHERE id=?`, wallet).Scan(&cur)
+	if next := cur + delta; math.IsNaN(next) || math.IsInf(next, 0) {
+		return Err(400, "invalid_amount", "The resulting balance is out of range.")
+	}
 	now := store.Now()
 	if _, err := tx.Exec(`INSERT INTO wallets(id,balance,updated_at) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET balance=balance+excluded.balance, updated_at=excluded.updated_at`,
 		wallet, delta, now); err != nil {

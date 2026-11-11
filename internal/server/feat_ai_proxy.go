@@ -55,6 +55,19 @@ var aiTransport = &http.Transport{
 	ForceAttemptHTTP2:     true,
 }
 
+// aiCustomTransport: custom API hosts are user-chosen DNS names, so they dial
+// through the outbound guard (loopback, link-local and metadata addresses are
+// refused at connect time, as for webhooks), with no proxy to route around it
+// (bugs-r10-opus 7).
+var aiCustomTransport = &http.Transport{
+	DialContext:           guardedDial,
+	TLSHandshakeTimeout:   15 * time.Second,
+	ResponseHeaderTimeout: 10 * time.Minute,
+	IdleConnTimeout:       90 * time.Second,
+	MaxIdleConnsPerHost:   32,
+	ForceAttemptHTTP2:     true,
+}
+
 var aiTokenRe = regexp.MustCompile(aiTokenPrefix + `[0-9a-z]{40}`)
 
 // aiFindToken looks for the placeholder in the auth headers, any header,
@@ -216,6 +229,10 @@ func (s *Server) handleAIProxy(w http.ResponseWriter, r *http.Request) {
 			s.aiRecord(sb, profileID, credID, failed, t)
 		})
 	}
+	transport := http.RoundTripper(aiTransport)
+	if vendor == "custom" {
+		transport = aiCustomTransport // bugs-r10-opus 7
+	}
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL = target
@@ -228,7 +245,7 @@ func (s *Server) handleAIProxy(w http.ResponseWriter, r *http.Request) {
 			}
 			setAuth(pr.Out.Header)
 		},
-		Transport:     aiTransport,
+		Transport:     transport,
 		FlushInterval: -1,
 		ModifyResponse: func(resp *http.Response) error {
 			failed := resp.StatusCode >= 400
@@ -238,8 +255,17 @@ func (s *Server) handleAIProxy(w http.ResponseWriter, r *http.Request) {
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			record(true, aiTok{})
-			aiProxyFail(w, 502, "upstream_unreachable", "The provider did not answer: "+err.Error())
+			// The detail (refused addresses, open ports) stays in the log
+			// (bugs-r10-opus 7).
+			s.Log.Warn("ai proxy upstream failed", "sandbox", sb.ID, "vendor", vendor, "err", err)
+			aiProxyFail(w, 502, "upstream_unreachable", "The provider did not answer.")
 		},
+	}
+	if vendor == "custom" {
+		// CROWDVM_AI_CUSTOM_API_ALLOW_PRIVATE=1 (the admin's opt-in for LAN
+		// and loopback custom APIs) and --webhook-allow-local lift the guard.
+		allow := s.Cfg.WebhookAllowLocal || os.Getenv("CROWDVM_AI_CUSTOM_API_ALLOW_PRIVATE") == "1"
+		r = r.WithContext(withOutboundPolicy(r.Context(), allow))
 	}
 	rp.ServeHTTP(w, r)
 }

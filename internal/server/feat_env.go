@@ -352,6 +352,12 @@ func envCanUse(a envAccess, role, userID string) bool {
 	return !a.Restricted || role == "owner" || role == "admin" || slices.Contains(a.Members, userID)
 }
 
+// orgCanUse: userID is a member of orgID and on the access list a.
+func (s *Server) orgCanUse(a envAccess, orgID, userID string) bool {
+	role := s.memberRole(orgID, userID)
+	return role != "" && envCanUse(a, role, userID)
+}
+
 // envFind resolves an environment id or name in the scope.
 func (s *Server) envFind(sc envScope, ref string, manage bool) (*envRow, error) {
 	if err := s.envEnsureBase(sc.OwnerID, sc.Org != nil); err != nil {
@@ -1270,6 +1276,11 @@ func (s *Server) envOf(sb *Sandbox) (*envRow, *envVersion) {
 	}
 	e, err := s.envByID(sb.EnvironmentID)
 	if err != nil {
+		return nil, nil
+	}
+	// An org environment its owner may no longer use (removed from the org,
+	// or from its access list) is not delivered (bugs-r10-opus 2).
+	if e.Org && !s.orgCanUse(e.Access, e.OwnerID, sb.OwnerID) {
 		return nil, nil
 	}
 	n := e.Latest

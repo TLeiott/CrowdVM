@@ -258,6 +258,7 @@ type Server struct {
 	nodeH  http.Handler
 
 	schedMu sync.Mutex
+	limitMu sync.Mutex // lockLimits
 	sbLocks keyedMutex
 	ipLim   *ipLimiter
 	usage   *keyUsage

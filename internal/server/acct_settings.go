@@ -420,6 +420,19 @@ var mergeMoves = [][2]string{
 	{"environments", "owner_id"}, {"git_sources", "owner_id"}, {"git_repos", "owner_id"}, {"ci_links", "owner_id"},
 	{"ci_jobs", "owner_id"}, {"webhooks", "owner_id"}, {"sandbox_runs", "owner_id"}, {"org_members", "user_id"},
 	{"sandbox_ssh_keys", "user_id"},
+	// bugs-r10-sonnet 6: per-account tables. The next group has one row per
+	// account (primary key): UPDATE OR IGNORE moves it only if the target has
+	// none; mergeSingles then drops the leftover source row.
+	// account_policy stays: it holds the source's close and erase dates.
+	{"telemetry", "owner_id"}, {"account_settings", "user_id"},
+	{"wallet_policies", "wallet_id"}, {"wallet_state", "wallet_id"}, {"ai_proxy_settings", "account_id"},
+	{"otel_logs", "owner_id"}, {"starts", "wallet_id"}, {"notices", "user_id"},
+}
+
+// mergeSingles are the one-row-per-account mergeMoves entries.
+var mergeSingles = [][2]string{
+	{"telemetry", "owner_id"}, {"account_settings", "user_id"},
+	{"wallet_policies", "wallet_id"}, {"wallet_state", "wallet_id"}, {"ai_proxy_settings", "account_id"},
 }
 
 func (s *Server) handleAdminMerge(c *Ctx) error {
@@ -452,6 +465,11 @@ func (s *Server) handleAdminMerge(c *Ctx) error {
 			}
 			if n, _ := res.RowsAffected(); n > 0 {
 				moved[m[0]] = n
+			}
+		}
+		for _, m := range mergeSingles { // bugs-r10-sonnet 6
+			if _, err := tx.Exec(`DELETE FROM `+m[0]+` WHERE `+m[1]+`=?`, from.ID); err != nil && !strings.Contains(err.Error(), "no such table") {
+				return err
 			}
 		}
 		// Personal credential profiles move but stop being a default.

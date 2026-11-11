@@ -3,6 +3,7 @@ package server
 import (
 	"database/sql"
 	"encoding/json"
+	"math"
 	"strings"
 	"time"
 
@@ -254,6 +255,12 @@ func (s *Server) handleAdminGrant(c *Ctx) error {
 	}
 	if req.Amount == 0 {
 		return Err(400, "invalid_amount", "amount must not be 0.")
+	}
+	// bugs-r10-sonnet 11: refuse NaN/Inf, absurd grants and balances.
+	var cur float64
+	_ = s.DB.QueryRow(`SELECT balance FROM wallets WHERE id=?`, wallet).Scan(&cur)
+	if math.IsNaN(req.Amount) || math.Abs(req.Amount) > 1e9 || math.Abs(cur+req.Amount) > 1e12 {
+		return Err(400, "invalid_amount", "amount must be a finite number up to 1e9 and the balance must stay within 1e12.")
 	}
 	if err := s.GrantCredits(wallet, req.Amount, firstNonEmpty(req.Reason, "admin grant"), c.P.User.ID); err != nil {
 		return err

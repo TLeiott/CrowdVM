@@ -374,8 +374,25 @@ func (s *Server) foreignDeployScrub(saverID, sourceSandboxID string) proto.Guest
 	// The saver's command history (with output: printed secrets) stays on
 	// the guest disk for 90 days (bugs-r8-opus 4).
 	sc.History = true
+	// And the transcripts the coding-agent harnesses keep in the home
+	// (bugs-r10-opus 5). Their config and auth files stay as they are.
+	sc.Files = append(sc.Files, harnessHistoryFiles...)
+	sc.Dirs = append(sc.Dirs, harnessHistoryDirs...)
 	return sc
 }
+
+// Harness conversation stores in the guest home (relative to it), one set
+// per harness of internal/guest/agents: claude, codex, opencode, pi,
+// prime-agent, kimi, mistral vibe (bugs-r10-opus 5).
+var (
+	harnessHistoryFiles = []string{".claude/history.jsonl", ".codex/history.jsonl"}
+	harnessHistoryDirs  = []string{
+		".claude/projects", ".claude/sessions", ".claude/todos", ".claude/shell-snapshots", ".claude/file-history", ".claude/session-env",
+		".codex/sessions", ".codex/archived_sessions", ".codex/log",
+		".local/share/opencode/storage", ".local/share/opencode/log", ".local/share/opencode/snapshot",
+		".pi/agent/sessions", ".prime/agent/sessions", ".kimi-code/sessions", ".vibe/logs",
+	}
+)
 
 // securingErr is the answer to sandbox calls while a scrub runs.
 func securingErr() error {

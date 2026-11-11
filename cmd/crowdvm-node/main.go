@@ -437,7 +437,7 @@ func printStatus(w io.Writer, s node.Status, running bool, ui string) {
 	if s.Paused {
 		fmt.Fprintf(w, "Accepting PAUSED (no new sandboxes)\n")
 	} else if s.Drained {
-		fmt.Fprintf(w, "Accepting DRAINED by the server admin (no new sandboxes; crowdvm nodes undrain)\n")
+		fmt.Fprintf(w, "Accepting DRAINED by you or an admin (no new sandboxes; crowdvm nodes undrain)\n")
 	}
 	if s.Benchmark.Tier != "" {
 		fmt.Fprintf(w, "Benchmark score %d, tier %s  %v\n", s.Benchmark.Score, s.Benchmark.Tier, readableMap(s.Benchmark.Categories))

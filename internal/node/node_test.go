@@ -1095,3 +1095,25 @@ func TestUploadRequestedAfterRestart(t *testing.T) {
 		t.Fatalf("snapshot.uploaded events: %d", len(h.srv.eventsOf(proto.EvSnapshotUploaded)))
 	}
 }
+
+// Pausing from the local page saves only "paused": a key that
+// `crowdvm-node config set` changed in config.json while the daemon ran
+// stays (node-UI review: SetPaused saved the daemon's whole copy).
+func TestSetPausedKeepsOtherConfigEdits(t *testing.T) {
+	h := start(t, nil)
+	disk, err := LoadConfig(h.cfg.DataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	disk.CPUs = 7 // what `crowdvm-node config set cpus 7` writes
+	if err := disk.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.node.SetPaused(true); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := LoadConfig(h.cfg.DataDir)
+	if got.CPUs != 7 || !got.Paused {
+		t.Fatalf("config.json after pause: cpus=%d paused=%v, want cpus=7 paused=true", got.CPUs, got.Paused)
+	}
+}
