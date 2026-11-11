@@ -219,8 +219,9 @@ func (s *Server) evacuateStep(nodeID string) {
 	_ = s.DB.QueryRow(`SELECT COUNT(*) FROM sandboxes WHERE node_id=? AND deleted_at IS NULL AND `+offlineOnNode, nodeID).Scan(&offline)
 	left := s.sandboxesOn(nodeID, "")
 	only := s.onlyCopiesOn(nodeID)
-	if len(only) > 0 {
+	if len(only) > 0 && s.evacUploadDue(nodeID) {
 		s.Go(func(ctx context.Context) {
+			defer s.evacUploadDone(nodeID)
 			for _, id := range only {
 				s.requestUpload(ctx, id)
 			}
@@ -245,14 +246,37 @@ func (s *Server) evacuateStep(nodeID string) {
 				continue
 			}
 		}
-		if sb.SnapshotsEnabled {
-			_ = s.SetSandboxExtra(sb.ID, "evacuateFrom", nodeID)
-		}
+		// requestStop marks a new stop of ours (extra.evacuateFrom) so
+		// afterStopResume boots the sandbox on another node.
 		if _, err := s.requestStop(sb, false, "evacuated"); err != nil {
-			_ = s.SetSandboxExtra(sb.ID, "evacuateFrom", nil)
 			s.Log.Warn("evacuation stop", "sandbox", sb.ID, "node", nodeID, "err", err)
 		}
 	}
+}
+
+// evacUploadEvery throttles the upload requests an evacuation sends a node
+// (the reaper passes every few seconds; a failed upload restarts whole).
+var evacUploadEvery = 30 * time.Second
+
+// evacUploadDue: no request round is running for node id and the last one
+// started evacUploadEvery ago; it then marks one running.
+func (s *Server) evacUploadDue(nodeID string) bool {
+	s.earnMu.Lock()
+	defer s.earnMu.Unlock()
+	if s.evacUploads == nil {
+		s.evacUploads = map[string]time.Time{}
+	}
+	if at, ok := s.evacUploads[nodeID]; ok && (at.IsZero() || time.Since(at) < evacUploadEvery) {
+		return false // zero: a round is still running
+	}
+	s.evacUploads[nodeID] = time.Time{}
+	return true
+}
+
+func (s *Server) evacUploadDone(nodeID string) {
+	s.earnMu.Lock()
+	s.evacUploads[nodeID] = time.Now()
+	s.earnMu.Unlock()
 }
 
 // evacuationResume (from afterStopResume): boot a sandbox an evacuation

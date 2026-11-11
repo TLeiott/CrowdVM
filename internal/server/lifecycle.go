@@ -911,6 +911,13 @@ func (s *Server) requestStop(sb *Sandbox, force bool, reason string) (*stopOp, e
 	if err != nil || sb.DeletedAt != nil {
 		return nil, errNotFound("Sandbox")
 	}
+	// Node evacuation (nodes_evacuate.go): only a stop the evacuation itself
+	// starts resumes the sandbox elsewhere. Any other stop (the owner's, a
+	// TTL, billing, a suspension) keeps it stopped, also when it joins a stop
+	// already under way. Under sbLocks, so the two can't race.
+	if reason != "evacuated" && sb.Extra["evacuateFrom"] != nil {
+		_ = s.SetSandboxExtra(sb.ID, "evacuateFrom", nil)
+	}
 	if sb.State == api.StateArchiving && sb.StopID != "" {
 		o, err := s.stopByID(sb.StopID)
 		if err == nil && force && !o.Forced {
@@ -931,6 +938,9 @@ func (s *Server) requestStop(sb *Sandbox, force bool, reason string) (*stopOp, e
 			}
 			return o, nil
 		}
+	}
+	if reason == "evacuated" && sb.SnapshotsEnabled && sb.NodeID != "" {
+		_ = s.SetSandboxExtra(sb.ID, "evacuateFrom", sb.NodeID) // a new stop of the evacuation's own
 	}
 	now := store.Now()
 	id := "stop_" + randHex(8)
@@ -1382,11 +1392,7 @@ func (s *Server) handleStop(c *Ctx) error {
 			return Err(403, "owner_only", "Only the creator (or the organization owner) can run a stop that deletes data.")
 		}
 	}
-	if sb.Extra["evacuateFrom"] != nil {
-		// The owner's stop wins over an evacuation's move: it stays stopped.
-		_ = s.SetSandboxExtra(sb.ID, "evacuateFrom", nil)
-	}
-	op, err := s.requestStop(sb, req.Force, "")
+	op, err := s.requestStop(sb, req.Force, "") // clears an evacuation's move: it stays stopped
 	if err != nil {
 		return err
 	}

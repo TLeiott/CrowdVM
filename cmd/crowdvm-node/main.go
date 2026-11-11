@@ -664,6 +664,9 @@ in the data dir. Without the login the page is read-only.`,
 				Code string `json:"code"`
 			}
 			if _, err := daemonBody(c.Context(), cfg, "POST", "/api/login-code", "", &lc); err != nil {
+				if daemonStatus(err) == 401 {
+					return errors.New("the running node has another control token (was ui-token deleted?); restart the node, then run this again")
+				}
 				return err
 			}
 			u := uiURL(cfg) + "/login?c=" + lc.Code

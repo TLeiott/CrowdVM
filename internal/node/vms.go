@@ -154,7 +154,7 @@ func (n *Node) CreateVM(spec proto.VMSpec) (proto.VMStatus, error) {
 	case disk.HeadroomBytes < minDiskHeadroom:
 		why = fmt.Sprintf("not enough free disk (%.1f GiB usable, %d GiB kept free)", float64(disk.HeadroomBytes)/(1<<30), disk.ReserveGiB)
 	case c.EffectivePause(time.Now()).Paused:
-		why = "node is paused by its owner"
+		why = "node is paused by its owner (or outside its schedule)"
 	case u.VMs+1 > cp.MaxSandboxes:
 		why = fmt.Sprintf("max sandboxes reached (%d)", cp.MaxSandboxes)
 	case u.VCPU+spec.Size.VCPU > cp.VCPU:

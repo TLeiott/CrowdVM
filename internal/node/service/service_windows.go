@@ -64,8 +64,8 @@ func Install(o Options, out io.Writer) error {
 	defer s.Close()
 	_ = s.SetRecoveryActions([]mgr.RecoveryAction{
 		{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
-		{Type: mgr.ServiceRestart, Delay: 30 * time.Second},
-		{Type: mgr.ServiceRestart, Delay: time.Minute},
+		{Type: mgr.ServiceRestart, Delay: 5 * time.Second}, // a restart from the page counts as a failure too
+		{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
 	}, 24*60*60)
 	_ = s.SetRecoveryActionsOnNonCrashFailures(true) // also restart after a failed clean exit
 	_ = uninstallTask(io.Discard)                    // the old logon task would start a second node

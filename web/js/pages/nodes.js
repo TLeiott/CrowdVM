@@ -81,8 +81,9 @@ export default async function (ctx) {
   const update = (n, body, msg) => api.patch(`/nodes/${encodeURIComponent(n.id)}`, body).then(() => { toast(msg); load(); }, toastErr);
   function manageMenu(n) {
     return menuButton(() => [
-      n.disabled ? { label: 'Resume scheduling', ico: 'play', onClick: () => update(n, { disabled: false }, `${n.name} takes new sandboxes again`) }
-        : { label: 'Drain (no new sandboxes)', ico: 'pause', onClick: () => update(n, { disabled: true }, `${n.name} takes no new sandboxes`) },
+      evacuating(n) ? null // drained until the evacuation ends
+        : n.disabled ? { label: 'Resume scheduling', ico: 'play', onClick: () => update(n, { disabled: false }, `${n.name} takes new sandboxes again`) }
+          : { label: 'Drain (no new sandboxes)', ico: 'pause', onClick: () => update(n, { disabled: true }, `${n.name} takes no new sandboxes`) },
       !evacuating(n) ? { label: 'Evacuate…', ico: 'upload', onClick: () => evacuate(n) }
         : inGrace(n) ? { label: 'Cancel evacuation', ico: 'x', onClick: () => cancelEvacuation(n) } : null,
       { label: 'Rename…', ico: 'edit', onClick: () => editNode(n, 'name') },

@@ -324,3 +324,29 @@ func TestEvacuateUndrainRefused(t *testing.T) {
 		t.Fatalf("undrain after cancel: %s", r)
 	}
 }
+
+// A server-initiated stop (billing, suspension, account closure) that meets
+// an evacuation's marker keeps the sandbox stopped: only the evacuation's
+// own stop moves it.
+func TestEvacuateMarkerClearedByOtherStops(t *testing.T) {
+	env := servertest.New(t)
+	key := env.AdminKey
+	a := env.StartNode(servertest.NodeOptions{})
+	id := createSandbox(t, env, key, nil)
+	env.WaitState(key, id, "ready")
+	b := env.StartNode(servertest.NodeOptions{})
+	if err := env.S.SetSandboxExtra(id, "evacuateFrom", a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.S.RequestStop(id, "credits_exhausted"); err != nil {
+		t.Fatal(err)
+	}
+	env.WaitState(key, id, "archived")
+	time.Sleep(200 * time.Millisecond)
+	if r := env.Do(key, "GET", "/api/v1/sandboxes/"+id, nil); r.Str("sandbox.state") != "archived" {
+		t.Fatalf("billing-stopped sandbox moved: %s", r)
+	}
+	if b.Called("POST /v1/vms") {
+		t.Fatal("a billing-stopped sandbox was booted on another node")
+	}
+}
