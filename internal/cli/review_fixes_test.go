@@ -143,3 +143,17 @@ func TestDeleteBlockedIsNotDeleted(t *testing.T) {
 		t.Fatalf("blocked deletion: exit %d after %s\n%s%s", r.code, time.Since(start), r.out, r.err)
 	}
 }
+
+// Installed with npm: self-update points to npm instead of replacing npm's
+// binary, and version shows the channel.
+func TestNpmInstalledSelfUpdate(t *testing.T) {
+	t.Setenv("CROWDVM_NPM_LAUNCHER", "/usr/lib/node_modules/crowdvm/bin/crowdvm.js")
+	e := newEnv(t)
+	r := e.run("self-update")
+	if r.code != 0 || !strings.Contains(r.out, "npm i -g crowdvm@latest") {
+		t.Fatalf("self-update under npm: %d %s %s", r.code, r.out, r.err)
+	}
+	if r := e.run("version"); !strings.Contains(r.out, "stable") {
+		t.Fatalf("version: %s", r.out)
+	}
+}

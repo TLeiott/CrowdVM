@@ -1,0 +1,43 @@
+# Every push to main and every pull request: tests. Pull requests into
+# nightly must come from main, and into stable from nightly (branch-flow is
+# a required check on those branches).
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main, nightly, stable]
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  branch-flow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the source branch
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.base_ref }}
+          HEAD: ${{ github.head_ref }}
+          SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          [ "$EVENT" = pull_request ] || exit 0
+          case "$BASE" in
+            nightly) want=main ;;
+            stable) want=nightly ;;
+            *) exit 0 ;;
+          esac
+          if [ "$HEAD" != "$want" ] || [ "$SAME_REPO" != true ]; then
+            echo "::error::$BASE only takes pull requests from $want of this repository (this one is from $HEAD)"
+            exit 1
+          fi
+          if [ "$BASE" = stable ]; then
+            # The release would fail later: say it now.
+            node scripts/release/version.mjs stable >/dev/null
+          fi
+  tests:
+    uses: ./.github/workflows/tests.yml

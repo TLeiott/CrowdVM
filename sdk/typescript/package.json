@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "TypeScript/JavaScript SDK for CrowdVM: persistent Ubuntu VMs for coding agents on your LAN or Tailnet (Boat-compatible API).",
   "type": "module",
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE",
   "engines": {
     "node": ">=20.19"
   },

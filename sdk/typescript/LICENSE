@@ -1,0 +1,50 @@
+CrowdVM Client License (npm packages: crowdvm, @crowdvm/cli-*, @crowdvm/sdk)
+
+Copyright (c) 2026 Tim Leiott (GitHub: TLeiott). All rights reserved.
+
+This license covers the packages published to the npm registry under the
+names above (the CrowdVM command-line tool, its platform binaries and the
+TypeScript client library, together "the Package"). The CrowdVM source
+repository is under its own, separate license.
+
+1. What you may do.
+   You may install and run the Package, unchanged, and use it to work with
+   CrowdVM servers, for any personal, educational, research or other
+   non-commercial purpose. You may use the TypeScript client library in your
+   own non-commercial programs, and install it as a dependency through a
+   package manager.
+
+2. Commercial use needs permission.
+   Any commercial use requires prior written permission from the copyright
+   holder. Commercial use includes using the Package in or for a business,
+   for paid work or services, inside a product or service that is sold or
+   offered for money, or to operate CrowdVM for paying users. Ask through
+   https://github.com/TLeiott.
+
+3. What you may not do.
+   You may not, in whole or in part:
+   a. reverse engineer, decompile or disassemble the Package, or try to
+      derive its source code, except where applicable law expressly allows
+      it despite this restriction;
+   b. modify the Package or create derivative works of it;
+   c. redistribute, sell, rent, sublicense, host or otherwise make the
+      Package available to others, other than through the npm registry
+      itself (for example by listing it as a dependency);
+   d. use the Package, or anything derived from it, to train or develop
+      machine learning or artificial intelligence models;
+   e. remove or change any copyright notice or this license.
+
+4. Termination.
+   Your rights end automatically if you break this license. You must then
+   stop using the Package and delete every copy you have.
+
+5. No warranty. No liability.
+   THE PACKAGE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
+   THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+   WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF
+   OR IN CONNECTION WITH THE PACKAGE OR ITS USE.
+
+6. No other rights.
+   No right is granted except as stated here, including no patent license.

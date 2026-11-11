@@ -1,0 +1,83 @@
+# A merge into nightly or stable releases that commit: tests, then the CLI
+# for every platform and the TypeScript SDK, as a GitHub Release and on npm
+# (dist-tag nightly or latest). Nothing is stored between jobs (no artifacts,
+# no caches); old workflow runs are deleted at the end.
+name: release
+on:
+  push:
+    branches: [nightly, stable]
+  workflow_dispatch: # re-run a failed release of the branch it is started on
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  tests:
+    # Creating the branch is not a release.
+    if: github.event_name == 'workflow_dispatch' || github.event.created == false
+    uses: ./.github/workflows/tests.yml
+  release:
+    needs: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write # GitHub Release
+      id-token: write # npm provenance
+    steps:
+      - name: Only nightly and stable release
+        run: |
+          case "${{ github.ref_name }}" in nightly|stable) ;; *) echo "::error::release runs on nightly or stable only"; exit 1 ;; esac
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Version
+        id: v
+        run: |
+          channel=${{ github.ref_name == 'nightly' && 'nightly' || 'stable' }}
+          version=$(node scripts/release/version.mjs "$channel" "${{ github.run_number }}")
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing crowdvm $version ($channel)"
+      - name: Build the CLI for every platform
+        run: scripts/release/build-cli.sh "${{ steps.v.outputs.version }}" "$RUNNER_TEMP/out"
+      - name: Lay out the npm packages
+        run: node scripts/release/npm-pack.mjs "${{ steps.v.outputs.version }}" "$RUNNER_TEMP/out"
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::warning::No NPM_TOKEN secret: skipping npm (add it under Settings > Secrets and variables > Actions)"
+            exit 0
+          fi
+          tag=${{ steps.v.outputs.channel == 'nightly' && 'nightly' || 'latest' }}
+          scripts/release/publish.sh "$tag" "$RUNNER_TEMP/out"
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/release/github-release.sh "${{ steps.v.outputs.version }}" "${{ steps.v.outputs.channel }}" "$RUNNER_TEMP/out" "${{ github.sha }}"
+  cleanup:
+    needs: release
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Delete old workflow runs (keep the newest 10)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          CURRENT: ${{ github.run_id }}
+        run: |
+          gh run list -R "$REPO" --limit 200 --status completed --json databaseId --jq '.[10:] | .[].databaseId' |
+            while read -r id; do
+              [ "$id" = "$CURRENT" ] || gh run delete -R "$REPO" "$id" >/dev/null || true
+            done

@@ -159,6 +159,29 @@ func (a *App) updateNotice(cmd string) {
 		_ = os.WriteFile(path, b, 0o600)
 	}
 	if c, ok := compareVersions(v, client.Version); ok && c > 0 {
-		fmt.Fprintf(a.Err, "\nA newer crowdvm is available: %s (you have %s). Run `crowdvm self-update` to install it.\n", v, client.Version)
+		fmt.Fprintf(a.Err, "\nA newer crowdvm is available: %s (you have %s). Run `%s` to install it.\n", v, client.Version, updateCommand())
 	}
+}
+
+// npmInstalled: npm's crowdvm package started this binary (its launcher
+// sets CROWDVM_NPM_LAUNCHER). npm then owns updates.
+func npmInstalled() bool { return os.Getenv("CROWDVM_NPM_LAUNCHER") != "" }
+
+// channel: "nightly" for a nightly build, else "stable".
+func channel() string {
+	if strings.Contains(client.Version, "-nightly.") {
+		return "nightly"
+	}
+	return "stable"
+}
+
+// updateCommand is how this installation is updated.
+func updateCommand() string {
+	if !npmInstalled() {
+		return "crowdvm self-update"
+	}
+	if channel() == "nightly" {
+		return "npm i -g crowdvm@nightly"
+	}
+	return "npm i -g crowdvm@latest"
 }

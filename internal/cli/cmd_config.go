@@ -192,8 +192,8 @@ func (a *App) versionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use: "version", Short: "Print the CLI version", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return a.result(map[string]any{"version": client.Version, "os": runtime.GOOS, "arch": runtime.GOARCH},
-				func() { a.printf("crowdvm %s (%s/%s)\n", client.Version, runtime.GOOS, runtime.GOARCH) })
+			return a.result(map[string]any{"version": client.Version, "os": runtime.GOOS, "arch": runtime.GOARCH, "channel": channel(), "npm": npmInstalled()},
+				func() { a.printf("crowdvm %s (%s, %s/%s)\n", client.Version, channel(), runtime.GOOS, runtime.GOARCH) })
 		},
 	}
 }
@@ -221,6 +221,10 @@ available. It never installs anything on its own. Turn the check off with
 		Example: "  crowdvm self-update\n  crowdvm self-update --check && echo up to date",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if npmInstalled() { // npm owns this install: replacing its binary would fight npm
+				return a.result(map[string]any{"npm": true, "updated": false, "command": updateCommand()},
+					func() { a.printf("crowdvm was installed with npm; update it with: %s\n", updateCommand()) })
+			}
 			srv := a.server()
 			if srv == "" {
 				return &client.Error{Code: "not_signed_in", Message: "no CrowdVM server configured; run `crowdvm config set server URL`"}

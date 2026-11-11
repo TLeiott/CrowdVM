@@ -1,0 +1,31 @@
+# The unit test suite (Go, TypeScript and Python SDKs). The VM e2e suite
+# needs KVM and the sandbox image, so it runs on a developer machine
+# (make e2e), not here.
+name: tests
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false # no cache storage
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Go vet
+        run: go vet ./...
+      - name: Go tests
+        run: go test -count=1 ./...
+      - name: TypeScript SDK
+        working-directory: sdk/typescript
+        run: npm ci --no-audit --no-fund && npm test
+      - name: Python SDK
+        working-directory: sdk/python
+        run: python3 -m unittest
