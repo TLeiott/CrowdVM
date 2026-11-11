@@ -358,6 +358,48 @@ func (a *App) nodeAdminCmds() []*cobra.Command {
 			return nodeOut(cmd, r, err, word)
 		}),
 	}
+	var grace time.Duration
+	var cancelEvac bool
+	evacuate := &cobra.Command{
+		Use:   "evacuate NODE",
+		Short: "Take a node back: drain it, then stop its sandboxes and resume them on other nodes",
+		Long: `Drain a node and, after a grace period, stop every sandbox still on it and
+resume it on another node. Stopping saves the disk, so files survive but
+running processes do not. Sandboxes with snapshots off can't be moved and
+are erased. Their owners get a notice when the evacuation starts.
+
+Run it again to change the deadline, or with --cancel during the grace period
+(the node stays drained; undrain it separately).`,
+		Example: "  crowdvm nodes evacuate lab-desktop             # in 10 minutes\n  crowdvm nodes evacuate lab-desktop --grace 0   # now\n  crowdvm nodes evacuate lab-desktop --cancel",
+		Args:    cobra.ExactArgs(1),
+		RunE: a.withClient(func(cmd *cobra.Command, c *client.Client, args []string) error {
+			if cancelEvac {
+				r, err := c.CancelEvacuation(cmd.Context(), args[0])
+				return nodeOut(cmd, r, err, "evacuation cancelled (the node stays drained)")
+			}
+			if grace < 0 {
+				return usagef("--grace must not be negative")
+			}
+			r, err := c.EvacuateNode(cmd.Context(), args[0], int(grace.Round(time.Second).Seconds()))
+			if err != nil {
+				return err
+			}
+			n := mapOf(r["node"])
+			word := "drained; no sandboxes left to move"
+			if ev, ok := n["evacuation"].(map[string]any); ok {
+				word = "evacuating: sandboxes still here stop and move to other nodes"
+				if t, err := time.Parse(time.RFC3339Nano, s(ev["deadline"])); err == nil {
+					word += " at " + t.Local().Format("15:04")
+				}
+				if k, _ := n["noSnapshotSandboxes"].(float64); k > 0 {
+					word += fmt.Sprintf(" (%d with snapshots off will be erased)", int(k))
+				}
+			}
+			return nodeOut(cmd, r, nil, word)
+		}),
+	}
+	evacuate.Flags().DurationVar(&grace, "grace", 10*time.Minute, "time before the sandboxes are stopped (0 = now, at most 24h)")
+	evacuate.Flags().BoolVar(&cancelEvac, "cancel", false, "cancel the evacuation during its grace period")
 	var name string
 	var labels []string
 	update := &cobra.Command{
@@ -394,7 +436,7 @@ func (a *App) nodeAdminCmds() []*cobra.Command {
 	update.Flags().StringArrayVar(&labels, "label", nil, "label KEY=VALUE (repeatable; replaces all labels; --label \"\" removes them all)")
 	var force, yes bool
 	remove := &cobra.Command{
-		Use: "remove NODE", Aliases: []string{"evict", "rm"}, Short: "Remove a node (--force evicts it while it runs sandboxes)", Args: cobra.ExactArgs(1),
+		Use: "remove NODE", Aliases: []string{"evict", "rm"}, Short: "Remove a node (--force evicts it while it runs sandboxes or holds snapshots not uploaded yet)", Args: cobra.ExactArgs(1),
 		RunE: a.withClient(func(cmd *cobra.Command, c *client.Client, args []string) error {
 			if err := a.confirm(yes, "Remove node "+args[0]+"? It must join again to host sandboxes."); err != nil {
 				return err
@@ -403,7 +445,7 @@ func (a *App) nodeAdminCmds() []*cobra.Command {
 			return nodeOut(cmd, r, err, "removed")
 		}),
 	}
-	remove.Flags().BoolVar(&force, "force", false, "remove even while it runs sandboxes")
+	remove.Flags().BoolVar(&force, "force", false, "remove even while it runs sandboxes or holds the only copy of snapshots (they are lost)")
 	remove.Flags().BoolVarP(&yes, "yes", "y", false, "do not ask for confirmation")
 	tokens := &cobra.Command{
 		Use: "join-tokens", Short: "List node join tokens (admins)", Args: cobra.NoArgs,
@@ -434,7 +476,7 @@ func (a *App) nodeAdminCmds() []*cobra.Command {
 			return a.result(map[string]any{"id": args[0], "revoked": true}, func() { a.printf("revoked %s\n", args[0]) })
 		}),
 	})
-	return []*cobra.Command{drain, undrain, update, remove, tokens}
+	return []*cobra.Command{drain, undrain, evacuate, update, remove, tokens}
 }
 
 // policyValue turns a --set value into JSON: null, numbers, bools, lists.

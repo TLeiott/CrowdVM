@@ -47,6 +47,14 @@ not. Change it while it runs with `crowdvm extend ID --hours 4`; turn it off wit
 `--no-auto-stop` (on `new`, `resume` or `extend`). Forgotten always-on sandboxes keep
 holding a node, so use this sparingly.
 
+`--no-auto-stop` doesn't keep the machine for you. A node's owner can always take their
+machine back (`crowdvm nodes evacuate`). You get a notice with the time, by default
+10 minutes ahead. Stop the sandbox before then to choose the moment yourself. At that
+time CrowdVM stops it the normal way: the disk is saved, running processes are lost.
+It then resumes the sandbox on another node. If no other node can host it, it stays
+stopped and you get another notice. A `--no-snapshots` sandbox can't be moved, so it
+is erased at that time; copy out what you need after the first notice.
+
 ## Snapshots
 
 While a sandbox runs, the node takes a live snapshot every 60 seconds when something

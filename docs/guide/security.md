@@ -126,9 +126,14 @@ looks like it came from your network.
 
 ### Taking your machine back
 
+See [Node owner guide](node-owners.md#taking-the-machine-back).
+
 - `crowdvm-node config set paused true` stops new sandboxes from landing on it at once;
   running ones keep running.
 - `crowdvm nodes drain <node>` does the same from any machine.
+- `crowdvm nodes evacuate <node>` gets the machine back without losing anyone's disk:
+  after a grace period (10 minutes by default) its sandboxes are stopped, their disks
+  saved, and resumed on other nodes.
 - Stopping the node daemon takes its sandboxes offline. After 3 minutes the server
   rebuilds them on other nodes from their latest snapshots. A `stop` of such a sandbox
   waits those 3 minutes for the node, so a node that comes back in time saves its

@@ -74,7 +74,8 @@ crowdvm-node image push ubuntu-24.04-crowdvm-v<ver>
 ```
 
 `crowdvm-node status` shows the connection, the shared capacity and the running VMs.
-A local status page runs at `http://127.0.0.1:8421`.
+`crowdvm-node open` opens the node's local page, where you pause it, set a schedule
+and change what it shares.
 
 ## 4. Add a node on Windows
 

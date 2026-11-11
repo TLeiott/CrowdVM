@@ -13,3 +13,6 @@ func Uninstall(io.Writer) error        { return errors.New("uninstall-service: u
 
 // RunService: no service manager integration; handled = false.
 func RunService(func(context.Context) error) (bool, error) { return false, nil }
+
+// RestartsOnExit: no service manager here restarts the node.
+func RestartsOnExit() bool { return false }

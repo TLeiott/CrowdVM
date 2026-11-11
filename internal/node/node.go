@@ -89,10 +89,21 @@ type Node struct {
 
 	gpus []proto.PassthroughGPU // validated passthrough GPUs (gpu.go), guarded by mu
 
-	diskMu  sync.Mutex // Disk() cache (disk.go)
-	disk    DiskState
-	diskAt  time.Time
-	lastCap proto.Capacity // capacity last sent to the server
+	diskMu    sync.Mutex // Disk() cache (disk.go)
+	disk      DiskState
+	diskAt    time.Time
+	lastCap   proto.Capacity // capacity last sent to the server
+	lastPause PauseState     // effective pause last sent to the server
+
+	// From the heartbeat response (guarded by mu): what this node earned,
+	// and a running evacuation.
+	earned, earned24h float64
+	evacuation        *proto.Evacuation
+
+	// Local control (ui.go): settings saved but only applied on restart,
+	// and how to restart the daemon (nil: nothing would bring it back).
+	restartKeys map[string]bool
+	restarter   func()
 }
 
 type connState struct {
@@ -182,6 +193,7 @@ func (n *Node) Info() proto.NodeInfo {
 	gpus := n.gpusLocked()
 	n.mu.Unlock()
 	vg, _ := n.drv.(interface{ VirGL() bool })
+	ps := c.EffectivePause(time.Now())
 	return proto.NodeInfo{
 		NodeID: c.NodeID, Name: c.NodeName(), Version: Version,
 		OS: runtime.GOOS, Arch: runtime.GOARCH, Driver: n.drv.Name(),
@@ -193,7 +205,7 @@ func (n *Node) Info() proto.NodeInfo {
 		// process driver: its "guests" are host processes (tests only).
 		GuestChannel: n.drv.Name() != "process",
 		GPUs:         gpus, VirGL: vg != nil && vg.VirGL(),
-		Paused: c.Paused,
+		Paused: ps.Paused, PauseReason: ps.Reason,
 	}
 }
 
@@ -435,8 +447,11 @@ func (n *Node) heartbeatLoop(ctx context.Context) {
 func (n *Node) heartbeatPayload(withInfo bool) proto.Heartbeat {
 	hb := proto.Heartbeat{Usage: n.Usage(), VMs: n.Statuses()}
 	cp, _ := n.capacity()
+	ps := n.config().EffectivePause(time.Now())
+	ps.Until = time.Time{}
 	n.mu.Lock()
-	withInfo = withInfo || n.infoDirty || cp != n.lastCap // e.g. the disk filled up
+	// e.g. the disk filled up, or the schedule crossed a boundary
+	withInfo = withInfo || n.infoDirty || cp != n.lastCap || ps != n.lastPause
 	n.infoDirty = false
 	n.mu.Unlock()
 	if withInfo {
@@ -444,6 +459,7 @@ func (n *Node) heartbeatPayload(withInfo bool) proto.Heartbeat {
 		hb.Info = &info
 		n.mu.Lock()
 		n.lastCap = info.Capacity
+		n.lastPause = PauseState{Paused: info.Paused, Reason: info.PauseReason}
 		n.mu.Unlock()
 	}
 	return hb
@@ -471,6 +487,9 @@ func (n *Node) heartbeat(ctx context.Context, withInfo bool) error {
 
 func (n *Node) applyServerSettings(hr proto.HeartbeatResponse) {
 	n.drained.Store(hr.Drained)
+	n.mu.Lock()
+	n.earned, n.earned24h, n.evacuation = hr.EarnedCredits, hr.Earned24h, hr.Evacuation
+	n.mu.Unlock()
 	switch {
 	case hr.SnapshotIntervalSec > 0:
 		n.snapEvery.Store(int64(time.Duration(hr.SnapshotIntervalSec) * time.Second))

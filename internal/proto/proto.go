@@ -219,6 +219,9 @@ type NodeInfo struct {
 	Images     []string `json:"images,omitempty"` // base image ids cached locally
 	// Paused: the owner stopped new sandboxes on this node (running ones stay).
 	Paused bool `json:"paused,omitempty"`
+	// PauseReason says why Paused is set ("owner", "schedule", "hold"), so
+	// the dashboard can show it. Display only; the scheduler reads Paused.
+	PauseReason string `json:"pauseReason,omitempty"`
 	// LazyChain: the node boots a VM before its snapshot chain is local
 	// (LIFE-013): missing layers are read on demand from the server while
 	// the node downloads them (VMStatus.Hydrating until done). The server
@@ -554,9 +557,23 @@ type HeartbeatResponse struct {
 	// SnapshotIntervalSec: periodic live snapshot interval for running VMs
 	// (0 = node default 60 s, < 0 = disabled).
 	SnapshotIntervalSec int `json:"snapshotIntervalSec,omitempty"`
-	// Drained: the server's admin drained this node (no new sandboxes),
-	// shown in the node's status (bugs-r6-opus 7).
+	// Drained: the node's owner or an admin drained this node (no new
+	// sandboxes), shown in the node's status (bugs-r6-opus 7).
 	Drained bool `json:"drained,omitempty"`
+	// EarnedCredits: credits this node earned its owner in total, and in the
+	// last 24 hours (shown on the node's local page).
+	EarnedCredits float64 `json:"earnedCredits,omitempty"`
+	Earned24h     float64 `json:"earned24h,omitempty"`
+	// Evacuation: the owner or an admin is reclaiming this node: at Deadline
+	// its sandboxes are stopped and resumed on other nodes (node-ui design).
+	Evacuation *Evacuation `json:"evacuation,omitempty"`
+}
+
+// Evacuation of a node: sandboxes still on it at Deadline are stopped (their
+// disks saved) and resumed elsewhere; --no-snapshots sandboxes are erased.
+type Evacuation struct {
+	StartedAt time.Time `json:"startedAt"`
+	Deadline  time.Time `json:"deadline"`
 }
 
 // GuestEvent is one line of the guest's GET /v1/internal/events/stream NDJSON.

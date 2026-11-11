@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -63,10 +64,11 @@ func Install(o Options, out io.Writer) error {
 	defer s.Close()
 	_ = s.SetRecoveryActions([]mgr.RecoveryAction{
 		{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
-		{Type: mgr.ServiceRestart, Delay: 30 * time.Second},
-		{Type: mgr.ServiceRestart, Delay: time.Minute},
+		{Type: mgr.ServiceRestart, Delay: 5 * time.Second}, // a restart from the page counts as a failure too
+		{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
 	}, 24*60*60)
-	_ = uninstallTask(io.Discard) // the old logon task would start a second node
+	_ = s.SetRecoveryActionsOnNonCrashFailures(true) // also restart after a failed clean exit
+	_ = uninstallTask(io.Discard)                    // the old logon task would start a second node
 	fmt.Fprintf(out, "installed Windows service %s (automatic start)\n", Name)
 	if o.NoStart {
 		return nil
@@ -139,6 +141,13 @@ func (h *handler) Execute(_ []string, req <-chan svc.ChangeRequest, st chan<- sv
 		select {
 		case h.err = <-done:
 			cancel()
+			if errors.Is(h.err, ErrRestart) {
+				// Exit without reporting SERVICE_STOPPED: the SCM counts that
+				// as a crash and runs the recovery actions (restart in 5 s).
+				// A clean stop with an exit code would only be recovered with
+				// the non-crash-failures flag, which older installs lack.
+				os.Exit(1)
+			}
 			if h.err != nil {
 				return true, 1 // non-zero exit: the recovery actions restart it
 			}
@@ -205,3 +214,7 @@ func schtasks(out io.Writer, args ...string) error {
 	}
 	return nil
 }
+
+// RestartsOnExit is false outside RunService; inside it, returning
+// ErrRestart exits like a crash and the recovery actions restart the node.
+func RestartsOnExit() bool { return false }

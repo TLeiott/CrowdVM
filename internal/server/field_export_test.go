@@ -17,3 +17,14 @@ func SetNodeReconnectWindow(d time.Duration) func() {
 	nodeReconnectWindow = d
 	return func() { nodeReconnectWindow = old }
 }
+
+// RequestStop runs a server-initiated stop with reason (tests: billing,
+// suspension and closure stops call requestStop like this).
+func (s *Server) RequestStop(id, reason string) error {
+	sb, err := s.SandboxByID(id)
+	if err != nil {
+		return err
+	}
+	_, err = s.requestStop(sb, false, reason)
+	return err
+}

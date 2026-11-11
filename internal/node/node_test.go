@@ -438,7 +438,7 @@ func TestPeriodicSnapshotAndDirect(t *testing.T) {
 
 func TestUI(t *testing.T) {
 	h := start(t, nil)
-	srv := httptest.NewServer(h.node.UIHandler())
+	srv := httptest.NewServer(h.node.UIHandler("tok"))
 	defer srv.Close()
 	resp, err := http.Get(srv.URL + "/")
 	if err != nil || resp.StatusCode != 200 {
@@ -459,8 +459,16 @@ func TestUI(t *testing.T) {
 	if resp.StatusCode != 403 {
 		t.Fatalf("pause without header: %d", resp.StatusCode)
 	}
+	// ... and the local control token.
 	req, _ := http.NewRequest("POST", srv.URL+"/api/pause", strings.NewReader(`{"paused":true}`))
 	req.Header.Set(UIHeader, "1")
+	resp, _ = http.DefaultClient.Do(req)
+	if resp.StatusCode != 401 {
+		t.Fatalf("pause without token: %d", resp.StatusCode)
+	}
+	req, _ = http.NewRequest("POST", srv.URL+"/api/pause", strings.NewReader(`{"paused":true}`))
+	req.Header.Set(UIHeader, "1")
+	req.Header.Set("Authorization", "Bearer tok")
 	resp, _ = http.DefaultClient.Do(req)
 	if resp.StatusCode != 200 || !h.node.config().Paused {
 		t.Fatalf("pause: %d", resp.StatusCode)

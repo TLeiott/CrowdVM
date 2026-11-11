@@ -529,6 +529,8 @@ func (s *Server) nodeRoutes() {
 	s.API("GET /nodes/{nodeId}", ActionAny, s.handleGetNode)
 	s.API("PATCH /nodes/{nodeId}", ActionAny, s.handleUpdateNode)
 	s.API("DELETE /nodes/{nodeId}", ActionAny, s.handleDeleteNode)
+	s.API("POST /nodes/{nodeId}/evacuate", ActionAny, s.handleEvacuateNode)
+	s.API("DELETE /nodes/{nodeId}/evacuate", ActionAny, s.handleCancelEvacuation)
 	s.API("GET /join-tokens", ActionAny, s.handleListJoinTokens)
 	s.API("POST /join-tokens", ActionAny, s.handleCreateJoinToken)
 	s.API("DELETE /join-tokens/{tokenId}", ActionAny, s.handleRevokeJoinToken)
@@ -564,6 +566,8 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := proto.HeartbeatResponse{}
 	_ = s.DB.QueryRow(`SELECT disabled FROM nodes WHERE id=?`, c.ID).Scan(&resp.Drained)
+	resp.EarnedCredits, resp.Earned24h = s.nodeEarned(c.ID)
+	resp.Evacuation = s.evacuation(c.ID)
 	switch {
 	case s.Cfg.SnapshotInterval < 0:
 		resp.SnapshotIntervalSec = -1
@@ -928,7 +932,13 @@ func (s *Server) nodeJSON(n *Node, detail bool) map[string]any {
 		"gpus": len(n.Info.Bench.GPUs), "nested": n.Info.Bench.Virtualization.Nested, "accel": n.Info.Bench.Virtualization.Accel,
 		"directHost": nz(n.Info.DirectHost), "images": n.Info.Images,
 		"createdAt": ts(n.CreatedAt), "lastSeenAt": nil, "connectedAt": nil, "sandboxes": reserved.VMs,
-		"info": n.Info, "owner": nil,
+		"info": n.Info, "owner": nil, "paused": n.Info.Paused, "pauseReason": nil, "evacuation": nil,
+	}
+	if n.Info.Paused {
+		m["pauseReason"] = nz(n.Info.PauseReason)
+	}
+	if ev := s.evacuation(n.ID); ev != nil {
+		m["evacuation"] = map[string]any{"startedAt": ts(ev.StartedAt), "deadline": ts(ev.Deadline)}
 	}
 	if n.OwnerID != "" {
 		if u, err := s.UserByID(n.OwnerID); err == nil {
@@ -961,6 +971,9 @@ func (s *Server) nodeJSON(n *Node, detail bool) map[string]any {
 			sbs = []string{}
 		}
 		m["sandboxIds"] = sbs
+		var noSnap int
+		_ = s.DB.QueryRow(`SELECT COUNT(*) FROM sandboxes WHERE node_id=? AND deleted_at IS NULL AND snapshots_enabled=0 AND `+onNodeStates, n.ID).Scan(&noSnap)
+		m["noSnapshotSandboxes"] = noSnap
 	}
 	return m
 }
@@ -1004,6 +1017,7 @@ func (s *Server) handleGetNode(c *Ctx) error {
 		// (bugs-r7-sonnet 3).
 		delete(m, "remoteAddr")
 		delete(m, "earnedCredits")
+		delete(m, "noSnapshotSandboxes")
 		own := []string{}
 		if rows, err := s.DB.Query(`SELECT id FROM sandboxes WHERE node_id=? AND owner_id=? AND deleted_at IS NULL AND state NOT IN ('archived','error','cancelled')`, n.ID, c.P.User.ID); err == nil {
 			for rows.Next() {
@@ -1039,6 +1053,9 @@ func (s *Server) handleUpdateNode(c *Ctx) error {
 	}
 	if err := c.Bind(&req); err != nil {
 		return err
+	}
+	if req.Disabled != nil && !*req.Disabled && s.evacuation(n.ID) != nil {
+		return Err(409, "node_evacuating", "The node is being evacuated: cancel the evacuation first.")
 	}
 	if req.Trust != nil {
 		if !c.P.IsAdmin() {
@@ -1085,6 +1102,10 @@ func (s *Server) handleDeleteNode(c *Ctx) error {
 	if r := s.reservedOn(n.ID); r.VMs > 0 && c.Query("force") != "true" {
 		return Err(409, "node_busy", "The node still runs sandboxes. Stop them first or pass force=true.")
 	}
+	if only := s.onlyCopiesOn(n.ID); len(only) > 0 && c.Query("force") != "true" {
+		return ErrD(409, "node_holds_snapshots", fmt.Sprintf("%d snapshot(s) exist only on this node; wait for them to upload, or pass force=true (they are lost).", len(only)),
+			map[string]any{"snapshots": len(only)})
+	}
 	// m5: a removed node can no longer be reached. When online it erases
 	// every snapshot copy the server can do without (deleted ones, and ones
 	// stored on the server) first. Copies it keeps stay recorded as its
@@ -1102,6 +1123,10 @@ func (s *Server) handleDeleteNode(c *Ctx) error {
 		_ = s.DB.QueryRow(`SELECT COUNT(*) FROM snapshot_locations WHERE node_id=?`, n.ID).Scan(&kept)
 	}
 	_, _ = s.DB.Exec(`DELETE FROM nodes WHERE id=?`, n.ID)
+	_, _ = s.DB.Exec(`DELETE FROM node_evacuations WHERE node_id=?`, n.ID)
+	s.earnMu.Lock()
+	delete(s.earned, n.ID)
+	s.earnMu.Unlock()
 	s.fallBackFromRemovedNode()
 	// m-b: pins to the removed node would keep its sandboxes from ever
 	// being placed again.

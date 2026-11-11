@@ -278,6 +278,10 @@ type Server struct {
 
 	hist *histState // coordinator copy of command history (feat_history.go)
 
+	earnMu      sync.Mutex
+	evacUploads map[string]time.Time    // node -> last evacuation upload round (zero: running), guarded by earnMu
+	earned      map[string]nodeEarnings // node id -> cached earnings (nodes_evacuate.go)
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
