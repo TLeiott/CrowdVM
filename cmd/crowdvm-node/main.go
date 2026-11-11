@@ -171,8 +171,18 @@ func joinCmd(g *globals) *cobra.Command {
 				fmt.Printf("benchmark: score %d, tier %s\n", b.Score, b.Tier)
 			}
 			cp := cfg.Capacity()
-			fmt.Printf("sharing: %d vCPU, %d MiB memory, %d GiB disk, up to %d sandboxes\n", cp.VCPU, cp.MemoryMiB, cp.DiskGiB, cp.MaxSandboxes)
-			fmt.Printf("start it with: crowdvm-node run   (or crowdvm-node install-service)\n")
+			plural := "es"
+			if cp.MaxSandboxes == 1 {
+				plural = ""
+			}
+			fmt.Printf("sharing: %d vCPU, %d MiB memory, %d GiB disk, up to %d sandbox%s\n", cp.VCPU, cp.MemoryMiB, cp.DiskGiB, cp.MaxSandboxes, plural)
+			// A non-default data dir must be passed again, or run/install-service
+			// would look for a config that is not there (field test).
+			cmdName := "crowdvm-node"
+			if g.dataDir != node.DefaultDataDir() {
+				cmdName += " --data-dir " + shellArg(g.dataDir)
+			}
+			fmt.Printf("start it with: %s run   (or %s install-service)\n", cmdName, cmdName)
 			return nil
 		},
 	}
@@ -580,4 +590,12 @@ func readableMap(m map[string]string) string {
 		return "-"
 	}
 	return strings.Join(pairs, ", ")
+}
+
+// shellArg quotes s for a copy-and-paste command line when it needs it.
+func shellArg(s string) string {
+	if s != "" && !strings.ContainsAny(s, " \t'\"$`\\;&|<>()*?!#~") {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

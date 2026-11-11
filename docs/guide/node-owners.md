@@ -134,8 +134,15 @@ server runs with `--enforce-credits`, a negative balance blocks nothing.
 | Remove the node | `crowdvm nodes remove <node>` (`--force` while it still hosts sandboxes), then `crowdvm-node uninstall-service` |
 | Rename it | `crowdvm nodes update <node> --name lab-gpu` |
 
+While it hosts sandboxes, a Linux node keeps the machine from going to sleep on its
+own (a systemd "sleep" inhibitor, listed by `systemd-inhibit --list`). Closing a
+laptop's lid still suspends it, and a node without sandboxes sleeps as usual. Turn it
+off with `crowdvm-node config set keep-awake false` and a restart.
+
 Sandboxes on a node that goes offline for more than 3 minutes are rebuilt on other
-nodes from their latest snapshot. Data written after that snapshot (up to about a
+nodes from their latest snapshot. A sandbox pinned to that node (`--node`, labels) is
+not: it waits for the node, and its owner gets a notice. `crowdvm resume <id> --node
+<other>` moves it from its latest snapshot. Data written after that snapshot (up to about a
 minute) is lost, so drain a node before you shut it down for long.
 
 Removing a node that is online erases the snapshot copies it holds that the server

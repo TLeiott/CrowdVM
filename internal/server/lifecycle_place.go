@@ -95,9 +95,13 @@ func (s *Server) neverFitsErr(req schedReq, orig error) error {
 			ok = append(ok, sz.Name)
 		}
 	}
-	msg := fmt.Sprintf("No node in this pool can host a %s sandbox (%d vCPU, %d GiB memory).", req.Size.Name, req.Size.VCPU, req.Size.MemoryMiB/1024)
+	where := "No node in this pool"
+	if !req.Placement.empty() || req.Only != "" {
+		where = "No node that matches the placement" // --node, --gpu, ...: not the whole pool
+	}
+	msg := fmt.Sprintf("%s can host a %s sandbox (%d vCPU, %d GiB memory).", where, req.Size.Name, req.Size.VCPU, req.Size.MemoryMiB/1024)
 	if len(ok) > 0 {
-		msg += " Available sizes: " + strings.Join(ok, ", ") + ". See `crowdvm limits`."
+		msg += " Sizes that fit: " + strings.Join(ok, ", ") + " (--type " + ok[len(ok)-1] + "). See `crowdvm limits`."
 	} else {
 		msg += " No node is online that this sandbox may use."
 	}
@@ -330,6 +334,13 @@ AND head_snapshot_id IS NOT NULL AND COALESCE(degraded_since,updated_at)<?`, cut
 		}
 		spec, _ := api.SizeByName(sb.Size)
 		if !s.couldEverPlace(schedReq{Size: spec, Placement: sb.Placement, Exclude: sb.NodeID, Owners: s.ownersFor(sb.OwnerID, sb.OrgID)}) {
+			// Pinned (--node, labels, ...) to the lost node: it waits for it.
+			// Say so, or it just sits in node_offline (field test).
+			if !sb.Placement.empty() && s.couldEverPlace(schedReq{Size: spec, Exclude: sb.NodeID, Owners: s.ownersFor(sb.OwnerID, sb.OrgID)}) {
+				s.notifySandbox(sb, "rebuild_blocked", "warning", 24*time.Hour, "Sandbox waits for its node",
+					"The node hosting "+sb.Name+" is offline, and the sandbox's placement allows no other node, so CrowdVM does not rebuild it elsewhere. "+
+						"Wait for the node, or move it with a placement another node meets: crowdvm resume "+sb.ID+" --node <node> (changes after its latest snapshot are lost).")
+			}
 			continue
 		}
 		lost := sb.NodeID

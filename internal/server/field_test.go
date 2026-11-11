@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -64,5 +65,29 @@ func TestNodeLostDuringServerRestartGoesOffline(t *testing.T) {
 	r := env.WaitFor(key, "/api/v1/sandboxes/"+id, "sandbox.health", 5*time.Second, "degraded")
 	if r.Str("sandbox.state") != "error" || r.Str("sandbox.healthReason") != "node_offline" {
 		t.Fatalf("after the node went missing: %s", r)
+	}
+}
+
+// Field test: a sandbox created with --node on a laptop that fell asleep sat
+// in node_offline for good with no word why. It still waits (the pin is a
+// hard requirement), but its owner is told how to move it.
+func TestPinnedSandboxOnLostNodeTellsOwner(t *testing.T) {
+	env := servertest.New(t, func(c *server.Config) { c.NodeLostGrace = 200 * time.Millisecond; c.NodeTimeout = time.Second })
+	a := env.StartNode(servertest.NodeOptions{Name: "a"})
+	env.StartNode(servertest.NodeOptions{Name: "b"})
+	key := env.AdminKey
+	id := createSandbox(t, env, key, map[string]any{"placement": map[string]any{"node": "a"}})
+	env.WaitState(key, id, "ready")
+	if _, err := a.PeriodicSnapshot(id); err != nil {
+		t.Fatal(err)
+	}
+	env.WaitFor(key, "/api/v1/sandboxes/"+id+"/snapshots/latest", "snapshot.uploaded", 5*time.Second, "true")
+	a.Close()
+	env.WaitFor(key, "/api/v1/sandboxes/"+id, "sandbox.state", 10*time.Second, "error")
+	env.Eventually("rebuild_blocked notice", func() bool {
+		return strings.Contains(string(env.Do(key, "GET", "/api/v1/notices", nil).Body), "rebuild_blocked")
+	})
+	if r := env.Do(key, "GET", "/api/v1/sandboxes/"+id, nil); r.Str("sandbox.state") != "error" {
+		t.Fatalf("a pinned sandbox moved: %s", r)
 	}
 }
