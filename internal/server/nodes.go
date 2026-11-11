@@ -728,6 +728,10 @@ func (s *Server) handleBlobPut(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleBlobGet(w http.ResponseWriter, r *http.Request) {
 	kind, id := r.PathValue("kind"), r.PathValue("id")
+	if n := nodeFrom(r); n == nil || !s.mayFetch(n.ID, kind, id) {
+		http.Error(w, "blob not found", 404) // not this node's to read (secure layer)
+		return
+	}
 	bi, err := s.Blobs.Stat(kind, id)
 	if err != nil {
 		http.Error(w, "blob not found", 404)
@@ -746,6 +750,9 @@ func (s *Server) handleBlobGet(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSnapshotMeta(w http.ResponseWriter, r *http.Request) {
 	snap, err := s.SnapshotByID(r.PathValue("id"))
+	if n := nodeFrom(r); err == nil && (n == nil || !s.mayFetch(n.ID, store.BlobSnapshot, snap.ID)) {
+		err = errors.New("not this node's")
+	}
 	if err != nil {
 		http.Error(w, "snapshot not found", 404)
 		return
@@ -1221,4 +1228,64 @@ func (s *Server) handleRevokeJoinToken(c *Ctx) error {
 		return err
 	}
 	return c.OK(200, "join_token.revoked", map[string]any{"id": c.Param("tokenId")})
+}
+
+// blobGrants: snapshot layers a node may download because the server sent
+// it a boot or an inspector that needs them (node id + "/" + snapshot id ->
+// expiry). Any node token used to read any sandbox's disk (secure layer).
+var blobGrants sync.Map
+
+func (s *Server) grantChain(nodeID, snapID string) {
+	exp := time.Now().Add(24 * time.Hour)
+	for _, id := range s.snapshotChain(snapID) {
+		blobGrants.Store(nodeID+"/"+id, exp)
+	}
+}
+
+// mayFetch: node nodeID may read blob kind/id. Images are public to nodes;
+// a snapshot only when the node was granted its chain, holds it already, or
+// it is in the chain of a sandbox placed on the node (grants are in memory:
+// this covers a server restart).
+func (s *Server) mayFetch(nodeID, kind, id string) bool {
+	if kind == store.BlobImage {
+		return true
+	}
+	if v, ok := blobGrants.Load(nodeID + "/" + id); ok && time.Now().Before(v.(time.Time)) {
+		return true
+	}
+	if s.hasLocation(id, nodeID) {
+		return true
+	}
+	rows, err := s.DB.Query(`SELECT id FROM sandboxes WHERE node_id=? AND deleted_at IS NULL`, nodeID)
+	if err != nil {
+		return false
+	}
+	var ids []string
+	for rows.Next() {
+		var sid string
+		if rows.Scan(&sid) == nil {
+			ids = append(ids, sid)
+		}
+	}
+	rows.Close()
+	for _, sid := range ids {
+		sb, err := s.SandboxByID(sid)
+		if err != nil {
+			continue
+		}
+		heads := []string{sb.HeadSnapshotID}
+		if v, _ := sb.Extra["bootParent"].(string); v != "" {
+			heads = append(heads, v)
+		}
+		if pb := pendingBootOf(sb); pb != nil && pb.Parent != "" {
+			heads = append(heads, pb.Parent)
+		}
+		for _, h := range heads {
+			if h != "" && slices.Contains(s.snapshotChain(h), id) {
+				s.grantChain(nodeID, h)
+				return true
+			}
+		}
+	}
+	return false
 }

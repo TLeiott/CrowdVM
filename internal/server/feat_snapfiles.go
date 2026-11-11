@@ -180,6 +180,7 @@ func (f *snapFiles) boot(sn *Snapshot, in *snapInsp) {
 	var st struct {
 		ID string `json:"id"`
 	}
+	f.s.grantChain(conn.ID, sn.ID)
 	err = conn.Do(ctx, "POST", "/v1/inspect", map[string]any{"snapshotId": sn.ID, "imageId": sn.ImageID, "token": randToken(32)}, &st)
 	if err != nil {
 		var ne *NodeError

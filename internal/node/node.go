@@ -200,6 +200,9 @@ func (n *Node) Info() proto.NodeInfo {
 // Run connects to the server (reconnecting with backoff) and runs the
 // background loops until ctx is done.
 func (n *Node) Run(ctx context.Context) error {
+	if err := noDumps(); err != nil {
+		n.log.Warn("cannot disable core dumps", "err", err)
+	}
 	c := n.config()
 	if c.Server == "" || c.NodeToken == "" {
 		return ErrNotJoined

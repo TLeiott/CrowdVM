@@ -412,6 +412,7 @@ func (s *Server) boot(ctx context.Context, id string, o bootOpts) (err error) {
 		// LIFE-013: a lazy-chain node boots at once and reads missing
 		// layers from the server; only their upload is awaited.
 		lazy := n != nil && n.Info.LazyChain
+		s.grantChain(node.ID, parent) // the node may download these layers (mayFetch)
 		if err := s.ensureChain(ctx, id, node, parent, lazy); err != nil {
 			return err
 		}

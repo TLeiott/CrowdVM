@@ -1027,6 +1027,9 @@ func (d *Driver) spawn(m *machine, dir string) (err error) {
 		return err
 	}
 	fmt.Fprintf(logf, "--- launch %s: %s %s\n", time.Now().Format(time.RFC3339), d.qemu, strings.Join(args, " "))
+	// The serial console carries the guest's boot and service output; keep
+	// only the tail across boots (secure layer: less on the node's disk).
+	trimTail(filepath.Join(d.vmDir(m.id), "console.log"), 256<<10)
 	cmd := exec.Command(d.qemu, args...)
 	cmd.Stdout, cmd.Stderr = logf, logf
 	cmd.SysProcAttr = sysProcAttr()
@@ -1536,4 +1539,20 @@ func logTail(path string) string {
 		b = b[len(b)-800:]
 	}
 	return strings.TrimSpace(string(b))
+}
+
+// trimTail keeps only the last max bytes of file path.
+func trimTail(path string, max int64) {
+	st, err := os.Stat(path)
+	if err != nil || st.Size() <= max {
+		return
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	buf := make([]byte, max)
+	n, _ := f.ReadAt(buf, st.Size()-max)
+	f.Close()
+	_ = os.WriteFile(path, buf[:n], 0o600)
 }
