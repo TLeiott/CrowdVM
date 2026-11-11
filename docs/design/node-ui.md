@@ -1,6 +1,9 @@
 # Node UI: offering a machine to the pool
 
-Status: proposal (2026-11-11). No code changes yet.
+Status: implemented on branch `feat/node-ui` (2026-11-11): Phases 1–4. Differences
+from the text below: evacuation needed no billing change (a stopped sandbox isn't
+metered), notices give times in UTC, and the dashboard has no per-node page, so the
+`crowdvm-node open` hint sits on the node card. Not done: the "Later" items.
 
 ## Summary
 
