@@ -404,6 +404,7 @@ func (s *Server) handleNodeRegister(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		name = "node-" + randToken(4)
 	}
+	nodeNameMu.Lock() // the name check and its write are one step (bugs-r12-sonnet 2)
 	name = s.uniqueNodeName(name, nodeID)
 	info := req.Info
 	if nodeID == "" {
@@ -415,6 +416,7 @@ func (s *Server) handleNodeRegister(w http.ResponseWriter, r *http.Request) {
 		info.NodeID = nodeID
 		_, err = s.DB.Exec(`UPDATE nodes SET name=?, token_hash=?, info=?, remote_addr=? WHERE id=?`, name, hashToken(tok), mustJSON(info), s.clientIP(r), nodeID)
 	}
+	nodeNameMu.Unlock()
 	if err != nil {
 		_, _ = s.DB.Exec(`UPDATE join_tokens SET uses=uses-1 WHERE id=?`, jtID) // the use was not taken
 		api.WriteError(w, Err(500, "internal_error", err.Error()))
@@ -422,6 +424,25 @@ func (s *Server) handleNodeRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Log.Info("node registered", "node", nodeID, "name", name, "owner", owner)
 	writeRawJSON(w, 200, proto.RegisterResponse{NodeID: nodeID, NodeToken: tok})
+}
+
+// nodeNameMu holds uniqueNodeName and the write of its result together.
+var nodeNameMu sync.Mutex
+
+// reportedNodeName is the name to store for a node that reports name in its
+// info, or "" to keep the stored one: only a change of the node's own name
+// renames it, so an administrator's rename stays (bugs-r12-sonnet 4). Call
+// with nodeNameMu held.
+func (s *Server) reportedNodeName(id, name string) string {
+	if name == "" {
+		return ""
+	}
+	var old string
+	_ = s.DB.QueryRow(`SELECT COALESCE(json_extract(info,'$.name'),'') FROM nodes WHERE id=?`, id).Scan(&old)
+	if old == name {
+		return ""
+	}
+	return s.uniqueNodeName(name, id)
 }
 
 // uniqueNodeName: want, or want-2, want-3, ... when another node has that
@@ -578,11 +599,10 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if hb.Info != nil {
 		info := *hb.Info
 		info.NodeID = c.ID
-		name := info.Name
-		if name != "" {
-			name = s.uniqueNodeName(name, c.ID)
-		}
+		nodeNameMu.Lock()
+		name := s.reportedNodeName(c.ID, info.Name)
 		_, _ = s.DB.Exec(`UPDATE nodes SET usage=?, info=?, name=CASE WHEN ?<>'' THEN ? ELSE name END, last_seen_at=? WHERE id=?`, mustJSON(hb.Usage), mustJSON(info), name, name, now, c.ID)
+		nodeNameMu.Unlock()
 	} else {
 		_, _ = s.DB.Exec(`UPDATE nodes SET usage=?, last_seen_at=? WHERE id=?`, mustJSON(hb.Usage), now, c.ID)
 	}
@@ -892,11 +912,10 @@ func (s *Server) afterNodeConnect(ctx context.Context, c *NodeConn) {
 	var info proto.NodeInfo
 	if err := c.Do(cctx, "GET", "/v1/info", nil, &info); err == nil {
 		info.NodeID = c.ID
-		name := info.Name
-		if name != "" {
-			name = s.uniqueNodeName(name, c.ID)
-		}
+		nodeNameMu.Lock()
+		name := s.reportedNodeName(c.ID, info.Name)
 		_, _ = s.DB.Exec(`UPDATE nodes SET info=?, name=CASE WHEN ?<>'' THEN ? ELSE name END WHERE id=?`, mustJSON(info), name, name, c.ID)
+		nodeNameMu.Unlock()
 	}
 	cancel()
 	s.reconcileNodeSnapshots(ctx, c)                             // copies of deleted data it kept
@@ -993,8 +1012,9 @@ func (s *Server) nodeJSON(n *Node, detail bool) map[string]any {
 		"trust": map[bool]string{true: "trusted", false: "community"}[n.Trusted],
 		"os":    n.Info.OS, "arch": n.Info.Arch, "driver": n.Info.Driver, "version": n.Info.Version,
 		"labels": n.AllLabels(), "capacity": n.Info.Capacity, "usage": n.Usage, "reserved": reserved,
-		"free": proto.Capacity{VCPU: n.Info.Capacity.VCPU - reserved.VCPU, MemoryMiB: n.Info.Capacity.MemoryMiB - reserved.MemoryMiB,
-			DiskGiB: n.Info.Capacity.DiskGiB - reserved.DiskGiB, MaxSandboxes: n.Info.Capacity.MaxSandboxes - reserved.VMs},
+		// Never below 0: limits lowered under what runs (bugs-r12-opus 5).
+		"free": proto.Capacity{VCPU: max(n.Info.Capacity.VCPU-reserved.VCPU, 0), MemoryMiB: max(n.Info.Capacity.MemoryMiB-reserved.MemoryMiB, 0),
+			DiskGiB: max(n.Info.Capacity.DiskGiB-reserved.DiskGiB, 0), MaxSandboxes: max(n.Info.Capacity.MaxSandboxes-reserved.VMs, 0)},
 		"tier": n.Info.Bench.Tier, "score": n.Info.Bench.Score, "categories": n.Info.Bench.Categories,
 		"gpus": len(n.Info.Bench.GPUs), "nested": n.Info.Bench.Virtualization.Nested, "accel": n.Info.Bench.Virtualization.Accel,
 		"directHost": nz(n.Info.DirectHost), "images": n.Info.Images,
@@ -1135,10 +1155,14 @@ func (s *Server) handleUpdateNode(c *Ctx) error {
 		s.audit(c, "node.trust", n.ID, map[string]any{"trust": *req.Trust})
 	}
 	if req.Name != nil && strings.TrimSpace(*req.Name) != "" {
-		if nm := strings.TrimSpace(*req.Name); s.uniqueNodeName(nm, n.ID) != nm {
+		nm := strings.TrimSpace(*req.Name)
+		nodeNameMu.Lock()
+		if s.uniqueNodeName(nm, n.ID) != nm {
+			nodeNameMu.Unlock()
 			return Err(409, "node_name_taken", "Another node is named "+nm+".") // bugs-r11-sonnet 3
 		}
-		_, _ = s.DB.Exec(`UPDATE nodes SET name=? WHERE id=?`, strings.TrimSpace(*req.Name), n.ID)
+		_, _ = s.DB.Exec(`UPDATE nodes SET name=? WHERE id=?`, nm, n.ID)
+		nodeNameMu.Unlock()
 	}
 	if req.Disabled != nil {
 		_, _ = s.DB.Exec(`UPDATE nodes SET disabled=? WHERE id=?`, boolInt(*req.Disabled), n.ID)

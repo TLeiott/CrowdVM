@@ -219,6 +219,11 @@ func (n *Node) Run(ctx context.Context) error {
 		return ErrNotJoined
 	}
 	n.ctx = ctx
+	lock, err := lockDataDir(c.DataDir) // before adopting VMs (bugs-r12-opus 3)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
 	if err := n.initGPUs(realGPUHost()); err != nil {
 		return err // the owner asked for passthrough that cannot work: say so, do not start
 	}

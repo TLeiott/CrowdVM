@@ -143,7 +143,10 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		// that does not (no credentials, or invalid ones) keeps the IP bucket,
 		// so random tokens cannot open buckets of their own.
 		key := r.s.clientIP(req)
-		if req.Header.Get("Authorization") != "" || hasSessionCookie(req) {
+		// Only on /api/: the public routes under /auth/, /agent/ and
+		// /oauth2/ (logins, codes, anonymous agent keys) ignore credentials,
+		// so a key there must not open a bucket of its own (bugs-r12-sonnet 3).
+		if strings.HasPrefix(req.URL.Path, "/api/") && (req.Header.Get("Authorization") != "" || hasSessionCookie(req)) {
 			if p, err := r.s.authenticate(sw, req); err == nil {
 				key = "user:" + p.User.ID
 				req = req.WithContext(context.WithValue(req.Context(), principalKey{}, p))

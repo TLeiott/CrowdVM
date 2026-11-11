@@ -3,9 +3,7 @@ package node
 import (
 	"encoding/json"
 	"net/http"
-	"net/http/cookiejar"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -45,8 +43,7 @@ func TestUILoginCookie(t *testing.T) {
 	h := start(t, nil)
 	srv := httptest.NewServer(h.node.UIHandler("tok"))
 	defer srv.Close()
-	jar, _ := cookiejar.New(nil)
-	c := &http.Client{Jar: jar}
+	c := &http.Client{}
 
 	if st := getStatus(t, c, srv.URL); st.Authorized || st.Settings != nil {
 		t.Fatalf("anonymous status is authorized: %+v", st.Authorized)
@@ -66,21 +63,20 @@ func TestUILoginCookie(t *testing.T) {
 		t.Fatalf("login code %q", lc.Code)
 	}
 	resp, _ = c.Get(srv.URL + "/login?c=" + lc.Code)
-	if resp.StatusCode != 200 || resp.Request.URL.RawQuery != "" {
-		t.Fatalf("login did not redirect to the page: %d %s", resp.StatusCode, resp.Request.URL)
+	if resp.StatusCode != 200 {
+		t.Fatalf("login: %d", resp.StatusCode)
 	}
 	if rp := resp.Header.Get("Referrer-Policy"); rp != "no-referrer" {
 		t.Fatalf("referrer policy %q", rp)
 	}
-	u, _ := url.Parse(srv.URL)
-	for _, ck := range jar.Cookies(u) {
-		if ck.Value == "tok" {
-			t.Fatal("the cookie holds the token")
-		}
+	sess := loginSession(t, resp) // bugs-r12-opus 1: the page keeps it, no cookie
+	if strings.Contains(sess, "tok") {
+		t.Fatal("the session holds the token")
 	}
 	if resp, _ := http.Get(srv.URL + "/login?c=" + lc.Code); resp.StatusCode != 403 {
 		t.Fatalf("login code reused: %d", resp.StatusCode)
 	}
+	c = &http.Client{Transport: sessionTransport(sess)}
 	st := getStatus(t, c, srv.URL)
 	if !st.Authorized || st.Settings["cpus"] != "8" {
 		t.Fatalf("logged-in status: %+v %v", st.Authorized, st.Settings)

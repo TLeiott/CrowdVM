@@ -96,7 +96,8 @@ func (s *Server) handleEvacuateNode(c *Ctx) error {
 	if req.GraceSec != nil {
 		grace = *req.GraceSec
 	}
-	if grace < 0 || time.Duration(grace)*time.Second > MaxEvacuationGrace {
+	// Compared in seconds: a huge value overflowed the Duration (bugs-r12-sonnet 5).
+	if grace < 0 || grace > int(MaxEvacuationGrace/time.Second) {
 		return Err(400, "invalid_grace", fmt.Sprintf("graceSec must be between 0 and %d.", int(MaxEvacuationGrace.Seconds())))
 	}
 	now := store.Now()
@@ -228,6 +229,12 @@ func (s *Server) evacuateStep(nodeID string) {
 		})
 	}
 	if len(left) == 0 && offline == 0 && len(only) == 0 {
+		// A move whose boot failed while the node was away (its layer was
+		// only there) can boot now that every layer is stored
+		// (bugs-r12-opus 4).
+		for _, sb := range s.failedEvacMoves(nodeID) {
+			s.evacuationResume(sb, nodeID)
+		}
 		_, _ = s.DB.Exec(`DELETE FROM node_evacuations WHERE node_id=?`, nodeID)
 		return
 	}
@@ -290,9 +297,35 @@ func (s *Server) evacuationResume(sb *Sandbox, from string) {
 		return
 	}
 	_ = s.updateSandbox(sb.ID, map[string]any{"error": nil, "stopped_at": nil, "archive_after": ttlDeadline(sb)})
+	_ = s.SetSandboxExtra(sb.ID, "evacuatedFrom", from) // failedEvacMoves
 	s.queueBoot(sb.ID, pendingBoot{Kind: proto.BootResume, Parent: sb.HeadSnapshotID, Exclude: from, Reason: "evacuated"})
 	s.Bus.Publish(Event{Type: EvSandboxState, SandboxID: sb.ID, SandboxName: sb.Name, OwnerID: sb.OwnerID, OrgID: sb.OrgID, PreviousState: api.StateArchived, State: api.StateProvisioning})
 	s.Log.Info("resuming evacuated sandbox on another node", "sandbox", sb.ID, "from", from)
+}
+
+// failedEvacMoves: sandboxes moved off nodeID whose boot failed because a
+// layer was only on that node while it was offline.
+func (s *Server) failedEvacMoves(nodeID string) []*Sandbox {
+	var out []*Sandbox
+	rows, err := s.DB.Query(`SELECT id FROM sandboxes WHERE deleted_at IS NULL AND state='error' AND error LIKE 'snapshot_unavailable%'
+AND json_extract(extra,'$.evacuatedFrom')=?`, nodeID)
+	if err != nil {
+		return nil
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	rows.Close()
+	for _, id := range ids {
+		if sb, err := s.SandboxByID(id); err == nil {
+			out = append(out, sb)
+		}
+	}
+	return out
 }
 
 // evacuationStranded: no other node took an evacuated sandbox (none fits,
