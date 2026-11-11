@@ -280,11 +280,16 @@ func (s *Server) afterStopResume(id string) {
 	}
 	again, _ := sb.Extra["resumeAfterStop"].(bool)
 	from, _ := sb.Extra["evacuateFrom"].(string) // stopped by an evacuation
+	if from != "" && sb.NodeID != from {
+		from = "" // stale: it moved off that node another way (rebuilt, node removed)
+	}
+	if sb.Extra["evacuateFrom"] != nil {
+		_ = s.SetSandboxExtra(id, "evacuateFrom", nil)
+	}
 	if !again && from == "" {
 		return
 	}
 	_ = s.SetSandboxExtra(id, "resumeAfterStop", nil)
-	_ = s.SetSandboxExtra(id, "evacuateFrom", nil)
 	if !sb.SnapshotsEnabled {
 		return // nothing was kept; the resume cannot happen
 	}
