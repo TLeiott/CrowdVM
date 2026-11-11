@@ -980,12 +980,57 @@ var stopRunning sync.Map // stop id -> struct{} while an attempt runs
 // nodeLost: node id was removed, or has been offline longer than
 // NodeLostGrace (when the server also rebuilds its sandboxes elsewhere).
 func (s *Server) nodeLost(id string) bool {
-	var seen sql.NullInt64
-	if s.DB.QueryRow(`SELECT last_seen_at FROM nodes WHERE id=?`, id).Scan(&seen) != nil {
+	seen, ok := s.seenAt(id)
+	if !ok {
 		return true
 	}
-	return seen.Valid && store.Now()-seen.Int64 > s.Cfg.NodeLostGrace.Milliseconds()
+	return seen > 0 && store.Now()-seen > s.Cfg.NodeLostGrace.Milliseconds()
 }
+
+// seenAt is when node id was last connected (0: never), but not before this
+// server started: while the server was down the node could not connect.
+// ok is false for a removed node.
+func (s *Server) seenAt(id string) (int64, bool) {
+	var seen sql.NullInt64
+	if s.DB.QueryRow(`SELECT last_seen_at FROM nodes WHERE id=?`, id).Scan(&seen) != nil {
+		return 0, false
+	}
+	if !seen.Valid {
+		return 0, true
+	}
+	return max(seen.Int64, s.startedAt), true
+}
+
+// markUnconnected (field test): a node that went away while the server was
+// restarting never disconnects from this server, so onNodeOffline never ran
+// and its sandboxes stayed "ready" for good. Once nodes have had time to
+// reconnect (their backoff tops out at 30 s), a node that is still missing is
+// offline.
+func (s *Server) markUnconnected() {
+	if s.startedAt == 0 || store.Now()-s.startedAt < nodeReconnectWindow.Milliseconds() {
+		return
+	}
+	rows, err := s.DB.Query(`SELECT DISTINCT node_id FROM sandboxes WHERE deleted_at IS NULL AND node_id IS NOT NULL AND state IN ('provisioning','provisioned','cloning','ready','idle','running')`)
+	if err != nil {
+		return
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	rows.Close()
+	for _, id := range ids {
+		if s.nodes.get(id) == nil {
+			s.onNodeOffline(id)
+		}
+	}
+}
+
+// nodeReconnectWindow: how long after a server start a node has to reconnect.
+var nodeReconnectWindow = time.Minute
 
 // adoptQueuedMachine (bugs-r2-opus 1): sb waits to be rebuilt elsewhere
 // after its node was lost, and that node came back with its machine still
@@ -1296,6 +1341,7 @@ AND ((s.state='archiving' AND st.status IN ('failing','pending')) OR (s.state IN
 	}
 	// Waiting boots, lost nodes, long error holds and failing stops.
 	s.placeWaiting()
+	s.markUnconnected()
 	s.rebuildLost()
 	s.reapHolds()
 	// Boot timeout (boots waiting for capacity have their own deadline).
@@ -1399,11 +1445,14 @@ func (s *Server) handleResume(c *Ctx) error {
 		sp, _ := api.SizeByName(req.Type)
 		newSize = sp.Name
 	}
-	changes := newSize != sb.Size || req.Environment != "" || (req.NoEnv.Set && req.NoEnv.Value && !sb.NoEnv) || req.Env != nil
+	// A new placement (--node, --gpu, ...) is a change too: cancelling a stop
+	// would keep the machine where it is and silently drop it (field test).
+	moved := req.Placement != nil && !samePlacement(*req.Placement, sb.Placement)
+	changes := newSize != sb.Size || req.Environment != "" || (req.NoEnv.Set && req.NoEnv.Value && !sb.NoEnv) || req.Env != nil || moved
 	switch {
 	case sb.Usable() || sb.State == api.StateProvisioned:
 		if changes {
-			return Err(409, "sandbox_running_stop_first", "The sandbox is running. Stop it, then resume with the new size or environment.")
+			return Err(409, "sandbox_running_stop_first", "The sandbox is running. Stop it, then resume with the new size, environment or placement.")
 		}
 		if req.TTLSeconds.Set {
 			sets := map[string]any{"ttl_seconds": nil, "archive_after": nil}
@@ -1418,7 +1467,7 @@ func (s *Server) handleResume(c *Ctx) error {
 		sb, _ = s.SandboxByID(sb.ID)
 		return c.OK(202, "sandbox.resuming", map[string]any{"id": sb.ID, "status": sb.State, "sandbox": s.SandboxJSON(sb, c.P)})
 	case sb.State == api.StateArchiving && changes:
-		return ErrD(409, "sandbox_stopping", "The sandbox is stopping. Wait until it is stopped, then resume it with the new size or environment: crowdvm resume "+sb.ID, map[string]any{"retryable": true, "retryAfterSeconds": 5})
+		return ErrD(409, "sandbox_stopping", "The sandbox is stopping. Wait until it is stopped, then resume it with the new size, environment or placement: crowdvm resume "+sb.ID, map[string]any{"retryable": true, "retryAfterSeconds": 5})
 	case sb.State == api.StateArchiving:
 		if !sb.SnapshotsEnabled {
 			return ErrD(409, "sandbox_stopping", "The sandbox has snapshots off and is being erased; it cannot be resumed.", map[string]any{"retryable": false})
@@ -1433,9 +1482,8 @@ func (s *Server) handleResume(c *Ctx) error {
 	// and the rebuild do, unless the user forces the stop first.
 	if sb.State == api.StateError && sb.Error == "node_offline" && sb.NodeID != "" && s.nodes.get(sb.NodeID) == nil && !s.nodeLost(sb.NodeID) {
 		wait := s.Cfg.NodeLostGrace.Milliseconds()
-		var seen sql.NullInt64
-		if s.DB.QueryRow(`SELECT last_seen_at FROM nodes WHERE id=?`, sb.NodeID).Scan(&seen) == nil && seen.Valid {
-			wait -= store.Now() - seen.Int64
+		if seen, _ := s.seenAt(sb.NodeID); seen > 0 {
+			wait -= store.Now() - seen
 		}
 		return ErrD(409, "node_offline", "The node running this sandbox went offline moments ago; its machine may hold newer data than the last snapshot. Retry once the node is back (or after "+fmt.Sprint(max(wait/1000, 1))+" s, when it is given up), or run `crowdvm stop --force "+sb.ID+"` first to resume from the last snapshot now.",
 			map[string]any{"retryable": true, "retryAfterSeconds": max(wait/1000, 1)})

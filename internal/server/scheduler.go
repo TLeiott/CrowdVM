@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -30,6 +31,12 @@ type Placement struct {
 
 func (p Placement) empty() bool {
 	return !p.GPU && !p.Nested && len(p.Labels) == 0 && p.MinTier == "" && len(p.Categories) == 0 && p.Node == "" && p.Trust == ""
+}
+
+// samePlacement compares placements; nil and empty maps are equal.
+func samePlacement(a, b Placement) bool {
+	return a.GPU == b.GPU && a.Nested == b.Nested && a.MinTier == b.MinTier && a.Node == b.Node && a.Trust == b.Trust &&
+		maps.Equal(a.Labels, b.Labels) && maps.Equal(a.Categories, b.Categories)
 }
 
 var tierRank = map[string]int{"bronze": 1, "silver": 2, "gold": 3, "platinum": 4}

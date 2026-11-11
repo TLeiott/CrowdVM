@@ -614,10 +614,27 @@ commands. --type, --environment and --no-env change a stopped sandbox.`,
 			if err != nil {
 				return err
 			}
-			res, err := c.ResumeSandbox(cmd.Context(), id, &client.ResumeRequest{
+			req := &client.ResumeRequest{
 				FailFast: sf.failFast, Type: sf.typ, Env: env, Environment: sf.environment, NoEnv: sf.noEnv,
 				TTLSeconds: ttlFor(cmd, sf.ttl, sf.noAutoStop), Placement: pl,
-			})
+			}
+			res, err := c.ResumeSandbox(cmd.Context(), id, req)
+			// `crowdvm stop` returns before the disk is saved. A resume that
+			// changes the sandbox (size, placement, ...) waits for that.
+			for waited := false; client.IsCode(err, "sandbox_stopping") && !sf.failFast; waited = true {
+				if e, _ := client.AsError(err); !e.Retryable() {
+					break
+				}
+				if !waited {
+					a.info("%s: waiting for the stop to finish\n", id)
+				}
+				select {
+				case <-cmd.Context().Done():
+					return cmd.Context().Err()
+				case <-time.After(3 * time.Second):
+				}
+				res, err = c.ResumeSandbox(cmd.Context(), id, req)
+			}
 			if err != nil {
 				return err
 			}

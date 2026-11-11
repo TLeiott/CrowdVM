@@ -273,6 +273,9 @@ type Server struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 	start  sync.Once
+	// startedAt (ms): nodes cannot reconnect while the server is down, so
+	// their offline time counts from here (seenAt).
+	startedAt int64
 }
 
 // New opens the data dir, migrates the database and builds the router.
@@ -345,6 +348,7 @@ func (s *Server) Go(fn func(ctx context.Context)) {
 // garbage collection). Idempotent.
 func (s *Server) Start() {
 	s.start.Do(func() {
+		s.startedAt = store.Now()
 		s.Go(s.reaperLoop)
 		s.Go(s.billingLoop)
 		s.Go(s.maintenanceLoop)
