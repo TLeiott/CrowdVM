@@ -6,4 +6,5 @@ import "os/exec"
 
 func dieWithNode(*exec.Cmd) {}
 
-func noDumps() error { return nil }
+// NoDumps is Linux only.
+func NoDumps() error { return nil }

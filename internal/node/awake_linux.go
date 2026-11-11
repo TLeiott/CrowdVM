@@ -17,7 +17,7 @@ func dieWithNode(c *exec.Cmd) { c.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: 
 // RAM; systemd-coredump would keep it readable for the owner (secure
 // layer). The hard limit 0 is inherited by QEMU and cannot be raised again
 // without root.
-func noDumps() error {
+func NoDumps() error {
 	if err := unix.Setrlimit(unix.RLIMIT_CORE, &unix.Rlimit{Cur: 0, Max: 0}); err != nil {
 		return err
 	}

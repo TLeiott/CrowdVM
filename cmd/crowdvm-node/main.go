@@ -212,6 +212,12 @@ func runCmd(g *globals) *cobra.Command {
 				}
 			}
 			daemon := func(ctx context.Context, log *slog.Logger) error {
+				// Secure layer: no core dumps of this process or the VMs it
+				// starts (a QEMU core holds the guest's RAM) and no reading
+				// this process's memory from the owner's other processes.
+				if err := node.NoDumps(); err != nil {
+					log.Warn("cannot disable core dumps", "err", err)
+				}
 				drv, err := newDriver(cfg, log)
 				if err != nil {
 					return err
