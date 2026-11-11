@@ -429,6 +429,9 @@ func TestGiteaCI(t *testing.T) {
 		}
 		js(w, map[string]any{"username": "acme"})
 	}))
+	m.HandleFunc("GET /api/v1/users/alice/orgs/acme/permissions", auth(func(w http.ResponseWriter, r *http.Request) {
+		js(w, map[string]any{"is_owner": true}) // linking an org needs its admin (bugs-r10-sonnet 7)
+	}))
 	m.HandleFunc("GET /api/v1/orgs/acme/repos", auth(func(w http.ResponseWriter, r *http.Request) {
 		js(w, []any{map[string]any{"full_name": "acme/api", "private": true, "html_url": "http://gitea/acme/api", "owner": map[string]any{"login": "acme"}}})
 	}))

@@ -4,6 +4,12 @@
 // scheduled task of the current user.
 package service
 
+import "errors"
+
+// ErrRestart ends a daemon whose owner asked for a restart on the local
+// page; the service manager starts it again (RestartsOnExit, RunService).
+var ErrRestart = errors.New("restarting (requested on the local page)")
+
 // Options for Install.
 type Options struct {
 	Exe     string   // absolute path of crowdvm-node

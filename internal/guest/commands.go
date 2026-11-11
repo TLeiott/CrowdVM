@@ -149,12 +149,20 @@ func (a *Agent) startCommand(req commandRequest, cwdReal, cwdVirt, mode string) 
 // the record's outputTruncated and the CLI's stderr warning say it instead.
 const capOutputInterval = 100 * time.Millisecond
 
+// outputFreezeShare: below this free share of the RAM disk (monitoring off)
+// running commands' output stops growing.
+const outputFreezeShare = 0.1
+
 // capOutput watches p's output files until the command ends. The files are
 // opened with O_APPEND, so truncating them keeps the writer at the end.
 func (a *Agent) capOutput(p *proc) {
 	t := time.NewTicker(capOutputInterval)
 	defer t.Stop()
 	marked := false // recorded as truncated (a local: p.m is the history's, under its lock)
+	// frozen: with monitoring off, running commands share the RAM disk. When
+	// it is nearly full their streams stop growing (and say so), so the
+	// guest's own records and short commands still fit (bugs-r10-opus 6).
+	frozen := map[string]int64{}
 	for done := false; !done; {
 		select {
 		case <-p.done:
@@ -163,7 +171,23 @@ func (a *Agent) capOutput(p *proc) {
 		}
 		for _, s := range []string{"stdout", "stderr"} {
 			a.hist.makeRoom()
-			if capFile(a.hist.path(p.m.CommandID, s), a.outputLimit()) && !marked {
+			path, limit := a.hist.path(p.m.CommandID, s), a.outputLimit()
+			full := false // writes may have failed for lack of space
+			if a.hist.unmonitor {
+				free := a.hist.freeShare()
+				_, ok := frozen[s]
+				switch {
+				case !ok && free < outputFreezeShare:
+					frozen[s] = fileSize(path)
+				case ok && free >= 0.25: // makeRoom freed it again
+					delete(frozen, s)
+				}
+				if f, ok := frozen[s]; ok {
+					limit = min(limit, f)
+				}
+				full = free < 0.01
+			}
+			if (capFile(path, limit) || full) && !marked {
 				// Recorded, so history and the follower's exit frame say so
 				// (bugs-r7-opus 2).
 				marked = true
@@ -546,8 +570,12 @@ func (a *Agent) handleCommandAttach(w http.ResponseWriter, r *http.Request) {
 		}
 		if final {
 			rec := a.hist.record(m)
-			nd.send(map[string]any{"type": "exit", "status": apiStatus(rec.Status), "exitCode": rec.ExitCode,
-				"signal": rec.Signal, "stdoutOffset": fs[0].emitted(), "stderrOffset": fs[1].emitted(), "outputTruncated": rec.OutputTruncated})
+			if nd.send(map[string]any{"type": "exit", "status": apiStatus(rec.Status), "exitCode": rec.ExitCode,
+				"signal": rec.Signal, "stdoutOffset": fs[0].emitted(), "stderrOffset": fs[1].emitted(), "outputTruncated": rec.OutputTruncated}) {
+				a.hist.mu.Lock()
+				m.exitSent = true // makeRoom may drop it now
+				a.hist.mu.Unlock()
+			}
 			return
 		}
 		if time.Now().After(deadline) {

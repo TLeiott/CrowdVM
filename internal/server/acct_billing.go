@@ -264,10 +264,11 @@ func (s *Server) extraStartRefusal(wallet string, w startWindow, used, count int
 	return ""
 }
 
-// chargeExtraStart bills a start that ran beyond a window.
-func (s *Server) chargeExtraStart(wallet string) {
+// chargeExtraStart bills a start that ran beyond a window. actor, the
+// sandbox's owner, lets a member's usage cap count it (bugs-r10-sonnet 9).
+func (s *Server) chargeExtraStart(wallet, actor string) {
 	_ = s.DB.Tx(s.ctx, func(tx *sql.Tx) error {
-		return walletAdd(tx, wallet, -extraStartCredits, "extra_start", "extra start beyond the start limit", "", "", "")
+		return walletAdd(tx, wallet, -extraStartCredits, "extra_start", "extra start beyond the start limit", "", "", actor)
 	})
 }
 
@@ -753,6 +754,12 @@ func (s *Server) handleAdminPolicyPut(c *Ctx) error {
 			return Err(400, "invalid_policy", "Limits must be 0 or more (null = server default).")
 		}
 	}
+	// A negative credit cap refused every start (bugs-r10-sonnet 10).
+	for _, v := range []*float64{p.CreditCapMonthly, p.LowCreditAlert, p.MonthlyCredits} {
+		if v != nil && (*v < 0 || math.IsNaN(*v) || math.IsInf(*v, 0)) {
+			return Err(400, "invalid_policy", "Credit amounts must be 0 or more (null = none).")
+		}
+	}
 	if _, err := s.DB.Exec(`INSERT INTO wallet_policies(wallet_id,data,updated_at) VALUES(?,?,?) ON CONFLICT(wallet_id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at`,
 		w, string(mb), store.Now()); err != nil {
 		return err
@@ -810,18 +817,33 @@ func (s *Server) policyGuard(c *Ctx) error {
 	}
 	// Policies that apply: the caller's personal policy and the wallet's.
 	wallets := []string{c.P.User.ID}
+	// inherited: the size a fork or a create from a saved snapshot takes
+	// when no type is sent; the size policy applies to it too
+	// (bugs-r10-sonnet 4).
+	inherited := ""
 	switch op {
 	case "create", "save":
 		bodyOrg, _ := req["org"].(string)
 		if bodyOrg == "" {
 			bodyOrg, _ = req["teamId"].(string)
 		}
-		if org, err := c.Scope(bodyOrg); err == nil && org != nil {
+		org, err := c.Scope(bodyOrg)
+		if err == nil && org != nil {
 			wallets = append(wallets, org.ID)
 		}
+		if from, _ := req["from"].(string); op == "create" && from != "" && err == nil {
+			if src, err := s.resolveFrom(c.P.User, from, org); err == nil {
+				inherited = src.Size
+			}
+		}
 	default:
-		if sb, err := s.SandboxByID(c.Param("sandboxId")); err == nil && sb.OrgID != "" {
-			wallets = append(wallets, sb.OrgID)
+		if sb, err := s.SandboxByID(c.Param("sandboxId")); err == nil {
+			if sb.OrgID != "" {
+				wallets = append(wallets, sb.OrgID)
+			}
+			if op == "fork" {
+				inherited = sb.Size
+			}
 		}
 	}
 	changed := false
@@ -831,7 +853,11 @@ func (s *Server) policyGuard(c *Ctx) error {
 			continue // the allowance is per wallet (handleSaveSaved, SNAP-020)
 		}
 		if len(p.AllowedSizes) > 0 {
-			if t, _ := req["type"].(string); t != "" {
+			t, _ := req["type"].(string)
+			if t == "" {
+				t = inherited
+			}
+			if t != "" {
 				sz, _ := api.SizeByName(t)
 				if !slices.Contains(p.AllowedSizes, sz.Name) && !slices.Contains(p.AllowedSizes, t) {
 					// Boat gates sizes on the plan (403 machine_class_plan_required);

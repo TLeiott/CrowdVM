@@ -534,7 +534,47 @@ func (a *App) sandboxID(id string) (string, error) {
 		}
 		return "", usagef("`self` only works inside a CrowdVM sandbox")
 	}
+	if !looksLikeID(id) && maybeName(id) {
+		if sid, err := a.sandboxByName(id); err != nil || sid != "" {
+			return sid, err
+		}
+	}
 	return id, nil
+}
+
+// sandboxByName returns the id of the sandbox called name, "" when there is
+// none (or the server cannot be asked). Two with that name is an error.
+func (a *App) sandboxByName(name string) (string, error) {
+	c, err := a.client()
+	if err != nil {
+		return "", nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	list, err := c.ListAllSandboxes(ctx, client.ListSandboxesOptions{NamePrefix: name})
+	if err != nil {
+		return "", nil
+	}
+	var ids []string
+	for _, s := range list {
+		if s.Name == name {
+			ids = append(ids, s.ID)
+		}
+	}
+	if len(ids) > 1 {
+		return "", usagef("%d sandboxes are named %q (%s): pass an id", len(ids), name, strings.Join(ids, ", "))
+	}
+	if len(ids) == 1 {
+		return ids[0], nil
+	}
+	return "", nil
+}
+
+// isSandboxName: name is a sandbox's name (or several's: sandboxID then
+// reports that).
+func (a *App) isSandboxName(name string) bool {
+	id, err := a.sandboxByName(name)
+	return err != nil || id != ""
 }
 
 // shellID identifies the interactive shell (set by the shell function of

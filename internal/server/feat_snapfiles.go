@@ -107,10 +107,11 @@ func (f *snapFiles) snapForRead(p *Principal, id string) (*Snapshot, error) {
 		return nil, Err(404, "not_found", "Snapshot not found.")
 	}
 	// A saved snapshot's layer stays readable through its snapshotId (SNAP-032),
-	// even after its sandbox's snapshots were deleted.
+	// even after its sandbox's snapshots were deleted. Only for its saver:
+	// anyone else deploys it, and the deploy scrubs the saver's logins, keys
+	// and history, which the raw files still hold (bugs-r10-opus 1).
 	var saved int
-	_ = f.s.DB.QueryRow(`SELECT COUNT(*) FROM saved_snapshots WHERE snapshot_id=? AND (owner_id=? OR org_id IN (SELECT org_id FROM org_members WHERE user_id=?))`,
-		sn.ID, p.User.ID, p.User.ID).Scan(&saved)
+	_ = f.s.DB.QueryRow(`SELECT COUNT(*) FROM saved_snapshots WHERE snapshot_id=? AND saved_by=?`, sn.ID, p.User.ID).Scan(&saved)
 	if sn.DeletedAt != nil && saved == 0 {
 		return nil, Err(404, "not_found", "Snapshot not found.")
 	}

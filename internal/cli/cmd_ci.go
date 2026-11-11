@@ -149,8 +149,9 @@ in sandboxes when a workflow uses runs-on: crowdvm (or crowdvm-small, -large,
 		Short: "Link a GitHub account or organization with a token (jobs bill the wallet in scope)",
 		Long: `Link a GitHub user or organization so its workflows can run on CrowdVM.
 CrowdVM has no GitHub App: give a token (fine-grained: Actions read,
-Administration read/write, Metadata read; classic: repo, plus admin:org for
-organizations). Jobs bill the wallet in scope (--org or 'crowdvm org switch').
+Administration read/write, Metadata read, plus Members read for an
+organization; classic: repo, plus admin:org for organizations). An
+organization can only be linked with a token of one of its admins. Jobs bill the wallet in scope (--org or 'crowdvm org switch').
 Without --yes the link stays pending until you confirm it.`,
 		Example: `  crowdvm ci connect --token "$GH_TOKEN" --yes
   crowdvm --org acme ci connect --account acme-github --token "$GH_TOKEN" --yes

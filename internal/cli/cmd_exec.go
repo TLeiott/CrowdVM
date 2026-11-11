@@ -28,7 +28,8 @@ func (a *App) execCmd() *cobra.Command {
 		Long: `Run a command through the API (no SSH). One argument is a shell command
 line; more arguments run as argv. The default timeout is 30 seconds; above 600
 or with 0 (no limit) the command runs in the background and its output streams
-live, surviving network cuts. Exit code 124 means the timeout hit.`,
+live, surviving network cuts. Exit code 124 means the timeout hit. ID may also
+be the sandbox's name; without one the current sandbox runs the command.`,
 		Example: `  crowdvm exec bx_f7k2q9hd "npm test"
   crowdvm exec bx_f7k2q9hd --cwd my-repo --timeout 0 -- make -j16 test
   pid=$(crowdvm exec bx_f7k2q9hd --detach "npm run dev" | jq -r .processId)
@@ -36,7 +37,7 @@ live, surviving network cuts. Exit code 124 means the timeout hit.`,
   crowdvm exec bx_f7k2q9hd --attach "$pid"`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			first, rest, err := reparse(cmd, args)
+			first, rest, err := reparse(cmd, args, a.isSandboxName)
 			if err != nil {
 				return err
 			}

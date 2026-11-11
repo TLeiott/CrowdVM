@@ -153,8 +153,8 @@ func (n *Node) CreateVM(spec proto.VMSpec) (proto.VMStatus, error) {
 	switch {
 	case disk.HeadroomBytes < minDiskHeadroom:
 		why = fmt.Sprintf("not enough free disk (%.1f GiB usable, %d GiB kept free)", float64(disk.HeadroomBytes)/(1<<30), disk.ReserveGiB)
-	case c.Paused:
-		why = "node is paused by its owner"
+	case c.EffectivePause(time.Now()).Paused:
+		why = "node is paused by its owner (or outside its schedule)"
 	case u.VMs+1 > cp.MaxSandboxes:
 		why = fmt.Sprintf("max sandboxes reached (%d)", cp.MaxSandboxes)
 	case u.VCPU+spec.Size.VCPU > cp.VCPU:
@@ -697,6 +697,9 @@ func (n *Node) DestroyVM(ctx context.Context, id string) error {
 	n.saveSpecsLocked()
 	n.mu.Unlock()
 	if r != nil {
+		// The owner should see why a VM vanished, e.g. a stale copy dropped
+		// after this node slept and the sandbox moved on (field test).
+		n.log.Info("vm removed (the server asked: deleted, or now running elsewhere)", "sandbox", id, "err", err)
 		n.emit(id, proto.EvVMState, proto.VMStatus{SandboxID: id, State: proto.VMStopped})
 	}
 	return err

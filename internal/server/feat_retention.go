@@ -407,6 +407,28 @@ func (r *retState) purge(uid string) (int, error) {
 		`DELETE FROM webhooks WHERE owner_id=?`,
 		`DELETE FROM telemetry WHERE owner_id=?`,
 		`DELETE FROM otel_logs WHERE owner_id=?`,
+		// bugs-r10-sonnet 5: the account's stored secrets go too: AI provider
+		// credentials, CI links (GitHub token) and their jobs, git sources,
+		// environments, SSH keys, AI proxy state, settings and notices.
+		`DELETE FROM credential_accounts WHERE profile_id IN (SELECT id FROM credential_profiles WHERE owner_id=?)`,
+		`DELETE FROM credential_custom_apis WHERE profile_id IN (SELECT id FROM credential_profiles WHERE owner_id=?)`,
+		`DELETE FROM ai_proxy_tokens WHERE profile_id IN (SELECT id FROM credential_profiles WHERE owner_id=?1)
+			OR sandbox_id IN (SELECT id FROM sandboxes WHERE owner_id=?1)`,
+		`DELETE FROM credential_profiles WHERE owner_id=?`,
+		`DELETE FROM ai_proxy_settings WHERE account_id=?`,
+		`DELETE FROM ci_jobs WHERE owner_id=?1 OR link_id IN (SELECT id FROM ci_links WHERE owner_id=?1)`,
+		`DELETE FROM ci_repos WHERE link_id IN (SELECT id FROM ci_links WHERE owner_id=?)`,
+		`DELETE FROM ci_links WHERE owner_id=?`,
+		`DELETE FROM git_repos WHERE owner_id=?1 OR source_id IN (SELECT id FROM git_sources WHERE owner_id=?1)`,
+		`DELETE FROM git_sources WHERE owner_id=?`,
+		// Versions a remaining saved snapshot's sandbox ran with stay, as in
+		// org deletion (orgs.go).
+		`DELETE FROM environment_versions WHERE env_id IN (SELECT id FROM environments WHERE owner_id=?)
+			AND env_id NOT IN (SELECT b.environment_id FROM saved_snapshots ss JOIN sandboxes b ON b.id=ss.source_sandbox_id WHERE b.environment_id IS NOT NULL)`,
+		`DELETE FROM environments WHERE owner_id=?`,
+		`DELETE FROM sandbox_ssh_keys WHERE user_id=?`,
+		`DELETE FROM account_settings WHERE user_id=?`,
+		`DELETE FROM notices WHERE user_id=?1 OR wallet_id=?1`,
 	} {
 		_, _ = r.s.DB.Exec(q, uid)
 	}

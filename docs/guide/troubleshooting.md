@@ -84,8 +84,8 @@ first boot. If the server has none either, build it on one node and push it
 
 **The node refuses sandboxes although it looks idle.** It keeps `disk-reserve` (10G)
 free and refuses new VMs when less than 2 GiB of headroom is left. Free disk space or
-lower `disk`/`disk-reserve`. A node with `paused` set or drained by an admin takes no
-new sandboxes either.
+lower `disk`/`disk-reserve`. A node that is paused, outside its `schedule` or drained
+takes no new sandboxes either; `crowdvm-node status` says which.
 
 **A sandbox cannot reach a service on my LAN.** That is the default egress policy.
 The node owner can open single addresses with `crowdvm-node config set net.allow`

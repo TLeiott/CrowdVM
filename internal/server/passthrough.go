@@ -288,9 +288,8 @@ func (s *Server) ProxyToGuest(w http.ResponseWriter, r *http.Request, sb *Sandbo
 // types (HTML, SVG, XML, scripts) only as downloads (bugs-r8-sonnet 1).
 func guardGuestContent(h http.Header) {
 	// Nor touch the origin's cookies or storage (bugs-r9-sonnet).
-	for _, k := range []string{"Set-Cookie", "Clear-Site-Data", "Refresh"} {
-		h.Del(k)
-	}
+	h.Del("Set-Cookie")
+	dropOriginHeaders(h) // bugs-r10-opus 4 (adds NEL, Report-To)
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Content-Security-Policy", "sandbox; default-src 'none'")
 	ct := strings.ToLower(h.Get("Content-Type"))

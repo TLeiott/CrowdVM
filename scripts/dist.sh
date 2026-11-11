@@ -17,7 +17,11 @@ for target in linux/amd64 linux/arm64 windows/amd64 windows/arm64 darwin/amd64 d
     CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -ldflags "$LDFLAGS" -o "$out/$cmd$ext" "./cmd/$cmd"
   done
   [ "$os" != darwin ] && cp dist/crowdvm-guest dist/crowdvm-linux-amd64 "$out/"
-  if [ "$os" = windows ]; then (cd dist && zip -qr "$(basename "$out").zip" "$(basename "$out")"); else tar -C dist -czf "$out.tar.gz" "$(basename "$out")"; fi
+  if [ "$os" = windows ]; then
+    # zip is often not installed; Python's zipfile writes the same archive
+    if command -v zip >/dev/null; then (cd dist && zip -qr "$(basename "$out").zip" "$(basename "$out")")
+    else (cd dist && python3 -m zipfile -c "$(basename "$out").zip" "$(basename "$out")"); fi
+  else tar -C dist -czf "$out.tar.gz" "$(basename "$out")"; fi
 done
 (cd dist && sha256sum ./*.tar.gz ./*.zip > SHA256SUMS)
 echo "built dist/ for $VERSION"

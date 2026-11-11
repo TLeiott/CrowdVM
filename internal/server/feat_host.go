@@ -742,6 +742,8 @@ func (h *hosting) serve(w http.ResponseWriter, r *http.Request, sb *Sandbox, por
 				if loc := resp.Header.Get("Location"); strings.HasPrefix(loc, "/") && !strings.HasPrefix(loc, "//") {
 					resp.Header.Set("Location", prefix+loc)
 				}
+			} else {
+				hostScopeCookies(resp.Header) // bugs-r10-opus 4
 			}
 			return nil
 		},
@@ -759,12 +761,11 @@ func (h *hosting) serve(w http.ResponseWriter, r *http.Request, sb *Sandbox, por
 // cookies stay under its own prefix and never use the server's names, and it
 // cannot clear the origin's data (bugs-r9-sonnet).
 func pathScopeCookies(h http.Header, prefix string) {
-	h.Del("Clear-Site-Data")
-	h.Del("Refresh")
+	dropOriginHeaders(h)
 	var keep []string
 	for _, line := range h.Values("Set-Cookie") {
 		ck, err := http.ParseSetCookie(line)
-		if err != nil || ck.Name == SessionCookie || ck.Name == portAuthCookie || strings.HasPrefix(strings.ToLower(ck.Name), "crowdvm") {
+		if err != nil || ownCookieName(ck.Name) {
 			continue
 		}
 		ck.Path, ck.Domain = prefix+"/", ""
@@ -776,6 +777,41 @@ func pathScopeCookies(h http.Header, prefix string) {
 	for _, v := range keep {
 		h.Add("Set-Cookie", v)
 	}
+}
+
+// hostScopeCookies: a host-routed app has its own host, but a Domain cookie
+// reaches the public domain's siblings, the dashboard included. Host-only
+// cookies stay (bugs-r10-opus 4).
+func hostScopeCookies(h http.Header) {
+	dropOriginHeaders(h)
+	var keep []string
+	for _, line := range h.Values("Set-Cookie") {
+		ck, err := http.ParseSetCookie(line)
+		if err != nil || ck.Domain != "" || ownCookieName(ck.Name) {
+			continue
+		}
+		keep = append(keep, line)
+	}
+	h.Del("Set-Cookie")
+	for _, v := range keep {
+		h.Add("Set-Cookie", v)
+	}
+}
+
+// dropOriginHeaders: response headers that act on the whole origin.
+func dropOriginHeaders(h http.Header) {
+	for _, k := range originHeaders {
+		h.Del(k)
+	}
+}
+
+// originHeaders act on the receiving origin (or its reporting), not on the
+// response (bugs-r10-opus 4: NEL and Report-To added).
+var originHeaders = []string{"Clear-Site-Data", "Refresh", "NEL", "Report-To"}
+
+// ownCookieName: names a guest never sets, as they are the server's.
+func ownCookieName(name string) bool {
+	return name == SessionCookie || name == portAuthCookie || strings.HasPrefix(strings.ToLower(name), "crowdvm")
 }
 
 func (h *hosting) authCookie(tok, path string) *http.Cookie {

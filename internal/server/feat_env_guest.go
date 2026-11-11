@@ -376,15 +376,24 @@ func (s *Server) envApplyLive(ctx context.Context, sb *Sandbox, scrub bool) erro
 	for _, f := range p.Files {
 		filePaths = append(filePaths, f.Path)
 	}
+	// The proxy placeholder follows the new version (bugs-r10-opus 3): it is
+	// revoked when agent credentials no longer reach the sandbox, and serves
+	// the new profile when the profile changed.
+	clearProxy := prev.Proxied && !p.Proxied
+	if clearProxy {
+		_, _ = s.DB.Exec(`DELETE FROM ai_proxy_tokens WHERE sandbox_id=?`, sb.ID)
+	} else if p.Proxied && p.ProfileID != "" {
+		_, _ = s.DB.Exec(`UPDATE ai_proxy_tokens SET profile_id=? WHERE sandbox_id=?`, p.ProfileID, sb.ID)
+	}
 	saveManaged := func() error {
 		return s.SetSandboxExtra(sb.ID, "envManaged", envManaged{Keys: keys, Files: filePaths, Registries: regs, GitCreds: p.GitCreds && !scrub,
-			ProfileID: firstNonEmpty(p.ProfileID, prev.ProfileID), Proxied: prev.Proxied})
+			ProfileID: firstNonEmpty(p.ProfileID, prev.ProfileID), Proxied: prev.Proxied && !clearProxy})
 	}
 
 	// Preferred: the guest applies it in place, which also reaches the env
 	// of new exec'd commands and running integrated agents (not only new
 	// shells). Secret files and registry logins are full replacements.
-	ac := proto.ApplyConfig{EnvSet: desired, EnvUnset: unset, SecretFiles: []proto.File{}, RegistryLogins: []proto.RegistryLogin{}, Repos: p.Repos}
+	ac := proto.ApplyConfig{EnvSet: desired, EnvUnset: unset, SecretFiles: []proto.File{}, RegistryLogins: []proto.RegistryLogin{}, Repos: p.Repos, ClearAIProxy: clearProxy}
 	ac.SecretFiles = append(ac.SecretFiles, p.Files...)
 	ac.RegistryLogins = append(ac.RegistryLogins, p.Registry...)
 	if len(rm) > 0 || scrub {

@@ -95,9 +95,13 @@ func (s *Server) neverFitsErr(req schedReq, orig error) error {
 			ok = append(ok, sz.Name)
 		}
 	}
-	msg := fmt.Sprintf("No node in this pool can host a %s sandbox (%d vCPU, %d GiB memory).", req.Size.Name, req.Size.VCPU, req.Size.MemoryMiB/1024)
+	where := "No node in this pool"
+	if !req.Placement.empty() || req.Only != "" {
+		where = "No node that matches the placement" // --node, --gpu, ...: not the whole pool
+	}
+	msg := fmt.Sprintf("%s can host a %s sandbox (%d vCPU, %d GiB memory).", where, req.Size.Name, req.Size.VCPU, req.Size.MemoryMiB/1024)
 	if len(ok) > 0 {
-		msg += " Available sizes: " + strings.Join(ok, ", ") + ". See `crowdvm limits`."
+		msg += " Sizes that fit: " + strings.Join(ok, ", ") + " (--type " + ok[len(ok)-1] + "). See `crowdvm limits`."
 	} else {
 		msg += " No node is online that this sandbox may use."
 	}
@@ -154,6 +158,10 @@ func (s *Server) tryPlace(id string) bool {
 	if placeErr != nil {
 		if store.Now() > pb.Deadline {
 			_ = s.SetSandboxExtra(id, "pendingBoot", nil)
+			if pb.Reason == "evacuated" {
+				s.evacuationStranded(sb) // its disk is saved: stopped, not failed
+				return false
+			}
 			s.abortBoot(sb, pb.Kind, pb.Parent, "out_of_capacity: no node had room for this sandbox within "+s.Cfg.CapacityWait.String())
 		}
 		return false
@@ -270,12 +278,24 @@ func (s *Server) afterStopResume(id string) {
 	if err != nil || sb.DeletedAt != nil || sb.State != api.StateArchived {
 		return
 	}
-	if v, _ := sb.Extra["resumeAfterStop"].(bool); !v {
+	again, _ := sb.Extra["resumeAfterStop"].(bool)
+	from, _ := sb.Extra["evacuateFrom"].(string) // stopped by an evacuation
+	if from != "" && sb.NodeID != from {
+		from = "" // stale: it moved off that node another way (rebuilt, node removed)
+	}
+	if sb.Extra["evacuateFrom"] != nil {
+		_ = s.SetSandboxExtra(id, "evacuateFrom", nil)
+	}
+	if !again && from == "" {
 		return
 	}
 	_ = s.SetSandboxExtra(id, "resumeAfterStop", nil)
 	if !sb.SnapshotsEnabled {
 		return // nothing was kept; the resume cannot happen
+	}
+	if from != "" {
+		s.evacuationResume(sb, from)
+		return
 	}
 	sets := map[string]any{"error": nil, "stopped_at": nil, "archive_after": nil}
 	if sb.TTLSeconds != nil {
@@ -287,7 +307,7 @@ func (s *Server) afterStopResume(id string) {
 		kind, first = proto.BootCreate, true
 	}
 	prev := sb.NodeID
-	s.recordStart(sb.Wallet())
+	s.recordStart(sb.Wallet(), sb.OwnerID)
 	s.queueBoot(id, pendingBoot{Kind: kind, FirstBoot: first, Parent: sb.HeadSnapshotID, Prefer: prev, Reason: "resume_after_stop"})
 	s.Bus.Publish(Event{Type: EvSandboxState, SandboxID: sb.ID, SandboxName: sb.Name, OwnerID: sb.OwnerID, OrgID: sb.OrgID, PreviousState: api.StateArchived, State: api.StateProvisioning})
 }
@@ -330,6 +350,13 @@ AND head_snapshot_id IS NOT NULL AND COALESCE(degraded_since,updated_at)<?`, cut
 		}
 		spec, _ := api.SizeByName(sb.Size)
 		if !s.couldEverPlace(schedReq{Size: spec, Placement: sb.Placement, Exclude: sb.NodeID, Owners: s.ownersFor(sb.OwnerID, sb.OrgID)}) {
+			// Pinned (--node, labels, ...) to the lost node: it waits for it.
+			// Say so, or it just sits in node_offline (field test).
+			if !sb.Placement.empty() && s.couldEverPlace(schedReq{Size: spec, Exclude: sb.NodeID, Owners: s.ownersFor(sb.OwnerID, sb.OrgID)}) {
+				s.notifySandbox(sb, "rebuild_blocked", "warning", 24*time.Hour, "Sandbox waits for its node",
+					"The node hosting "+sb.Name+" is offline, and the sandbox's placement allows no other node, so CrowdVM does not rebuild it elsewhere. "+
+						"Wait for the node, or move it with a placement another node meets: crowdvm resume "+sb.ID+" --node <node> (changes after its latest snapshot are lost).")
+			}
 			continue
 		}
 		lost := sb.NodeID

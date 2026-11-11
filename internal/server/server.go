@@ -258,6 +258,7 @@ type Server struct {
 	nodeH  http.Handler
 
 	schedMu sync.Mutex
+	limitMu sync.Mutex // lockLimits
 	sbLocks keyedMutex
 	ipLim   *ipLimiter
 	usage   *keyUsage
@@ -269,10 +270,17 @@ type Server struct {
 
 	hist *histState // coordinator copy of command history (feat_history.go)
 
+	earnMu      sync.Mutex
+	evacUploads map[string]time.Time    // node -> last evacuation upload round (zero: running), guarded by earnMu
+	earned      map[string]nodeEarnings // node id -> cached earnings (nodes_evacuate.go)
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 	start  sync.Once
+	// startedAt (ms): nodes cannot reconnect while the server is down, so
+	// their offline time counts from here (seenAt).
+	startedAt int64
 }
 
 // New opens the data dir, migrates the database and builds the router.
@@ -345,6 +353,7 @@ func (s *Server) Go(fn func(ctx context.Context)) {
 // garbage collection). Idempotent.
 func (s *Server) Start() {
 	s.start.Do(func() {
+		s.startedAt = store.Now()
 		s.Go(s.reaperLoop)
 		s.Go(s.billingLoop)
 		s.Go(s.maintenanceLoop)

@@ -75,11 +75,44 @@ td.num { font-variant-numeric: tabular-nums; }
 .err { color: var(--bad); font-size: 12.5px; }
 .scroll { overflow-x: auto; }
 #banner { display: none; margin-bottom: 16px; padding: 10px 14px; border-radius: 10px; background: var(--bad-soft); color: var(--bad); }
+input, textarea { font: inherit; font-size: 13px; color: var(--ink); background: var(--bg); border: 1px solid var(--line);
+  border-radius: 8px; padding: 7px 10px; min-width: 0; }
+input:focus, textarea:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+input[type=number] { width: 88px; }
+input:disabled, textarea:disabled { opacity: .6; }
+.notice { margin-bottom: 16px; padding: 10px 14px; border-radius: 10px; background: var(--bar); color: var(--ink); }
+.notice.warn { background: var(--warn-soft); color: var(--warn); }
+.notice code, .cmd { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12.5px;
+  background: var(--bar); padding: 1px 6px; border-radius: 5px; overflow-wrap: anywhere; }
+.big { font-size: 28px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.stack > * + * { margin-top: 12px; }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px 16px; margin-bottom: 14px; }
+.fields label { display: grid; gap: 4px; color: var(--muted); font-size: 12.5px; }
+.fields .unit { color: var(--muted); font-size: 12.5px; margin-left: 6px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; background: transparent; }
+.seg button.on { background: var(--accent-soft); color: var(--accent); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chips button { padding: 4px 10px; font-size: 12.5px; border-radius: 999px; }
+a { color: var(--accent); }
+.msg { font-size: 12.5px; min-height: 1.2em; }
+.msg.ok { color: var(--accent); } .msg.bad { color: var(--bad); }
+ol.steps { margin: 0; padding: 0; list-style: none; counter-reset: s; }
+ol.steps li { counter-increment: s; display: grid; grid-template-columns: 28px 1fr; gap: 2px 10px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+ol.steps li:last-child { border-bottom: 0; }
+ol.steps li::before { content: counter(s); grid-row: span 2; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center;
+  font-size: 12px; font-weight: 650; background: var(--bar); color: var(--muted); }
+ol.steps li.done::before { content: "✓"; background: var(--accent-soft); color: var(--accent); }
+ol.steps b { font-weight: 600; }
+.ro .ctl { display: none !important; }
 </style>
 </head>
 <body>
 <main>
   <div id="banner">Cannot reach the node daemon. Retrying…</div>
+  <div class="notice" id="ronote" style="display:none">This page is read-only. To control the node, run <code>crowdvm-node open</code> on this machine.</div>
+  <div class="notice warn" id="evacnote" style="display:none"></div>
   <header>
     <div>
       <h1 id="name">CrowdVM Node</h1>
@@ -88,11 +121,63 @@ td.num { font-variant-numeric: tabular-nums; }
     <span class="pill" id="conn">…</span>
     <span class="pill" id="accept">…</span>
     <div class="spacer"></div>
-    <button id="pause">Pause new sandboxes</button>
-    <button id="bench" class="primary">Re-run benchmark</button>
+    <button id="pause" class="ctl">Pause</button>
   </header>
 
   <div class="grid">
+    <section>
+      <h2>Availability</h2>
+      <div class="stack">
+        <div class="seg ctl" role="group" aria-label="Availability mode">
+          <button id="modeAlways" type="button">Always</button>
+          <button id="modeSched" type="button">On a schedule</button>
+        </div>
+        <div id="schedbox" class="stack">
+          <div class="row"><input id="sched" style="flex:1" placeholder="mon-fri 19:00-08:00; sat,sun" aria-label="Schedule">
+            <button id="schedSave" class="ctl primary">Save</button></div>
+          <div class="chips ctl">
+            <button data-s="mon-fri 18:00-08:00; sat,sun">Evenings and weekends</button>
+            <button data-s="daily 22:00-07:00">Nights</button>
+            <button data-s="weekends">Weekends</button>
+          </div>
+          <div class="sub">Local time. Days: mon–sun, daily, weekdays, weekends. A range like 19:00-08:00 runs past midnight.</div>
+        </div>
+        <div id="now"></div>
+        <div class="row ctl"><button id="hold" style="display:none"></button><button id="unhold" style="display:none">Back to the schedule</button></div>
+        <div class="msg" id="availmsg"></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Earned</h2>
+      <div class="big" id="earned">—</div>
+      <div class="sub" id="earned24">credits in total</div>
+      <p class="sub" id="earnhint">One credit is one hour of a default sandbox hosted here.</p>
+      <a id="dash1" target="_blank" rel="noreferrer noopener">History on the dashboard ↗</a>
+    </section>
+
+    <section class="wide">
+      <h2>Shared resources</h2>
+      <div class="fields">
+        <label>CPUs<span><input id="f-cpus" type="number" min="1" step="1"><span class="unit" id="u-cpus"></span></span></label>
+        <label>Memory<span><input id="f-memory" type="number" min="1" step="1"><span class="unit" id="u-memory"></span></span></label>
+        <label>Disk<span><input id="f-disk" type="number" min="1" step="1"><span class="unit">GiB</span></span></label>
+        <label>Max sandboxes<span><input id="f-max" type="number" min="1" step="1"></span></label>
+      </div>
+      <div class="row ctl"><button id="limitsSave" class="primary">Save</button><span class="sub">Applies at once. Running sandboxes are never stopped: a lower limit only keeps new ones out.</span></div>
+      <div class="msg" id="limitsmsg"></div>
+      <div class="notice warn" id="restartnote" style="display:none; margin-top:12px"></div>
+      <div id="meters" style="margin-top:14px"></div>
+    </section>
+
+    <section class="wide">
+      <h2>Running here</h2>
+      <div class="scroll"><table>
+        <thead><tr><th>Sandbox</th><th>State</th><th>Size</th><th>Running for</th><th>Direct</th></tr></thead>
+        <tbody id="vms"></tbody>
+      </table></div>
+    </section>
+
     <section>
       <h2>Server</h2>
       <dl>
@@ -107,24 +192,17 @@ td.num { font-variant-numeric: tabular-nums; }
     </section>
 
     <section>
-      <h2>Shared capacity</h2>
-      <div id="meters"></div>
+      <h2>Leave the pool</h2>
+      <ol class="steps" id="leave"></ol>
     </section>
 
     <section class="wide">
       <h2>Benchmark</h2>
-      <div class="score"><b id="score">—</b><span class="tier" id="tier"></span><span class="sub" id="ranat"></span></div>
+      <div class="row" style="margin-bottom:10px"><div class="score" style="margin:0"><b id="score">—</b><span class="tier" id="tier"></span><span class="sub" id="ranat"></span></div>
+        <div class="spacer"></div><button id="bench" class="ctl">Re-run benchmark</button></div>
       <div class="scroll"><table>
         <thead><tr><th>Dimension</th><th>Measured</th><th>Category</th></tr></thead>
         <tbody id="benchrows"></tbody>
-      </table></div>
-    </section>
-
-    <section class="wide">
-      <h2>Sandboxes</h2>
-      <div class="scroll"><table>
-        <thead><tr><th>Sandbox</th><th>State</th><th>Size</th><th>Started</th><th>Direct</th></tr></thead>
-        <tbody id="vms"></tbody>
       </table></div>
     </section>
 
@@ -140,42 +218,184 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":
 const num = (v, d = 0) => Number(v || 0).toLocaleString(undefined, {maximumFractionDigits: d});
 const gib = (mib) => (mib / 1024).toFixed(mib >= 10240 ? 0 : 1) + " GiB";
 const bytes = (b) => b < 0 ? "?" : b >= 1<<30 ? (b / (1<<30)).toFixed(2) + " GiB" : (b / (1<<20)).toFixed(1) + " MiB";
+const set = (t) => t && !String(t).startsWith("0001");
+function clock(t) {
+  const d = new Date(t), now = new Date();
+  const hm = d.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+  if (d.toDateString() === now.toDateString()) return hm;
+  return d.toLocaleDateString([], {weekday: "short"}) + " " + hm;
+}
 function ago(t) {
-  if (!t) return "—";
+  if (!set(t)) return "—";
   const s = Math.max(0, (Date.now() - new Date(t)) / 1000);
   if (s < 60) return Math.round(s) + "s ago";
   if (s < 3600) return Math.round(s / 60) + "m ago";
   if (s < 86400) return Math.round(s / 3600) + "h ago";
   return new Date(t).toLocaleString();
 }
+function dur(t) {
+  if (!set(t)) return "—";
+  const m = Math.max(0, Math.round((Date.now() - new Date(t)) / 60000));
+  return m < 60 ? m + " min" : Math.floor(m / 60) + " h " + (m % 60) + " min";
+}
 function meter(label, used, total, fmt) {
   const pct = total > 0 ? Math.min(100, used / total * 100) : 0;
-  return `<div class="meter"><div class="row"><span>${label}</span><span class="sub">${fmt(used)} / ${fmt(total)}</span></div>
+  return `<div class="meter"><div class="row" style="justify-content:space-between"><span>${label}</span><span class="sub">${fmt(used)} / ${fmt(total)}</span></div>
     <div class="track"><div class="fill ${pct > 85 ? "hot" : ""}" style="width:${pct}%"></div></div></div>`;
 }
 const cat = (c) => `<span class="cat ${esc(c || "none")}">${esc(c || "none")}</span>`;
-let state = null;
+let state = null, schedMode = null, limitsDirty = false;
 
+function say(id, text, ok) { const e = $(id); e.textContent = text || ""; e.className = "msg " + (ok ? "ok" : "bad"); }
 async function call(path, body) {
   const r = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json", "X-Crowdvm-Ui": "1"},
     body: body ? JSON.stringify(body) : undefined});
-  if (!r.ok) alert((await r.text()) || r.statusText);
-  refresh();
+  let j = {};
+  try { j = await r.json(); } catch (e) {}
+  if (!r.ok) throw new Error((j.error && j.error.message) || j.message || r.statusText);
+  return j;
 }
-$("pause").onclick = () => state && call("/api/pause", {paused: !state.paused});
-$("bench").onclick = () => call("/api/bench");
+const setKey = (key, value) => call("/api/config", {key, value});
+
+$("pause").onclick = async () => {
+  try { await setKey("paused", String(!state.paused)); } catch (e) { alert(e.message); }
+  refresh();
+};
+$("bench").onclick = async () => { try { await call("/api/bench"); } catch (e) { alert(e.message); } refresh(); };
+$("modeAlways").onclick = async () => {
+  if (!state.schedule) { schedMode = "always"; render(state); return; }
+  try { await setKey("schedule", ""); schedMode = null; say("availmsg", "Offers whenever it is not paused.", true); }
+  catch (e) { say("availmsg", e.message); }
+  refresh();
+};
+$("modeSched").onclick = () => { schedMode = "sched"; render(state); $("sched").focus(); };
+document.querySelectorAll(".chips button").forEach((b) => b.onclick = () => { $("sched").value = b.dataset.s; $("sched").focus(); });
+$("schedSave").onclick = async () => {
+  try { await setKey("schedule", $("sched").value.trim()); schedMode = null; say("availmsg", "Schedule saved.", true); }
+  catch (e) { say("availmsg", e.message); }
+  refresh();
+};
+$("hold").onclick = async () => {
+  try { await setKey("schedule-hold", $("hold").dataset.v); say("availmsg", ""); } catch (e) { say("availmsg", e.message); }
+  refresh();
+};
+$("unhold").onclick = async () => { try { await setKey("schedule-hold", ""); } catch (e) { say("availmsg", e.message); } refresh(); };
+
+["f-cpus", "f-memory", "f-disk", "f-max"].forEach((id) => $(id).oninput = () => { limitsDirty = true; });
+$("limitsSave").onclick = async () => {
+  const want = {cpus: $("f-cpus").value, memory: $("f-memory").value + "G", disk: $("f-disk").value + "G", "max-sandboxes": $("f-max").value};
+  const cur = limitValues(state.settings || {});
+  try {
+    for (const [k, v] of Object.entries(want)) if (String(v) !== String(cur[k])) await setKey(k, v);
+    limitsDirty = false;
+    say("limitsmsg", "Saved and applied.", true);
+  } catch (e) { say("limitsmsg", e.message); }
+  refresh();
+};
+function limitValues(st) {
+  const mib = parseInt(st.memory) || 0, disk = parseInt(st.disk) || 0;
+  return {cpus: st.cpus, memory: Math.round(mib / 1024) + "G", disk: disk + "G", "max-sandboxes": st["max-sandboxes"]};
+}
+
+function acceptState(s) {
+  const p = s.pause || {};
+  if (s.evacuation) return ["bad", "Evacuating"];
+  if (s.drained) return ["warn", "Drained"];
+  if (s.paused) return ["warn", s.vms.length ? `Paused · ${s.vms.length} still running` : "Paused"];
+  if (p.paused && p.reason === "hold") return ["warn", "Paused until " + clock(p.until)];
+  if (p.paused) return ["warn", "Outside schedule"];
+  return ["ok", "Offering"];
+}
+
+function renderAvailability(s) {
+  const p = s.pause || {}, hasSched = !!s.schedule, mode = schedMode || (hasSched ? "sched" : "always");
+  $("modeAlways").className = mode === "always" ? "on" : "";
+  $("modeSched").className = mode === "sched" ? "on" : "";
+  $("schedbox").style.display = mode === "sched" ? "" : "none";
+  if (document.activeElement !== $("sched") && schedMode !== "sched") $("sched").value = s.schedule || "";
+  $("sched").disabled = !s.authorized;
+  let now;
+  const n = s.vms.length;
+  if (s.paused) now = "<b>Paused by you.</b> No new sandboxes until you resume" + (n === 1 ? "; the one running here keeps running." : n ? `; the ${n} running here keep running.` : ".");
+  else if (p.paused && p.reason === "hold") now = `<b>Paused</b> until ${esc(clock(p.until))}, then the schedule takes over.`;
+  else if (p.paused) now = `<b>Outside the schedule.</b>` + (set(p.until) ? ` Offers again at ${esc(clock(p.until))}.` : "");
+  else if (s.scheduleHold) now = `<b>Offering</b> until ${esc(clock(p.until))} (held), then the schedule takes over.`;
+  else if (set(p.until)) now = `<b>Offering</b> until ${esc(clock(p.until))}.`;
+  else now = "<b>Offering</b> whenever the server has work.";
+  $("now").innerHTML = now;
+  const holdable = hasSched && !s.paused && set(p.until) && !s.scheduleHold;
+  $("hold").style.display = holdable ? "" : "none";
+  if (holdable) {
+    $("hold").dataset.v = p.paused ? "offer" : "pause";
+    $("hold").textContent = (p.paused ? "Offer until " : "Pause until ") + clock(p.until);
+  }
+  $("unhold").style.display = s.scheduleHold && !s.paused ? "" : "none";
+}
+
+function renderLimits(s) {
+  const st = s.settings || {}, h = s.host || {};
+  $("u-cpus").textContent = "of " + h.cpus;
+  $("u-memory").textContent = "GiB of " + Math.floor((h.memoryMiB || 0) / 1024);
+  $("f-cpus").max = h.cpus;
+  for (const id of ["f-cpus", "f-memory", "f-disk", "f-max"]) $(id).disabled = !s.authorized;
+  if (s.authorized && !limitsDirty && !document.activeElement.id.startsWith("f-")) {
+    const v = limitValues(st);
+    $("f-cpus").value = v.cpus; $("f-memory").value = parseInt(v.memory); $("f-disk").value = parseInt(v.disk); $("f-max").value = v["max-sandboxes"];
+  } else if (!s.authorized) {
+    const c = s.capacity;
+    $("f-cpus").value = c.vcpu; $("f-memory").value = Math.round(c.memoryMiB / 1024); $("f-disk").value = (s.disk && s.disk.budgetGiB) || ""; $("f-max").value = c.maxSandboxes;
+  }
+  const pend = s.restartPending || [];
+  $("restartnote").style.display = pend.length ? "" : "none";
+  $("restartnote").innerHTML = pend.length ? `Saved, applies after a restart: <span class="cmd">${pend.map(esc).join(", ")}</span>. Running sandboxes keep running. ` +
+    (s.canRestart && s.authorized ? `<button id="restart" class="ctl">Restart node</button>` : `Restart the node from a terminal.`) : "";
+  if ($("restart")) $("restart").onclick = async () => {
+    try { await call("/api/restart"); $("restartnote").textContent = "Restarting… the page reconnects by itself."; }
+    catch (e) { alert(e.message); }
+  };
+}
+
+function renderLeave(s) {
+  const name = s.name || "<node>", n = s.vms.length, dash = esc(dashURL(s));
+  const steps = [
+    [s.drained, "Drain", s.drained ? "Takes no new sandboxes and no request waits for it." :
+      `Stop new sandboxes for good: <span class="cmd">crowdvm nodes drain ${esc(name)}</span> or Drain on the <a href="${dash}" target="_blank" rel="noreferrer noopener">dashboard</a>.`],
+    [s.drained && n === 0, "Move the sandboxes", n === 0 ? "Nothing runs here." : s.evacuation ?
+      `${n} left. At ${esc(clock(s.evacuation.deadline))} they are stopped (disks saved) and resumed on other nodes.` :
+      `${n} running. Wait for them to stop, or evacuate: <span class="cmd">crowdvm nodes evacuate ${esc(name)}</span>. Their users get a warning first.`],
+    [false, "Remove the node", `<span class="cmd">crowdvm nodes remove ${esc(name)}</span> or Remove on the <a href="${dash}" target="_blank" rel="noreferrer noopener">dashboard</a>.`],
+    [false, "Uninstall", `<span class="cmd">crowdvm-node uninstall-service</span>, then delete <span class="cmd">${esc(s.dataDir)}</span>.`],
+  ];
+  $("leave").innerHTML = steps.map(([done, t, d]) => `<li class="${done ? "done" : ""}"><b>${t}</b><span class="sub">${d}</span></li>`).join("");
+}
+
+const dashURL = (s) => (s.server || "").replace(/\/+$/, "") + "/nodes";
 
 function render(s) {
   state = s;
+  document.body.classList.toggle("ro", !s.authorized);
+  $("ronote").style.display = s.authorized ? "none" : "";
   $("name").textContent = s.name || "CrowdVM Node";
   document.title = (s.name ? s.name + " · " : "") + "CrowdVM Node";
   $("nodeid").textContent = (s.nodeId || "not joined") + " · v" + s.version + " · " + s.os + "/" + s.arch;
   const c = s.connection || {};
   $("conn").className = "pill " + (c.connected ? "ok" : s.server ? "bad" : "warn");
   $("conn").textContent = c.connected ? "Connected" : s.server ? "Disconnected" : "Not joined";
-  $("accept").className = "pill " + (s.paused ? "warn" : "ok");
-  $("accept").textContent = s.paused ? "Paused" : s.drained ? "Drained by the server admin" : "Accepting sandboxes";
-  $("pause").textContent = s.paused ? "Resume accepting" : "Pause new sandboxes";
+  const [cls, label] = acceptState(s);
+  $("accept").className = "pill " + cls;
+  $("accept").textContent = label;
+  $("pause").textContent = s.paused ? "Resume" : "Pause";
+  $("pause").className = "ctl" + (s.paused ? " primary" : "");
+  $("evacnote").style.display = s.evacuation ? "" : "none";
+  if (s.evacuation) $("evacnote").innerHTML = `This machine is being reclaimed. Sandboxes still here at <b>${esc(clock(s.evacuation.deadline))}</b> are stopped, with their disks saved, and resumed on other nodes.`;
+
+  renderAvailability(s);
+  $("earned").textContent = num(s.earnedCredits, 2);
+  $("earned24").textContent = `credits in total · ${num(s.earned24h, 2)} in the last 24 h`;
+  $("dash1").href = dashURL(s);
+  $("dash1").style.display = s.server ? "" : "none";
+  renderLimits(s);
+
   $("server").textContent = s.server || "—";
   $("since").textContent = c.connected ? ago(c.since) : "no";
   $("hb").textContent = ago(c.lastHeartbeat);
@@ -186,8 +406,8 @@ function render(s) {
 
   const cap = s.capacity, u = s.usage;
   $("meters").innerHTML =
-    meter("vCPU", u.vcpu, cap.vcpu, (v) => num(v)) +
-    meter("Memory", u.memoryMiB, cap.memoryMiB, gib) +
+    meter("vCPU in use", u.vcpu, cap.vcpu, (v) => num(v)) +
+    meter("Memory in use", u.memoryMiB, cap.memoryMiB, gib) +
     meter("Disk (sandbox sizes, thin)", u.diskGiB, cap.diskGiB, (v) => num(v) + " GiB") +
     (s.disk ? meter("Disk (stored)", s.disk.usedBytes, s.disk.budgetGiB * 2 ** 30, bytes) : "") +
     meter("Sandboxes", u.vms, cap.maxSandboxes, (v) => num(v));
@@ -195,7 +415,7 @@ function render(s) {
   const b = s.benchmark || {}, cs = b.categories || {};
   $("bench").disabled = s.benchmarkRunning;
   $("bench").textContent = s.benchmarkRunning ? "Benchmarking…" : "Re-run benchmark";
-  if (!b.ranAt || b.ranAt.startsWith("0001")) {
+  if (!set(b.ranAt)) {
     $("score").textContent = "—"; $("tier").className = "tier"; $("tier").textContent = "";
     $("ranat").textContent = s.benchmarkRunning ? "running…" : "not run yet";
     $("benchrows").innerHTML = "";
@@ -218,11 +438,12 @@ function render(s) {
 
   $("vms").innerHTML = (s.vms || []).length ? s.vms.map((v) => `<tr>
       <td class="mono">${esc(v.sandboxId)}</td>
-      <td><span class="pill ${v.state === "running" ? "ok" : v.state === "error" ? "bad" : v.state === "stopped" ? "" : "warn"}">${esc(v.state)}${v.state === "starting" && v.guestReady === false ? "" : ""}</span>${v.error ? `<div class="err">${esc(v.error)}</div>` : ""}</td>
+      <td><span class="pill ${v.state === "running" ? "ok" : v.state === "error" ? "bad" : v.state === "stopped" ? "" : "warn"}">${esc(v.state)}</span>${v.error ? `<div class="err">${esc(v.error)}</div>` : ""}</td>
       <td class="num">${esc(v.size.name || "")} <span class="sub">${v.size.vcpu} vCPU · ${gib(v.size.memoryMiB)}</span></td>
-      <td>${v.startedAt && !v.startedAt.startsWith("0001") ? ago(v.startedAt) : "—"}</td>
+      <td>${dur(v.startedAt)}</td>
       <td class="mono">${esc(Object.entries(v.direct || {}).map(([k, a]) => k + " " + a).join(", ")) || "—"}</td></tr>`).join("")
-    : `<tr><td colspan="5" class="empty">No sandboxes on this node.</td></tr>`;
+    : `<tr><td colspan="5" class="empty">Nothing runs here right now.</td></tr>`;
+  renderLeave(s);
 
   const xs = s.transfers || [];
   $("xfersec").style.display = xs.length ? "" : "none";

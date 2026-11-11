@@ -254,6 +254,7 @@ Usage:
 
 Available Commands:
   drain       Stop placing new sandboxes on a node (running ones keep running)
+  evacuate    Take a node back: drain it, then stop its sandboxes and resume them on other nodes
   info        Show one node: capacity, benchmark, sandboxes, earned credits
   join-token  Create a token for `crowdvm-node join` (admins)
   join-tokens List node join tokens (admins)
@@ -275,6 +276,31 @@ Usage:
 
 Flags:
   -h, --help   help for drain
+```
+
+### crowdvm admin nodes evacuate
+
+```text
+Drain a node and, after a grace period, stop every sandbox still on it and
+resume it on another node. Stopping saves the disk, so files survive but
+running processes do not. Sandboxes with snapshots off can't be moved and
+are erased. Their owners get a notice when the evacuation starts.
+
+Run it again to change the deadline, or with --cancel during the grace period
+(the node stays drained; undrain it separately).
+
+Usage:
+  crowdvm admin nodes evacuate NODE [flags]
+
+Examples:
+  crowdvm nodes evacuate lab-desktop             # in 10 minutes
+  crowdvm nodes evacuate lab-desktop --grace 0   # now
+  crowdvm nodes evacuate lab-desktop --cancel
+
+Flags:
+      --cancel           cancel the evacuation during its grace period
+      --grace duration   time before the sandboxes are stopped (0 = now, at most 24h) (default 10m0s)
+  -h, --help             help for evacuate
 ```
 
 ### crowdvm admin nodes info
@@ -1054,8 +1080,9 @@ Flags:
 ```text
 Link a GitHub user or organization so its workflows can run on CrowdVM.
 CrowdVM has no GitHub App: give a token (fine-grained: Actions read,
-Administration read/write, Metadata read; classic: repo, plus admin:org for
-organizations). Jobs bill the wallet in scope (--org or 'crowdvm org switch').
+Administration read/write, Metadata read, plus Members read for an
+organization; classic: repo, plus admin:org for organizations). An
+organization can only be linked with a token of one of its admins. Jobs bill the wallet in scope (--org or 'crowdvm org switch').
 Without --yes the link stays pending until you confirm it.
 
 Usage:
@@ -1690,7 +1717,8 @@ Flags:
 Run a command through the API (no SSH). One argument is a shell command
 line; more arguments run as argv. The default timeout is 30 seconds; above 600
 or with 0 (no limit) the command runs in the background and its output streams
-live, surviving network cuts. Exit code 124 means the timeout hit.
+live, surviving network cuts. Exit code 124 means the timeout hit. ID may also
+be the sandbox's name; without one the current sandbox runs the command.
 
 Usage:
   crowdvm exec [ID] [flags] [--] COMMAND...
@@ -2124,6 +2152,7 @@ Usage:
 
 Available Commands:
   drain       Stop placing new sandboxes on a node (running ones keep running)
+  evacuate    Take a node back: drain it, then stop its sandboxes and resume them on other nodes
   info        Show one node: capacity, benchmark, sandboxes, earned credits
   join-token  Create a token for `crowdvm-node join` (admins)
   join-tokens List node join tokens (admins)
@@ -2145,6 +2174,31 @@ Usage:
 
 Flags:
   -h, --help   help for drain
+```
+
+### crowdvm nodes evacuate
+
+```text
+Drain a node and, after a grace period, stop every sandbox still on it and
+resume it on another node. Stopping saves the disk, so files survive but
+running processes do not. Sandboxes with snapshots off can't be moved and
+are erased. Their owners get a notice when the evacuation starts.
+
+Run it again to change the deadline, or with --cancel during the grace period
+(the node stays drained; undrain it separately).
+
+Usage:
+  crowdvm nodes evacuate NODE [flags]
+
+Examples:
+  crowdvm nodes evacuate lab-desktop             # in 10 minutes
+  crowdvm nodes evacuate lab-desktop --grace 0   # now
+  crowdvm nodes evacuate lab-desktop --cancel
+
+Flags:
+      --cancel           cancel the evacuation during its grace period
+      --grace duration   time before the sandboxes are stopped (0 = now, at most 24h) (default 10m0s)
+  -h, --help             help for evacuate
 ```
 
 ### crowdvm nodes info
@@ -3138,7 +3192,8 @@ Flags:
 ```text
 Open an SSH session (system ssh through a crowdvm tunnel; the key lives in
 the crowdvm config directory and is authorized automatically). For one command,
-'crowdvm exec' is faster. Pass -t for full-screen tools.
+'crowdvm exec' is faster. Pass -t for full-screen tools. ID may also be the
+sandbox's name.
 
 Usage:
   crowdvm ssh [-t] ID [--] [COMMAND...] [flags]
