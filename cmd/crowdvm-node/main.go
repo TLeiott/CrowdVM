@@ -13,11 +13,13 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -52,7 +54,7 @@ func rootCmd() *cobra.Command {
 	}
 	root.PersistentFlags().StringVar(&g.dataDir, "data-dir", node.DefaultDataDir(), "node data directory (config, images, snapshots, VMs)")
 	root.PersistentFlags().BoolVarP(&g.verbose, "verbose", "v", false, "debug logging")
-	root.AddCommand(joinCmd(g), runCmd(g), benchCmd(g), statusCmd(g), configCmd(g), imageCmd(g),
+	root.AddCommand(joinCmd(g), runCmd(g), benchCmd(g), statusCmd(g), openCmd(g), configCmd(g), imageCmd(g),
 		installServiceCmd(g), uninstallServiceCmd(), versionCmd())
 	return root
 }
@@ -211,13 +213,30 @@ func runCmd(g *globals) *cobra.Command {
 					return err
 				}
 			}
-			daemon := func(ctx context.Context, log *slog.Logger) error {
+			// supervised: a service manager starts the daemon again after it
+			// exits with an error, so the local page may offer "Restart node".
+			daemon := func(ctx context.Context, log *slog.Logger, supervised bool) (err error) {
 				drv, err := newDriver(cfg, log)
 				if err != nil {
 					return err
 				}
 				defer drv.Close()
 				n := node.New(cfg, drv, log)
+				ctx, stop := context.WithCancel(ctx)
+				defer stop()
+				var restart atomic.Bool
+				if supervised {
+					n.SetRestarter(func() {
+						log.Info("restart requested on the local page")
+						restart.Store(true)
+						stop()
+					})
+				}
+				defer func() {
+					if restart.Load() && err == nil {
+						err = errRestart // non-zero exit: the service manager starts it again
+					}
+				}()
 				if addr := cfg.UIListen(); addr != "off" {
 					go func() {
 						if err := n.ServeUI(ctx, addr); err != nil {
@@ -226,7 +245,8 @@ func runCmd(g *globals) *cobra.Command {
 					}()
 				}
 				log.Info("crowdvm-node starting", "version", node.Version, "node", cfg.NodeID, "server", cfg.Server, "driver", drv.Name(), "data", cfg.DataDir)
-				return n.Run(ctx)
+				err = n.Run(ctx)
+				return err
 			}
 			// Started by the Windows service manager: no console, log to a file.
 			if handled, err := service.RunService(func(ctx context.Context) error {
@@ -235,18 +255,21 @@ func runCmd(g *globals) *cobra.Command {
 					return err
 				}
 				defer f.Close()
-				return daemon(ctx, g.loggerTo(f))
+				return daemon(ctx, g.loggerTo(f), true)
 			}); handled {
 				return err
 			}
 			ctx, cancel := signalCtx()
 			defer cancel()
-			return daemon(ctx, g.logger())
+			return daemon(ctx, g.logger(), service.RestartsOnExit())
 		},
 	}
 	f.register(c)
 	return c
 }
+
+// errRestart ends a daemon whose owner asked for a restart on the local page.
+var errRestart = errors.New("restarting (requested on the local page)")
 
 // uiURL is the local daemon's status UI base URL.
 func uiURL(cfg *node.Config) string {
@@ -269,6 +292,9 @@ func daemonBody(ctx context.Context, cfg *node.Config, method, path, body string
 	}
 	req, _ := http.NewRequestWithContext(ctx, method, uiURL(cfg)+path, strings.NewReader(body))
 	req.Header.Set(node.UIHeader, "cli")
+	if t, err := node.ReadUIToken(cfg.DataDir); err == nil {
+		req.Header.Set("Authorization", "Bearer "+t)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -412,7 +438,7 @@ func statusCmd(g *globals) *cobra.Command {
 				b, _ := node.LoadBenchmark(cfg.DataDir)
 				st = node.Status{NodeID: cfg.NodeID, Name: cfg.NodeName(), Version: node.Version, Server: cfg.Server,
 					Driver: cfg.Driver, OS: runtime.GOOS, Arch: runtime.GOARCH, DataDir: cfg.DataDir, Paused: cfg.Paused,
-					Benchmark: b, Capacity: cfg.Capacity()}
+					Pause: cfg.EffectivePause(time.Now()), Schedule: cfg.Schedule, Benchmark: b, Capacity: cfg.Capacity()}
 			}
 			if asJSON {
 				enc := json.NewEncoder(os.Stdout)
@@ -444,10 +470,12 @@ func printStatus(w io.Writer, s node.Status, running bool, ui string) {
 	if running {
 		fmt.Fprintf(w, "UI        %s\n", ui)
 	}
-	if s.Paused {
-		fmt.Fprintf(w, "Accepting PAUSED (no new sandboxes)\n")
-	} else if s.Drained {
-		fmt.Fprintf(w, "Accepting DRAINED by you or an admin (no new sandboxes; crowdvm nodes undrain)\n")
+	fmt.Fprintf(w, "Accepting %s\n", acceptLine(s))
+	if s.Schedule != "" {
+		fmt.Fprintf(w, "Schedule  %s\n", s.Schedule)
+	}
+	if running && (s.EarnedCredits != 0 || s.Earned24h != 0) {
+		fmt.Fprintf(w, "Earned    %.2f credits (%.2f in the last 24 h)\n", s.EarnedCredits, s.Earned24h)
 	}
 	if s.Benchmark.Tier != "" {
 		fmt.Fprintf(w, "Benchmark score %d, tier %s  %v\n", s.Benchmark.Score, s.Benchmark.Tier, readableMap(s.Benchmark.Categories))
@@ -473,6 +501,29 @@ func printStatus(w io.Writer, s node.Status, running bool, ui string) {
 	for _, t := range s.Transfers {
 		fmt.Fprintf(w, "Transfer  %s %s %s  %d/%d bytes\n", t.Direction, t.Kind, t.ID, t.Bytes, t.Total)
 	}
+}
+
+// acceptLine says whether the node takes new sandboxes, and why not.
+func acceptLine(s node.Status) string {
+	clock := func(t time.Time) string { return t.Local().Format("Mon 15:04") }
+	switch {
+	case s.Evacuation != nil:
+		return fmt.Sprintf("EVACUATING: sandboxes still here at %s are stopped and resumed on other nodes", clock(s.Evacuation.Deadline))
+	case s.Drained:
+		return "DRAINED by you or an admin (no new sandboxes; crowdvm nodes undrain)"
+	case s.Paused:
+		return "PAUSED by you (no new sandboxes; crowdvm-node config set paused false)"
+	case s.Pause.Paused && s.Pause.Reason == node.PauseHold:
+		return "PAUSED until " + clock(s.Pause.Until) + " (hold)"
+	case s.Pause.Paused:
+		if s.Pause.Until.IsZero() {
+			return "PAUSED (outside the schedule)"
+		}
+		return "PAUSED outside the schedule (offers again " + clock(s.Pause.Until) + ")"
+	case !s.Pause.Until.IsZero():
+		return "yes, until " + clock(s.Pause.Until)
+	}
+	return "yes"
 }
 
 func configCmd(g *globals) *cobra.Command {
@@ -503,31 +554,106 @@ func configCmd(g *globals) *cobra.Command {
 		},
 	}, &cobra.Command{
 		Use:   "set key value",
-		Short: "Change a setting (restart the daemon to apply; capacity keys accept \"\" for the default)",
-		Args:  cobra.ExactArgs(2),
+		Short: "Change a setting (capacity, pause and schedule keys apply at once; others after a restart)",
+		Long: `Change a setting. While the daemon runs, the change goes through it: it
+checks the value, saves only that key, and applies cpus, memory, disk,
+max-sandboxes, paused, schedule and schedule-hold at once. Other keys apply
+after a restart (sandboxes keep running). Capacity keys accept "" for the default.
+
+schedule: weekly windows in which the node offers, in local time, e.g.
+  "mon-fri 19:00-08:00; sat,sun" (days: mon..sun, daily, weekdays, weekends).
+schedule-hold: "offer" or "pause" until the schedule's next boundary, "" to clear.`,
+		Args: cobra.ExactArgs(2),
 		RunE: func(c *cobra.Command, args []string) error {
 			cfg, err := g.config()
 			if err != nil {
 				return err
 			}
+			body, _ := json.Marshal(map[string]string{"key": args[0], "value": args[1]})
+			var res struct {
+				Applied bool `json:"applied"`
+			}
+			ran, err := daemonBody(c.Context(), cfg, "POST", "/api/config", string(body), &res)
+			if err != nil && !strings.Contains(err.Error(), " 401 ") && !strings.Contains(err.Error(), " 404 ") {
+				return err // e.g. an invalid value
+			}
+			if ran && err == nil {
+				if res.Applied {
+					fmt.Println("Applied.")
+				} else {
+					fmt.Println("Saved. Restart the node to apply it (sandboxes keep running).")
+				}
+				return nil
+			}
+			// The daemon isn't running (or we can't read its token): write the file.
 			if err := cfg.Set(args[0], args[1]); err != nil {
 				return err
 			}
 			if err := cfg.Save(); err != nil {
 				return err
 			}
-			if args[0] == "paused" {
-				p := "false"
-				if cfg.Paused {
-					p = "true"
-				}
-				// Apply immediately when the daemon is running.
-				_, _ = daemonBody(c.Context(), cfg, "POST", "/api/pause", `{"paused":`+p+`}`, nil)
+			if ran {
+				fmt.Println("Saved. The running daemon applies it after a restart (its control token isn't readable here).")
 			}
 			return nil
 		},
 	})
 	return c
+}
+
+func openCmd(g *globals) *cobra.Command {
+	var printOnly bool
+	c := &cobra.Command{
+		Use:   "open",
+		Short: "Open the node's local page, logged in to control it",
+		Long: `Open the node's local page (pause, schedule, shared resources, what runs
+here and what it earned) in the browser, logged in with the control token
+in the data dir. Without the login the page is read-only.`,
+		Args: cobra.NoArgs,
+		RunE: func(c *cobra.Command, _ []string) error {
+			cfg, err := g.config()
+			if err != nil {
+				return err
+			}
+			if cfg.UIListen() == "off" {
+				return errors.New("the local page is off (ui-addr off); turn it on with: crowdvm-node config set ui-addr \"\"")
+			}
+			if ran, _ := daemon(c.Context(), cfg, "GET", "/api/status", nil); !ran {
+				return errors.New("the node daemon is not running; start it (crowdvm-node run, or the installed service) first")
+			}
+			t, err := node.ReadUIToken(cfg.DataDir)
+			if err != nil {
+				return fmt.Errorf("cannot read the control token (%w); run this as the user who owns %s", err, cfg.DataDir)
+			}
+			u := uiURL(cfg) + "/login?k=" + t
+			if printOnly || openBrowser(u) != nil {
+				fmt.Println("Open this link on this machine (it logs you in):")
+			} else {
+				fmt.Println("Opened the node's page. If no browser appeared, open this link on this machine:")
+			}
+			fmt.Println(u)
+			return nil
+		},
+	}
+	c.Flags().BoolVar(&printOnly, "print", false, "only print the login link")
+	return c
+}
+
+// openBrowser opens url in the desktop's default browser.
+func openBrowser(url string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	case "darwin":
+		cmd = exec.Command("open", url)
+	default:
+		if os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == "" {
+			return errors.New("no desktop session")
+		}
+		cmd = exec.Command("xdg-open", url)
+	}
+	return cmd.Start()
 }
 
 func installServiceCmd(g *globals) *cobra.Command {

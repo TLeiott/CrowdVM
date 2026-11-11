@@ -62,7 +62,11 @@ type Config struct {
 	WarmPool int               `json:"warmPool,omitempty"`
 	UIAddr   string            `json:"uiAddr,omitempty"` // default 127.0.0.1:8421; "off" disables
 	Labels   map[string]string `json:"labels,omitempty"`
-	Paused   bool              `json:"paused,omitempty"` // do not accept new sandboxes
+	Paused   bool              `json:"paused,omitempty"` // do not accept new sandboxes (master switch)
+	// Schedule: weekly windows in which the node offers (schedule.go; ""
+	// = always). ScheduleHold overrides it until its next boundary.
+	Schedule     string        `json:"schedule,omitempty"`
+	ScheduleHold *ScheduleHold `json:"scheduleHold,omitempty"`
 	// NoKeepAwake: let the machine idle-suspend while it hosts sandboxes
 	// (default: a logind sleep inhibitor holds it awake; awake.go).
 	NoKeepAwake bool `json:"noKeepAwake,omitempty"`
@@ -279,7 +283,7 @@ func (c Config) SnapshotEvery() (d time.Duration, ok bool) {
 
 // ConfigKeys lists the keys accepted by Get/Set (CLI `config get/set`).
 var ConfigKeys = []string{"server", "name", "driver", "cpus", "memory", "disk", "disk-overcommit", "disk-reserve",
-	"max-sandboxes", "direct-host", "guest-binary", "cli-binary", "nested", "lazy-chain", "warm-pool", "ui-addr", "paused", "keep-awake", "snapshot-interval", "node-id",
+	"max-sandboxes", "direct-host", "guest-binary", "cli-binary", "nested", "lazy-chain", "warm-pool", "ui-addr", "paused", "keep-awake", "schedule", "schedule-hold", "snapshot-interval", "node-id",
 	"net", "net.allow-lan", "net.allow", "net.deny", "gpu.passthrough", "gpu.virgl"}
 
 // Get returns a config value by CLI key.
@@ -324,6 +328,17 @@ func (c Config) Get(key string) (string, error) {
 		return strconv.FormatBool(c.Paused), nil
 	case "keep-awake":
 		return strconv.FormatBool(!c.NoKeepAwake), nil
+	case "schedule":
+		return c.Schedule, nil
+	case "schedule-hold":
+		if h := c.ScheduleHold; h != nil && time.Now().Before(h.Until) {
+			verb := "pause"
+			if h.Offer {
+				verb = "offer"
+			}
+			return verb + " until " + h.Until.Local().Format("Mon 15:04"), nil
+		}
+		return "", nil
 	case "snapshot-interval":
 		return c.SnapshotInterval, nil
 	case "node-id":
@@ -468,6 +483,16 @@ func (c *Config) Set(key, val string) error {
 			on, err = strconv.ParseBool(val)
 		}
 		c.NoKeepAwake = !on
+	case "schedule":
+		if _, err = ParseSchedule(val); err == nil {
+			c.Schedule = strings.TrimSpace(val)
+			c.ScheduleHold = nil // a hold belongs to the schedule it was made for
+		}
+	case "schedule-hold":
+		var h *ScheduleHold
+		if h, err = c.holdFor(val, time.Now()); err == nil {
+			c.ScheduleHold = h
+		}
 	case "snapshot-interval":
 		c.SnapshotInterval = val
 		if _, ok := c.SnapshotEvery(); !ok && val != "" && val != "0" {

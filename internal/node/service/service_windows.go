@@ -205,3 +205,7 @@ func schtasks(out io.Writer, args ...string) error {
 	}
 	return nil
 }
+
+// RestartsOnExit is false outside RunService; inside it, the service's
+// recovery actions restart the node after a failed exit.
+func RestartsOnExit() bool { return false }

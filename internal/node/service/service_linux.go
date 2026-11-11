@@ -113,3 +113,13 @@ func systemctl(out io.Writer, args ...string) error {
 
 // RunService: Linux services are plain processes (systemd); handled = false.
 func RunService(func(context.Context) error) (bool, error) { return false, nil }
+
+// RestartsOnExit reports whether this process runs as the crowdvm-node
+// systemd unit, whose Restart=always starts it again after any exit.
+func RestartsOnExit() bool {
+	if os.Getenv("INVOCATION_ID") == "" {
+		return false
+	}
+	b, err := os.ReadFile("/proc/self/cgroup")
+	return err == nil && strings.Contains(string(b), "/"+Name+".service")
+}
