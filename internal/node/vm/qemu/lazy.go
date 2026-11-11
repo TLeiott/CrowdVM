@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/crowdvm/crowdvm/internal/node/vm"
 	"github.com/crowdvm/crowdvm/internal/proto"
@@ -52,7 +54,19 @@ func detectLazy(qimg string) bool {
 	for _, f := range regexp.MustCompile(`\S+`).FindAll(m[1], -1) {
 		has[string(f)] = true
 	}
-	return has["http"] && has["copy-on-read"]
+	return has["http"] && has["copy-on-read"] && httpDriverLoads(qimg)
+}
+
+// httpDriverLoads: modular QEMU builds (Arch, CachyOS: the qemu-block-curl
+// package) list "http" in --help even when the curl module is missing, and
+// every lazy boot then fails with "Unknown protocol 'http'". Open a closed
+// local port: a missing driver says so, a present one fails to connect.
+func httpDriverLoads(qimg string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, _ := exec.CommandContext(ctx, qimg, "info", "http://127.0.0.1:1/probe").CombinedOutput()
+	s := string(out)
+	return ctx.Err() == nil && !strings.Contains(s, "Unknown protocol") && !strings.Contains(s, "Unknown driver")
 }
 
 func (d *Driver) LazyChain() bool { return d.lazyOK }

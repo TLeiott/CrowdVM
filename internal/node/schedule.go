@@ -170,14 +170,22 @@ func (c Config) EffectivePause(now time.Time) PauseState {
 	if c.Paused {
 		return PauseState{Paused: true, Reason: PauseOwner}
 	}
+	s, err := ParseSchedule(c.Schedule)
 	if h := c.ScheduleHold; h != nil && now.Before(h.Until) {
 		ps := PauseState{Paused: !h.Offer, Until: h.Until}
 		if ps.Paused {
 			ps.Reason = PauseHold
 		}
+		// The hold ends at a boundary where the schedule usually switches
+		// to the same state ("offer until 03:00" when the window opens at
+		// 03:00): the state really changes at the schedule's next boundary.
+		if err == nil && len(s) > 0 && s.Active(h.Until) == h.Offer {
+			if next := s.NextChange(h.Until); !next.IsZero() {
+				ps.Until = next
+			}
+		}
 		return ps
 	}
-	s, err := ParseSchedule(c.Schedule)
 	if err != nil || len(s) == 0 {
 		return PauseState{}
 	}

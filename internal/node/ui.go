@@ -176,12 +176,17 @@ func (n *Node) SetConfig(key, val string) (applied bool, err error) {
 	if err != nil {
 		return false, err
 	}
+	running, _ := n.config().Get(key)
+	saved, _ := disk.Get(key)
 	n.mu.Lock()
 	if !applied {
 		if n.restartKeys == nil {
 			n.restartKeys = map[string]bool{}
 		}
-		n.restartKeys[key] = true
+		n.restartKeys[key] = saved != running // back to the running value: nothing to restart for
+		if !n.restartKeys[key] {
+			delete(n.restartKeys, key)
+		}
 	}
 	n.mu.Unlock()
 	n.markInfoDirty()

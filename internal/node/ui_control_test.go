@@ -159,6 +159,11 @@ func TestUIConfigLiveAndRestart(t *testing.T) {
 	if h.node.config().Net.AllowLAN {
 		t.Fatal("restart-only key applied live")
 	}
+	// Set back to the running value: nothing is pending any more.
+	uiPost(t, http.DefaultClient, srv.URL+"/api/config", "tok", `{"key":"net.allow-lan","value":"false"}`)
+	if p := h.node.Status().RestartPending; len(p) != 0 {
+		t.Fatalf("pending after reverting %v", p)
+	}
 	// Invalid values are refused and not saved.
 	if resp := uiPost(t, http.DefaultClient, srv.URL+"/api/config", "tok", `{"key":"cpus","value":"-3"}`); resp.StatusCode != 400 {
 		t.Fatalf("bad cpus: %d", resp.StatusCode)
@@ -261,6 +266,12 @@ func TestEffectivePause(t *testing.T) {
 	if ps := c.EffectivePause(night); ps.Paused {
 		t.Fatalf("hold offer %+v", ps)
 	}
+	// A hold that offers until the window opens offers until it closes.
+	c.ScheduleHold = &ScheduleHold{Offer: true, Until: time.Date(2026, 11, 12, 9, 0, 0, 0, time.Local)}
+	if ps := c.EffectivePause(night); ps.Paused || !ps.Until.Equal(time.Date(2026, 11, 12, 17, 0, 0, 0, time.Local)) {
+		t.Fatalf("hold until the window: %+v", ps)
+	}
+	c.ScheduleHold = &ScheduleHold{Offer: true, Until: night.Add(time.Hour)}
 	if ps := c.EffectivePause(night.Add(2 * time.Hour)); !ps.Paused || ps.Reason != PauseSchedule {
 		t.Fatalf("expired hold %+v", ps)
 	}

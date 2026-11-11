@@ -315,7 +315,8 @@ function renderAvailability(s) {
   if (document.activeElement !== $("sched") && schedMode !== "sched") $("sched").value = s.schedule || "";
   $("sched").disabled = !s.authorized;
   let now;
-  if (s.paused) now = "<b>Paused by you.</b> No new sandboxes until you resume" + (s.vms.length ? `; the ${s.vms.length} running here keep running.` : ".");
+  const n = s.vms.length;
+  if (s.paused) now = "<b>Paused by you.</b> No new sandboxes until you resume" + (n === 1 ? "; the one running here keeps running." : n ? `; the ${n} running here keep running.` : ".");
   else if (p.paused && p.reason === "hold") now = `<b>Paused</b> until ${esc(clock(p.until))}, then the schedule takes over.`;
   else if (p.paused) now = `<b>Outside the schedule.</b>` + (set(p.until) ? ` Offers again at ${esc(clock(p.until))}.` : "");
   else if (s.scheduleHold) now = `<b>Offering</b> until ${esc(clock(p.until))} (held), then the schedule takes over.`;
