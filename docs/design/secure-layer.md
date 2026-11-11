@@ -2,7 +2,13 @@
 
 Design for isolating sandboxes from the machines that host them, and those machines
 from the sandboxes. Written against the code as of 2026-11-11 (commit f2ef8d4).
-Nothing here is implemented yet.
+
+**Status (branch `feat/secure-layer`):** implemented: phase 0 (blob scoping, no core
+dumps, console trim), phases 1a + 1b (boot ticket, pinned channel, API and events over
+it, ops subset on the node side), and phase 4 v1 as **egress over the guest channel**
+(transparent TCP proxy + DNS in the guest agent, server dials out; not WireGuard, see
+the critique below §5.6). Not yet: phase 2 (encrypted data disk), phase 3 beyond core
+dumps (QMP/NIC fd passing, Landlock, tiers), the CLI as exit.
 
 ## 1. Summary
 

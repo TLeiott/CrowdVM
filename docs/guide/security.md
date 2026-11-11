@@ -13,11 +13,25 @@ not share files or processes, and one sandbox cannot reach another one over the
 network. Inside the sandbox you are root (`sudo` needs no password), so the boundary
 is between sandboxes and between accounts, not between processes in one sandbox.
 
-### The node owner can read your sandbox
+### What the node owner can and cannot see
 
-A sandbox runs on someone's machine. Whoever controls that machine can read the VM's
-disk and memory, including your code, environment variables and tokens. CrowdVM cannot
-prevent this; it is how crowdsourced compute works.
+A sandbox runs on someone's machine. CrowdVM keeps the node out of the sandbox as far
+as software on ordinary PCs can:
+
+| The node owner | Today |
+|---|---|
+| reads your configuration (environment variables, secret files, SSH keys, registry and AI logins) | **no.** The node gets a boot stub; the VM fetches its configuration from the server over TLS pinned to the server's key |
+| runs commands in the sandbox, reads or writes its files, opens tunnels to it | **no.** The sandbox's API is served only on its channel to the server; the node may only check its health and pause or stop it |
+| sees what the sandbox does on the network | **no.** TCP and DNS go through the channel and leave from the server. The node sees one encrypted connection, its timing and volume |
+| reads the sandbox's memory | not with normal tools: no core dumps, no debugger access (Linux `ptrace` restrictions), the VM's control socket is held by the node. **Yes as root** |
+| reads the sandbox's disk and snapshots | **yes**: they are stored unencrypted on the node and the server (disk encryption comes next) |
+| changes CrowdVM or the VM image to get in | **yes**: whoever has root on a machine controls the VMs on it |
+
+The last two rows are the limit. A node owner who wants in has to read the disk files
+or modify their CrowdVM installation, which is a deliberate act, not a `cat`. Only
+confidential-computing hardware (AMD SEV-SNP, Intel TDX) closes it; CrowdVM does not
+use it yet. When a node presents a sandbox's one-time boot ticket a second time, the
+sandbox's owner gets a notice ("Possible tampering on a node").
 
 - Only put secrets into a sandbox when you trust the owners of the nodes it can land on.
 - Pin sensitive work to nodes you trust: `crowdvm new --node <name>` or
@@ -27,6 +41,26 @@ prevent this; it is how crowdsourced compute works.
 - AI credentials can go through the server's AI proxy (environment setting "Proxy AI
   credentials"), so the provider key never enters the VM. The sandbox gets a
   placeholder that only works through the proxy.
+
+### The sandbox's network
+
+A sandbox reaches the internet through the server, not through the node that hosts it:
+
+- TCP connections and DNS lookups go through the sandbox's encrypted channel and leave
+  from the server's network, so they show the server's address, not the node owner's.
+- The server refuses connections to private (LAN), loopback, link-local, CGNAT and
+  Tailscale addresses and cloud metadata services. The server's own API stays
+  reachable.
+- UDP other than DNS (QUIC, for example) is refused, and `ping` does not work.
+  Programs fall back to TCP.
+- If root in the sandbox removes CrowdVM's firewall rules, the sandbox only cuts itself
+  off: the node lets it reach nothing but the server.
+- Direct ports (`direct-host` nodes) enter the sandbox through the node, which sees
+  that traffic.
+
+The server operator can turn this off with `crowdvm-server serve --node-egress`; the
+sandboxes then reach the internet through their nodes, as described in
+[For node owners](#network).
 
 ### What a sandbox holds
 
@@ -103,8 +137,14 @@ can schedule on.
 
 ### Network
 
-Every VM gets a private network stack inside the node process. Outbound traffic goes
-through ordinary sockets of your machine after an egress check:
+By default a sandbox's internet traffic does not leave from your machine: it goes
+through an encrypted connection to the CrowdVM server and out from there (see
+[The sandbox's network](#the-sandboxs-network)). Your node lets such a VM reach only
+the server, and its DNS resolver does not answer it.
+
+When the server runs with `--node-egress`, or for sandboxes on older nodes, the VM uses
+a private network stack inside the node process, and outbound traffic goes through
+ordinary sockets of your machine after an egress check:
 
 | Destination | Default |
 |---|---|
@@ -121,8 +161,18 @@ through the server and the node's tunnel. Change the policy with `crowdvm-node c
 set` (see [Node owner guide](node-owners.md#network-policy)). `--net slirp` turns the
 isolation off and is only a fallback for broken setups.
 
-Traffic still leaves from your IP address. Anything a sandbox does on the internet
-looks like it came from your network.
+In that mode traffic leaves from your IP address, and anything a sandbox does on the
+internet looks like it came from your network.
+
+### What your machine keeps of a sandbox
+
+- **Not stored:** the sandbox's configuration and secrets, and a token for its API. The
+  config drive holds a boot stub with a one-time ticket that is useless once the VM
+  booted.
+- **Stored:** the VM's disk and snapshot layers (not encrypted yet) and the last 256
+  KiB of its serial console. CrowdVM's processes write no core dumps, so a crashed VM
+  leaves none of its memory on your disk. Swap and hibernation can still write VM
+  memory to disk; use encrypted swap if that matters to you.
 
 ### Taking your machine back
 
