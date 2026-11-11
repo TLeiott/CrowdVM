@@ -334,7 +334,7 @@ func userCmd(args []string) error {
 		if err != nil {
 			return fmt.Errorf("no user %q", fl.Arg(0))
 		}
-		if err := s.SetPassword(u.ID, fl.Arg(1)); err != nil {
+		if err := s.SetPassword(u.ID, fl.Arg(1), ""); err != nil { // bugs-r11-sonnet 6
 			return err
 		}
 		fmt.Println("password changed")

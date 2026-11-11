@@ -948,7 +948,7 @@ func (s *Server) handleCreateSandbox(c *Ctx) error {
 	pol := &SandboxPolicy{Op: "create", Owner: u, SnapshotsReq: req.Snapshots, MonitorReq: req.Monitoring, Snapshots: snapsOn, Monitoring: monOn}
 	for _, fn := range s.Hooks.NewSandbox {
 		if err := fn(c, pol); err != nil {
-			return err
+			return fail(err) // bugs-r11-sonnet 5
 		}
 	}
 	snapsOn, monOn = pol.Snapshots, pol.Monitoring

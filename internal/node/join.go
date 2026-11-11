@@ -20,8 +20,11 @@ func Join(ctx context.Context, cfg *Config, server, joinToken string, info proto
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	resp, err := doReq(ctx, http.DefaultClient, "POST", server+"/node/v1/register",
-		jsonBody(proto.RegisterRequest{JoinToken: joinToken, Info: info}), nil)
+	rq := proto.RegisterRequest{JoinToken: joinToken, Info: info}
+	if strings.TrimRight(cfg.Server, "/") == server {
+		rq.NodeToken = cfg.NodeToken // keeps the node's id; never sent to another server
+	}
+	resp, err := doReq(ctx, http.DefaultClient, "POST", server+"/node/v1/register", jsonBody(rq), nil)
 	if err != nil {
 		return fmt.Errorf("register: %w", err)
 	}

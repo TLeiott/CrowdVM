@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/crowdvm/crowdvm/internal/api"
 	"github.com/crowdvm/crowdvm/internal/client"
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/ssh"
@@ -80,6 +81,14 @@ func (a *App) sshOptions(ctx context.Context, c *client.Client, id string) ([]st
 	}
 	kh := filepath.Join(a.configDir(), "known_hosts")
 	strict := "accept-new"
+	// Both go into ssh files: a sandbox must not add lines to them
+	// (bugs-r11-opus 1).
+	if res.HostKey != "" && !api.ValidHostKey(res.HostKey) {
+		return nil, "", fmt.Errorf("the sandbox sent an invalid SSH host key")
+	}
+	if !api.ValidSSHUser(res.SSHUser) {
+		res.SSHUser = "user"
+	}
 	if res.HostKey != "" {
 		if err := setKnownHost(kh, id, res.HostKey); err == nil {
 			strict = "yes"
@@ -102,7 +111,7 @@ func (a *App) sshOptions(ctx context.Context, c *client.Client, id string) ([]st
 		"-o", "ServerAliveInterval=30",
 		"-o", "LogLevel=ERROR",
 	}
-	return opts, firstNonEmpty(res.SSHUser, "user"), nil
+	return opts, res.SSHUser, nil
 }
 
 func quoteExe(p string) string {

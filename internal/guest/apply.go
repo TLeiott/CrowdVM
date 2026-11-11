@@ -181,6 +181,19 @@ func (a *Agent) runScrub(s *proto.GuestScrub) scrubResult {
 		}
 	}
 	for _, f := range s.Files {
+		// bugs-r11-opus 6: a pattern ("*", "?", "[") removes each match; `*`
+		// never crosses a "/", so the matches sit in the directory resolve checked.
+		if strings.ContainsAny(f, "*?[") {
+			if real, _, err := a.resolve(f, false); err == nil {
+				matches, _ := filepath.Glob(real)
+				for _, m := range matches {
+					if err := os.Remove(m); err != nil && !os.IsNotExist(err) {
+						errs = append(errs, err.Error())
+					}
+				}
+			}
+			continue
+		}
 		if real, _, err := a.resolve(f, false); err == nil {
 			if err := os.Remove(real); err != nil && !os.IsNotExist(err) {
 				errs = append(errs, err.Error())

@@ -180,7 +180,9 @@ type OptInt struct {
 }
 
 func (o *OptInt) UnmarshalJSON(b []byte) error {
-	o.Set = true
+	// A repeated key replaces the earlier value: a null must not stick
+	// while the policy guard saw the later number (bugs-r11-opus 3).
+	*o = OptInt{Set: true}
 	s := strings.TrimSpace(string(b))
 	if s == "null" || s == `"infinite"` {
 		o.Null = true
@@ -204,7 +206,7 @@ type OptBool struct {
 }
 
 func (o *OptBool) UnmarshalJSON(b []byte) error {
-	o.Set = true
+	*o = OptBool{Set: true} // a repeated key replaces the earlier value
 	if strings.TrimSpace(string(b)) == "null" {
 		o.Set = false
 		return nil

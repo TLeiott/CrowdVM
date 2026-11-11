@@ -231,6 +231,30 @@ func waitingJSON(sb *Sandbox, m map[string]any) {
 // LIFE-014: resume while stopping
 // ---------------------------------------------------------------------------
 
+// resumeStartChecks runs a start's gates (credits, concurrency, start
+// window) for a resume during a stop, which answers before handleResume's
+// own: a stop and a resume restarted a sandbox past them, also one stopped
+// for its credit cap (bugs-r11-sonnet 4).
+func (s *Server) resumeStartChecks(sb *Sandbox) error {
+	owner, err := s.UserByID(sb.OwnerID)
+	if err != nil {
+		return err
+	}
+	var org *Org
+	if sb.OrgID != "" {
+		org, _ = s.OrgByID(sb.OrgID)
+	}
+	unlock := s.lockLimits()
+	defer unlock()
+	if err := s.checkCredits(owner, org); err != nil {
+		return err
+	}
+	if err := s.checkConcurrent(owner, org, 1); err != nil {
+		return err
+	}
+	return s.checkStarts(sb.Wallet(), 1)
+}
+
 // resumeDuringStop cancels a stop whose machine still runs, or boots the
 // sandbox again on the same node right after the stop finished.
 func (s *Server) resumeDuringStop(c *Ctx, sb *Sandbox, ttl OptInt) error {

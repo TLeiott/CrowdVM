@@ -214,7 +214,7 @@ func (s *Server) handleAdminUpdateUser(c *Ctx) error {
 		}
 	}
 	if req.Password != nil {
-		if err := s.SetPassword(u.ID, *req.Password); err != nil {
+		if err := s.SetPassword(u.ID, *req.Password, ""); err != nil { // bugs-r11-sonnet 6, 10
 			return err
 		}
 	}

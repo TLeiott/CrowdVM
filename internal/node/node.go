@@ -35,6 +35,10 @@ const (
 	serverBase              = "http://server"  // host is ignored on the mux transport
 	defaultSnapshotInterval = 60 * time.Second // Boat: "saved each minute"
 	maxQueuedEvents         = 10000
+	// bugs-r11-opus 5: one guest queues at most this many events, all guests
+	// together leave room for the node's own (lifecycle) events.
+	maxGuestEventsPerSandbox = 500
+	maxQueuedGuestEvents     = maxQueuedEvents - 2000
 )
 
 var (
@@ -72,6 +76,8 @@ type Node struct {
 
 	events   []proto.Event
 	eventsCh chan struct{}
+	guestQ   map[string]int // queued EvGuest events per sandbox (bugs-r11-opus 5)
+	guestN   int            // and in total
 
 	snapEvery atomic.Int64 // ns; <0 disabled
 	drained   atomic.Bool  // the server drained this node
@@ -600,12 +606,39 @@ func (n *Node) emit(sandboxID, typ string, data any) {
 
 func (n *Node) emitEvent(ev proto.Event) {
 	n.mu.Lock()
-	if len(n.events) >= maxQueuedEvents {
-		n.events = n.events[len(n.events)-maxQueuedEvents+1:]
+	if ev.Type == proto.EvGuest {
+		// A guest event past its sandbox's share (or past the room guests
+		// share) is dropped; it never pushes another event out. The
+		// guest's state is re-read later where it matters (bugs-r11-opus 5).
+		if n.guestQ[ev.SandboxID] >= maxGuestEventsPerSandbox || n.guestN >= maxQueuedGuestEvents || len(n.events) >= maxQueuedEvents {
+			n.mu.Unlock()
+			return
+		}
+		if n.guestQ == nil {
+			n.guestQ = map[string]int{}
+		}
+		n.guestQ[ev.SandboxID]++
+		n.guestN++
+	} else if len(n.events) >= maxQueuedEvents {
+		n.dropFront(len(n.events) - maxQueuedEvents + 1)
 	}
 	n.events = append(n.events, ev)
 	n.mu.Unlock()
 	n.kickEvents()
+}
+
+// dropFront removes the k oldest queued events (n.mu held).
+func (n *Node) dropFront(k int) {
+	for _, ev := range n.events[:k] {
+		if ev.Type != proto.EvGuest {
+			continue
+		}
+		n.guestN--
+		if n.guestQ[ev.SandboxID]--; n.guestQ[ev.SandboxID] <= 0 {
+			delete(n.guestQ, ev.SandboxID)
+		}
+	}
+	n.events = n.events[k:]
 }
 
 func (n *Node) kickEvents() {
@@ -647,9 +680,9 @@ func (n *Node) flushEventsLoop(ctx context.Context) {
 			n.mu.Lock()
 			// Drop what was sent (the queue may have been trimmed meanwhile).
 			if len(n.events) >= len(batch) && &n.events[0] == &batch[0] {
-				n.events = n.events[len(batch):]
+				n.dropFront(len(batch))
 			} else {
-				n.events = dropSent(n.events, batch)
+				n.dropFront(len(n.events) - len(dropSent(n.events, batch)))
 			}
 			n.mu.Unlock()
 		}

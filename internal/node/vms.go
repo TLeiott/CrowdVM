@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/crowdvm/crowdvm/internal/api"
@@ -35,6 +36,11 @@ type vmRec struct {
 	direct   *directPort            // ssh on DirectHost
 	ports    map[string]*directPort // user ports ("tcp/3000") on DirectHost (URL-012)
 	lastSnap time.Time
+	// bugs-r11-opus 7: snapBusy: a periodic snapshot of this VM is queued or
+	// running; noQuiesceUntil: its guest did not answer sync, so periodic
+	// snapshots skip sync and freeze until then (Node.mu).
+	snapBusy       atomic.Bool
+	noQuiesceUntil time.Time
 	// stopRef: the snapshot of the stop that finished, answered again to a
 	// repeated stop (a server that restarted mid-stop retries it; a 404
 	// there would make it fall back to an older stored layer).
@@ -709,6 +715,8 @@ func (n *Node) DestroyVM(ctx context.Context, id string) error {
 func (n *Node) snapshotLoop(ctx context.Context) {
 	t := time.NewTicker(snapshotTick)
 	defer t.Stop()
+	var wg sync.WaitGroup
+	defer wg.Wait() // bugs-r11-opus 7: the node's stop waits for snapshots in flight, as before
 	for {
 		select {
 		case <-ctx.Done():
@@ -729,22 +737,56 @@ func (n *Node) snapshotLoop(ctx context.Context) {
 			}
 		}
 		n.mu.Unlock()
+		// bugs-r11-opus 7: a few VMs at a time, and never the loop waiting on
+		// one: a guest that stalls sync and freeze holds only its own slot.
 		for _, r := range due {
-			id := r.id
-			if !n.diskChanged(ctx, r) { // idle VM: nothing new to save or upload
-				n.mu.Lock()
-				r.lastSnap = time.Now()
-				n.mu.Unlock()
-				continue
+			if !r.snapBusy.CompareAndSwap(false, true) {
+				continue // still queued or running from an earlier tick
 			}
-			if _, err := n.SnapshotVM(ctx, id, ""); err != nil {
-				n.log.Warn("periodic snapshot failed", "sandbox", id, "err", err)
-				if r := n.rec(id); r != nil {
-					n.mu.Lock()
-					r.lastSnap = time.Now() // retry after the next interval
-					n.mu.Unlock()
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				defer r.snapBusy.Store(false)
+				select {
+				case snapSlots <- struct{}{}:
+					defer func() { <-snapSlots }()
+				case <-ctx.Done():
+					return
 				}
-			}
+				n.periodicSnapshot(ctx, r)
+			}()
+		}
+	}
+}
+
+// snapSlots bounds the periodic snapshots running at once.
+var snapSlots = make(chan struct{}, 3)
+
+// noQuiesceFor is how long periodic snapshots skip sync and freeze for a guest
+// that did not answer them.
+var noQuiesceFor = 10 * time.Minute
+
+func (n *Node) periodicSnapshot(ctx context.Context, r *vmRec) {
+	id := r.id
+	if !n.diskChanged(ctx, r) { // idle VM: nothing new to save or upload
+		n.mu.Lock()
+		r.lastSnap = time.Now()
+		n.mu.Unlock()
+		return
+	}
+	n.mu.Lock()
+	skip := time.Now().Before(r.noQuiesceUntil) // diskChanged may have just set it
+	n.mu.Unlock()
+	sctx := ctx
+	if skip {
+		sctx = vm.WithoutQuiesce(ctx)
+	}
+	if _, err := n.SnapshotVM(sctx, id, ""); err != nil {
+		n.log.Warn("periodic snapshot failed", "sandbox", id, "err", err)
+		if r := n.rec(id); r != nil {
+			n.mu.Lock()
+			r.lastSnap = time.Now() // retry after the next interval
+			n.mu.Unlock()
 		}
 	}
 }
@@ -758,8 +800,18 @@ func (n *Node) diskChanged(ctx context.Context, r *vmRec) bool {
 	if !ok {
 		return true
 	}
-	if err := n.guestSync(ctx, r); err != nil {
-		return true
+	n.mu.Lock()
+	skip := time.Now().Before(r.noQuiesceUntil)
+	n.mu.Unlock()
+	if !skip {
+		if err := n.guestSync(ctx, r); err != nil {
+			if ctx.Err() == nil { // the guest did not answer: no sync or freeze for a while
+				n.mu.Lock()
+				r.noQuiesceUntil = time.Now().Add(noQuiesceFor)
+				n.mu.Unlock()
+			}
+			return true
+		}
 	}
 	changed, err := ct.DiskChanged(r.id)
 	return err != nil || changed

@@ -155,6 +155,7 @@ func (s *Server) handleDeviceApprove(c *Ctx) error {
 	if err != nil || d.ExpiresAt < store.Now() || d.Status != "pending" {
 		return Err(404, "invalid_code", "The code is wrong, expired or already used.")
 	}
+	// bugs-r11-sonnet 7: users.email is proven (code entered) unless an admin set it, so this match is safe.
 	if d.Email != "" && !strings.EqualFold(d.Email, c.P.User.Email) {
 		return Err(403, "wrong_account", "This agent asked for the account "+d.Email+". Sign in as that account to approve it.")
 	}

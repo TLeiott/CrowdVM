@@ -29,6 +29,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/crowdvm/crowdvm/internal/proto"
 	"github.com/crowdvm/crowdvm/internal/server/store"
@@ -40,7 +41,25 @@ const (
 	histKeepProcs   = 72 * time.Hour
 	histKeepSamples = 7 * 24 * time.Hour
 	histMaxLogRead  = 1 << 20
+
+	// bugs-r11-opus 4: what one guest export may make the server read and keep.
+	histMaxExport     = 8 << 20 // bytes of one export answer (maxBytes of output is ~5.6 MiB as base64)
+	histMaxCommand    = 64 << 10
+	histMaxRecords    = 500   // per pull
+	histMaxSamples    = 200   // per pull
+	histKeepSampleNum = 20160 // per sandbox (7 days at 30 s)
 )
+
+// clipStr cuts s to at most n bytes (on a rune boundary).
+func clipStr(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
+}
 
 func init() {
 	store.Register("history", store.Migration{Version: 1, SQL: `
@@ -153,8 +172,18 @@ func (h *histState) pull(ctx context.Context, sb *Sandbox, flush bool) error {
 	for i := 0; i < 64; i++ {
 		cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		var ex proto.HistoryExport
-		err := h.s.envGuestDo(cctx, sb, "GET", q, nil, &ex)
+		// bugs-r11-opus 4: read a bounded answer (envGuestDo copies at most
+		// histMaxExport into a Writer); a longer one fails to parse.
+		var raw bytes.Buffer
+		err := h.s.envGuestDo(cctx, sb, "GET", q, nil, &raw)
 		cancel()
+		if err == nil {
+			if raw.Len() >= histMaxExport {
+				h.unsupported.Store(sb.ID, time.Now()) // back off for a minute
+				return errors.New("guest history export is too large")
+			}
+			err = json.Unmarshal(raw.Bytes(), &ex)
+		}
 		if err != nil {
 			if errors.Is(err, errNotFoundGuest) || strings.Contains(err.Error(), ": 404 ") {
 				h.unsupported.Store(sb.ID, time.Now())
@@ -224,9 +253,20 @@ func (h *histState) store(sbID string, ex *proto.HistoryExport) {
 		}
 		return false
 	}
+	if len(ex.Records) > histMaxRecords { // bugs-r11-opus 4
+		ex.Records = ex.Records[:histMaxRecords]
+	}
+	if len(ex.Samples) > histMaxSamples {
+		ex.Samples = ex.Samples[:histMaxSamples]
+	}
 	for _, r := range ex.Records {
-		if r.CommandID == "" {
+		if r.CommandID == "" || len(r.CommandID) > 128 {
 			continue
+		}
+		r.Command = clipStr(r.Command, histMaxCommand) // bugs-r11-opus 4
+		if r.Cwd != nil {
+			c := clipStr(*r.Cwd, 4096)
+			r.Cwd = &c
 		}
 		started := store.T(r.StartedAt)
 		if started == 0 {
@@ -250,9 +290,11 @@ updated_at=excluded.updated_at, private=MAX(command_history.private, excluded.pr
 		if c.CommandID == "" || (c.Stream != "stdout" && c.Stream != "stderr") || len(c.Data) == 0 {
 			continue
 		}
-		var exists int
-		_ = h.s.DB.QueryRow(`SELECT COUNT(*) FROM command_logs WHERE sandbox_id=? AND command_id=? AND stream=? AND off=?`, sbID, c.CommandID, c.Stream, c.Offset).Scan(&exists)
-		if exists == 0 && !h.s.takeOutputQuota(wallet, h.cmdMode(sbID, c.CommandID), len(c.Data)) {
+		// A new chunk is charged in full, a replaced one for its growth
+		// (bugs-r11-opus 4); one that does not fit keeps the old copy.
+		var old int
+		_ = h.s.DB.QueryRow(`SELECT COALESCE(MAX(length(data)),0) FROM command_logs WHERE sandbox_id=? AND command_id=? AND stream=? AND off=?`, sbID, c.CommandID, c.Stream, c.Offset).Scan(&old)
+		if grow := len(c.Data) - old; grow > 0 && !h.s.takeOutputQuota(wallet, h.cmdMode(sbID, c.CommandID), grow) {
 			truncated[c.CommandID] = true
 			continue
 		}
@@ -265,10 +307,21 @@ updated_at=excluded.updated_at, private=MAX(command_history.private, excluded.pr
 		if smp.Time.IsZero() {
 			continue
 		}
+		if len(smp.Processes) > 32 { // bugs-r11-opus 4: the guest sends the 12 busiest
+			smp.Processes = smp.Processes[:32]
+		}
+		for i := range smp.Processes {
+			smp.Processes[i].Command = clipStr(smp.Processes[i].Command, 4096)
+			smp.Processes[i].User = clipStr(smp.Processes[i].User, 64)
+		}
 		_, _ = h.s.DB.Exec(`INSERT OR REPLACE INTO process_samples(sandbox_id,sampled_at,data) VALUES(?,?,?)`, sbID, store.T(smp.Time), mustJSON(smp))
 		if smp.DiskTotalBytes > 0 {
 			h.s.onDiskUsage(sbID, smp.DiskUsedBytes, smp.DiskTotalBytes)
 		}
+	}
+	if len(ex.Samples) > 0 { // bugs-r11-opus 4: keep the newest histKeepSampleNum per sandbox
+		_, _ = h.s.DB.Exec(`DELETE FROM process_samples WHERE sandbox_id=? AND sampled_at <= COALESCE((SELECT sampled_at FROM process_samples WHERE sandbox_id=? ORDER BY sampled_at DESC LIMIT 1 OFFSET ?), -1)`,
+			sbID, sbID, histKeepSampleNum)
 	}
 }
 

@@ -385,12 +385,23 @@ func (s *Server) foreignDeployScrub(saverID, sourceSandboxID string) proto.Guest
 // per harness of internal/guest/agents: claude, codex, opencode, pi,
 // prime-agent, kimi, mistral vibe (bugs-r10-opus 5).
 var (
-	harnessHistoryFiles = []string{".claude/history.jsonl", ".codex/history.jsonl"}
-	harnessHistoryDirs  = []string{
+	// bugs-r11-opus 6: OpenCode's SQLite store, Codex's SQLite stores and
+	// session index. Codex's file names carry a version (state_5.sqlite), so
+	// each is listed as a glob (the guest expands them) and by its current
+	// name (for a guest that does not).
+	harnessHistoryFiles = []string{".claude/history.jsonl", ".codex/history.jsonl",
+		".local/share/opencode/opencode.db", ".local/share/opencode/opencode.db-wal", ".local/share/opencode/opencode.db-shm",
+		".codex/session_index.jsonl",
+		".codex/state_*.sqlite*", ".codex/logs_*.sqlite*", ".codex/history*.sqlite*",
+		".codex/state_5.sqlite", ".codex/state_5.sqlite-wal", ".codex/state_5.sqlite-shm",
+		".codex/logs_2.sqlite", ".codex/logs_2.sqlite-wal", ".codex/logs_2.sqlite-shm",
+		".codex/history.sqlite", ".codex/history.sqlite-wal", ".codex/history.sqlite-shm",
+	}
+	harnessHistoryDirs = []string{
 		".claude/projects", ".claude/sessions", ".claude/todos", ".claude/shell-snapshots", ".claude/file-history", ".claude/session-env",
 		".codex/sessions", ".codex/archived_sessions", ".codex/log",
 		".local/share/opencode/storage", ".local/share/opencode/log", ".local/share/opencode/snapshot",
-		".pi/agent/sessions", ".prime/agent/sessions", ".kimi-code/sessions", ".vibe/logs",
+		".pi/agent/sessions", ".prime/agent/sessions", ".prime/agent/session-artifacts", ".kimi-code/sessions", ".vibe/logs",
 	}
 )
 

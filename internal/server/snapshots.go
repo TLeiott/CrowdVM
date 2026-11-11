@@ -176,7 +176,11 @@ func (s *Server) recordTaken(nodeID string, ref proto.SnapshotRef) {
 		return
 	}
 	if _, err := s.SnapshotByID(ref.ID); err == nil {
-		_, _ = s.DB.Exec(`INSERT OR IGNORE INTO snapshot_locations(snapshot_id,node_id) SELECT id,? FROM snapshots WHERE id=? AND purged_at IS NULL`, nodeID, ref.ID)
+		// Only the node that took it, or that runs its sandbox, becomes a
+		// holder: a holder is asked for the blob and preferred for restores
+		// (bugs-r11-sonnet 12).
+		_, _ = s.DB.Exec(`INSERT OR IGNORE INTO snapshot_locations(snapshot_id,node_id) SELECT s.id,? FROM snapshots s LEFT JOIN sandboxes b ON b.id=s.sandbox_id
+WHERE s.id=? AND s.purged_at IS NULL AND (s.node_id=? OR b.node_id=?)`, nodeID, ref.ID, nodeID, nodeID)
 		return
 	}
 	sb, err := s.SandboxByID(ref.SandboxID)
@@ -252,8 +256,8 @@ func (s *Server) onSnapshotUploaded(nodeID, sbID string, ref proto.SnapshotRef) 
 		ref.SandboxID = sbID
 		s.recordTaken(nodeID, ref)
 	}
-	if ref.SizeBytes > 0 {
-		_, _ = s.DB.Exec(`UPDATE snapshots SET size_bytes=? WHERE id=?`, ref.SizeBytes, ref.ID)
+	if ref.SizeBytes > 0 { // only the node that took or holds it (bugs-r11-sonnet 13)
+		_, _ = s.DB.Exec(`UPDATE snapshots SET size_bytes=? WHERE id=? AND (node_id=? OR id IN (SELECT snapshot_id FROM snapshot_locations WHERE node_id=?))`, ref.SizeBytes, ref.ID, nodeID, nodeID)
 	}
 	if len(ref.Supersedes) > 0 && sbID != "" {
 		now := store.Now()

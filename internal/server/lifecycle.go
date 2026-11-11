@@ -1483,6 +1483,9 @@ func (s *Server) handleResume(c *Ctx) error {
 		if !sb.SnapshotsEnabled {
 			return ErrD(409, "sandbox_stopping", "The sandbox has snapshots off and is being erased; it cannot be resumed.", map[string]any{"retryable": false})
 		}
+		if err := s.resumeStartChecks(sb); err != nil {
+			return err
+		}
 		return s.resumeDuringStop(c, sb, req.TTLSeconds)
 	case sb.starting():
 		return Err(409, "sandbox_resuming", "The sandbox is already starting.")

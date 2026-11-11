@@ -318,7 +318,7 @@ type OptFloat struct {
 }
 
 func (o *OptFloat) UnmarshalJSON(b []byte) error {
-	o.Set = true
+	*o = OptFloat{Set: true} // a repeated key replaces the earlier value
 	if string(b) == "null" {
 		o.Null = true
 		return nil
@@ -794,6 +794,9 @@ var policyRoutes = map[string]string{
 	"POST /api/v1/named-snapshots":     "save",
 }
 
+// policyFields: the request fields policyGuard reads.
+var policyFields = []string{"type", "ttlSeconds", "org", "teamId", "from"}
+
 func (s *Server) policyGuard(c *Ctx) error {
 	op, ok := policyRoutes[normPattern(c.R.Pattern)]
 	if !ok {
@@ -814,6 +817,17 @@ func (s *Server) policyGuard(c *Ctx) error {
 	}
 	if req == nil {
 		req = map[string]any{}
+	}
+	// The handlers decode with encoding/json, which matches keys in any
+	// case; this guard reads the map, which does not: "Type" or "TtlSeconds"
+	// passed the policy unchecked. Fields it reads must be spelled exactly
+	// (bugs-r11-opus 3).
+	for k := range req {
+		for _, f := range policyFields {
+			if k != f && strings.EqualFold(k, f) {
+				return Err(400, "invalid_field", "Spell the field "+f+" exactly (got "+k+").")
+			}
+		}
 	}
 	// Policies that apply: the caller's personal policy and the wallet's.
 	wallets := []string{c.P.User.ID}

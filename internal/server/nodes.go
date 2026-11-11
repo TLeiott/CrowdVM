@@ -373,21 +373,38 @@ func (s *Server) handleNodeRegister(w http.ResponseWriter, r *http.Request) {
 	var rev sql.NullInt64
 	err := s.DB.QueryRow(`SELECT id,COALESCE(owner_id,''),labels,expires_at,max_uses,uses,revoked_at FROM join_tokens WHERE token_hash=?`, hashToken(strings.TrimSpace(req.JoinToken))).
 		Scan(&jtID, &owner, &labels, &exp, &maxU, &uses, &rev)
+	refused := Err(401, "invalid_join_token", "The join token is wrong, expired, used up or revoked.")
 	if err != nil || rev.Valid || (exp.Valid && exp.Int64 < store.Now()) || (maxU > 0 && uses >= maxU) {
-		api.WriteError(w, Err(401, "invalid_join_token", "The join token is wrong, expired, used up or revoked."))
+		api.WriteError(w, refused)
+		return
+	}
+	// Take the use first, in one statement: parallel registrations each
+	// passed the check above (bugs-r11-sonnet 2).
+	if res, err := s.DB.Exec(`UPDATE join_tokens SET uses=uses+1 WHERE id=? AND (max_uses=0 OR uses<max_uses)`, jtID); err != nil {
+		api.WriteError(w, Err(500, "internal_error", err.Error()))
+		return
+	} else if n, _ := res.RowsAffected(); n == 0 {
+		api.WriteError(w, refused)
 		return
 	}
 	tok := "cvn_" + randToken(48)
+	nodeID := ""
+	if req.Info.NodeID != "" {
+		// A node keeps its id only when it proves it is that node with its
+		// current token: the same owner is not enough, as a team's nodes
+		// often share one (bugs-r11-sonnet 11).
+		var n int
+		_ = s.DB.QueryRow(`SELECT COUNT(*) FROM nodes WHERE id=? AND COALESCE(owner_id,'')=? AND token_hash=?`,
+			req.Info.NodeID, owner, hashToken(strings.TrimSpace(req.NodeToken))).Scan(&n)
+		if n > 0 && req.NodeToken != "" {
+			nodeID = req.Info.NodeID
+		}
+	}
 	name := req.Info.Name
 	if name == "" {
 		name = "node-" + randToken(4)
 	}
-	nodeID := ""
-	if req.Info.NodeID != "" {
-		if old, err := s.NodeByID(req.Info.NodeID); err == nil && old.OwnerID == owner {
-			nodeID = old.ID
-		}
-	}
+	name = s.uniqueNodeName(name, nodeID)
 	info := req.Info
 	if nodeID == "" {
 		nodeID = api.NewID(api.PrefixNode, 12)
@@ -399,12 +416,27 @@ func (s *Server) handleNodeRegister(w http.ResponseWriter, r *http.Request) {
 		_, err = s.DB.Exec(`UPDATE nodes SET name=?, token_hash=?, info=?, remote_addr=? WHERE id=?`, name, hashToken(tok), mustJSON(info), s.clientIP(r), nodeID)
 	}
 	if err != nil {
+		_, _ = s.DB.Exec(`UPDATE join_tokens SET uses=uses-1 WHERE id=?`, jtID) // the use was not taken
 		api.WriteError(w, Err(500, "internal_error", err.Error()))
 		return
 	}
-	_, _ = s.DB.Exec(`UPDATE join_tokens SET uses=uses+1 WHERE id=?`, jtID)
 	s.Log.Info("node registered", "node", nodeID, "name", name, "owner", owner)
 	writeRawJSON(w, 200, proto.RegisterResponse{NodeID: nodeID, NodeToken: tok})
+}
+
+// uniqueNodeName: want, or want-2, want-3, ... when another node has that
+// name (case-insensitive). Pins and lookups match nodes by name, so a node of
+// another owner must not share it (bugs-r11-sonnet 3). The first node keeps
+// the name.
+func (s *Server) uniqueNodeName(want, selfID string) string {
+	name := want
+	for i := 2; ; i++ {
+		var n int
+		if s.DB.QueryRow(`SELECT COUNT(*) FROM nodes WHERE lower(name)=lower(?) AND id<>?`, name, selfID).Scan(&n) != nil || n == 0 {
+			return name
+		}
+		name = fmt.Sprintf("%s-%d", want, i)
+	}
 }
 
 func (s *Server) nodeByToken(r *http.Request) (*Node, error) {
@@ -546,7 +578,11 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if hb.Info != nil {
 		info := *hb.Info
 		info.NodeID = c.ID
-		_, _ = s.DB.Exec(`UPDATE nodes SET usage=?, info=?, name=CASE WHEN ?<>'' THEN ? ELSE name END, last_seen_at=? WHERE id=?`, mustJSON(hb.Usage), mustJSON(info), info.Name, info.Name, now, c.ID)
+		name := info.Name
+		if name != "" {
+			name = s.uniqueNodeName(name, c.ID)
+		}
+		_, _ = s.DB.Exec(`UPDATE nodes SET usage=?, info=?, name=CASE WHEN ?<>'' THEN ? ELSE name END, last_seen_at=? WHERE id=?`, mustJSON(hb.Usage), mustJSON(info), name, name, now, c.ID)
 	} else {
 		_, _ = s.DB.Exec(`UPDATE nodes SET usage=?, last_seen_at=? WHERE id=?`, mustJSON(hb.Usage), now, c.ID)
 	}
@@ -689,6 +725,21 @@ func (s *Server) handleBlobPut(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Only a node that has the data may store it, and a stored blob is
+	// never replaced: later sandboxes of every tenant boot from it
+	// (bugs-r11-sonnet 1, 14).
+	if code, msg := s.blobPutRefusal(nodeFrom(r).ID, kind, id); code != 0 {
+		writeRawJSON(w, code, map[string]any{"ok": false, "error": msg})
+		return
+	}
+	if old, err := s.Blobs.Stat(kind, id); err == nil {
+		if sha := blobSHA(r); sha == "" || !strings.EqualFold(sha, old.SHA256) {
+			writeRawJSON(w, 409, map[string]any{"ok": false, "error": "blob_exists: a stored " + kind + " is never replaced"})
+			return
+		}
+		writeRawJSON(w, 200, old) // a retry of the same upload
+		return
+	}
 	bi, err := s.Blobs.Put(kind, id, r.Body, blobSHA(r))
 	if err != nil {
 		status := 500
@@ -717,6 +768,36 @@ func (s *Server) handleBlobPut(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeRawJSON(w, 200, bi)
+}
+
+// blobPutRefusal: why nodeID may not upload blob kind/id (0 = it may). A
+// recorded snapshot layer comes from the node that took it or holds it; a
+// layer not recorded yet is taken (deletions and GC erase what nothing
+// records). An image comes from a trusted node or one of an administrator:
+// the newest image is the default of every sandbox (bugs-r11-sonnet 1, 14).
+func (s *Server) blobPutRefusal(nodeID, kind, id string) (int, string) {
+	if kind == store.BlobImage {
+		n, err := s.NodeByID(nodeID)
+		if err != nil {
+			return 403, "unknown node"
+		}
+		if !n.Trusted {
+			if u, err := s.UserByID(n.OwnerID); err != nil || !u.IsAdmin {
+				return 403, "images are published by trusted nodes and nodes of an administrator only"
+			}
+		}
+		return 0, ""
+	}
+	if kind != store.BlobSnapshot {
+		return 0, ""
+	}
+	var row, mine int
+	_ = s.DB.QueryRow(`SELECT COUNT(*), COALESCE(SUM(node_id=? OR id IN (SELECT snapshot_id FROM snapshot_locations WHERE node_id=?)),0) FROM snapshots WHERE id=?`,
+		nodeID, nodeID, id).Scan(&row, &mine)
+	if row == 0 || mine > 0 {
+		return 0, ""
+	}
+	return 403, "this node does not hold snapshot " + id
 }
 
 func (s *Server) handleBlobGet(w http.ResponseWriter, r *http.Request) {
@@ -811,7 +892,11 @@ func (s *Server) afterNodeConnect(ctx context.Context, c *NodeConn) {
 	var info proto.NodeInfo
 	if err := c.Do(cctx, "GET", "/v1/info", nil, &info); err == nil {
 		info.NodeID = c.ID
-		_, _ = s.DB.Exec(`UPDATE nodes SET info=?, name=CASE WHEN ?<>'' THEN ? ELSE name END WHERE id=?`, mustJSON(info), info.Name, info.Name, c.ID)
+		name := info.Name
+		if name != "" {
+			name = s.uniqueNodeName(name, c.ID)
+		}
+		_, _ = s.DB.Exec(`UPDATE nodes SET info=?, name=CASE WHEN ?<>'' THEN ? ELSE name END WHERE id=?`, mustJSON(info), name, name, c.ID)
 	}
 	cancel()
 	s.reconcileNodeSnapshots(ctx, c)                             // copies of deleted data it kept
@@ -1050,6 +1135,9 @@ func (s *Server) handleUpdateNode(c *Ctx) error {
 		s.audit(c, "node.trust", n.ID, map[string]any{"trust": *req.Trust})
 	}
 	if req.Name != nil && strings.TrimSpace(*req.Name) != "" {
+		if nm := strings.TrimSpace(*req.Name); s.uniqueNodeName(nm, n.ID) != nm {
+			return Err(409, "node_name_taken", "Another node is named "+nm+".") // bugs-r11-sonnet 3
+		}
 		_, _ = s.DB.Exec(`UPDATE nodes SET name=? WHERE id=?`, strings.TrimSpace(*req.Name), n.ID)
 	}
 	if req.Disabled != nil {

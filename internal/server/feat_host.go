@@ -637,6 +637,20 @@ func hostPage(w http.ResponseWriter, status int, msg string) {
 	_, _ = fmt.Fprintf(w, "CrowdVM: %s\n", msg)
 }
 
+// crossOriginWrite: a websocket upgrade or a request that is not GET, HEAD or
+// OPTIONS, sent by a page of another origin (the browser's Origin header).
+func crossOriginWrite(r *http.Request) bool {
+	if !isWebsocket(r) && (r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions) {
+		return false
+	}
+	o := r.Header.Get("Origin")
+	if o == "" {
+		return false // not a browser page (curl, an SDK)
+	}
+	u, err := url.Parse(o)
+	return err != nil || !strings.EqualFold(u.Host, r.Host)
+}
+
 func isWebsocket(r *http.Request) bool {
 	return strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
 }
@@ -681,6 +695,12 @@ func (h *hosting) serve(w http.ResponseWriter, r *http.Request, sb *Sandbox, por
 			}
 		} else if ck, err := r.Cookie(portAuthCookie); err != nil || !tokenEq(ck.Value, hp.Token) {
 			hostPage(w, 401, "This URL is protected. Open it with its ?_token= link, or send Cookie: _port_auth=<token>.")
+			return
+		} else if crossOriginWrite(r) {
+			// Every hosted app is on the same site, so the browser sends
+			// this cookie to a sibling app's websocket or form too
+			// (bugs-r11-opus 2).
+			hostPage(w, 403, "This protected URL does not accept websockets or writes from another site's page.")
 			return
 		}
 	}
@@ -790,7 +810,13 @@ func hostScopeCookies(h http.Header) {
 		if err != nil || ck.Domain != "" || ownCookieName(ck.Name) {
 			continue
 		}
-		keep = append(keep, line)
+		// Rebuilt from what Go parsed: browsers also apply "Domain =x"
+		// (space before =), which Go keeps as an unknown attribute
+		// (bugs-r11-opus 8).
+		ck.Unparsed = nil
+		if v := ck.String(); v != "" {
+			keep = append(keep, v)
+		}
 	}
 	h.Del("Set-Cookie")
 	for _, v := range keep {
