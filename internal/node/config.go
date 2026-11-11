@@ -63,6 +63,9 @@ type Config struct {
 	UIAddr   string            `json:"uiAddr,omitempty"` // default 127.0.0.1:8421; "off" disables
 	Labels   map[string]string `json:"labels,omitempty"`
 	Paused   bool              `json:"paused,omitempty"` // do not accept new sandboxes
+	// NoKeepAwake: let the machine idle-suspend while it hosts sandboxes
+	// (default: a logind sleep inhibitor holds it awake; awake.go).
+	NoKeepAwake bool `json:"noKeepAwake,omitempty"`
 	// SnapshotInterval overrides the server-provided periodic live snapshot
 	// interval (Go duration, "0" = use server/default 60s, "off" = disabled).
 	SnapshotInterval string `json:"snapshotInterval,omitempty"`
@@ -276,7 +279,7 @@ func (c Config) SnapshotEvery() (d time.Duration, ok bool) {
 
 // ConfigKeys lists the keys accepted by Get/Set (CLI `config get/set`).
 var ConfigKeys = []string{"server", "name", "driver", "cpus", "memory", "disk", "disk-overcommit", "disk-reserve",
-	"max-sandboxes", "direct-host", "guest-binary", "cli-binary", "nested", "lazy-chain", "warm-pool", "ui-addr", "paused", "snapshot-interval", "node-id",
+	"max-sandboxes", "direct-host", "guest-binary", "cli-binary", "nested", "lazy-chain", "warm-pool", "ui-addr", "paused", "keep-awake", "snapshot-interval", "node-id",
 	"net", "net.allow-lan", "net.allow", "net.deny", "gpu.passthrough", "gpu.virgl"}
 
 // Get returns a config value by CLI key.
@@ -319,6 +322,8 @@ func (c Config) Get(key string) (string, error) {
 		return c.UIListen(), nil
 	case "paused":
 		return strconv.FormatBool(c.Paused), nil
+	case "keep-awake":
+		return strconv.FormatBool(!c.NoKeepAwake), nil
 	case "snapshot-interval":
 		return c.SnapshotInterval, nil
 	case "node-id":
@@ -457,6 +462,12 @@ func (c *Config) Set(key, val string) error {
 		c.UIAddr = val
 	case "paused":
 		c.Paused, err = strconv.ParseBool(val)
+	case "keep-awake":
+		on := true
+		if val != "" {
+			on, err = strconv.ParseBool(val)
+		}
+		c.NoKeepAwake = !on
 	case "snapshot-interval":
 		c.SnapshotInterval = val
 		if _, ok := c.SnapshotEvery(); !ok && val != "" && val != "0" {

@@ -1691,7 +1691,8 @@ Flags:
 Run a command through the API (no SSH). One argument is a shell command
 line; more arguments run as argv. The default timeout is 30 seconds; above 600
 or with 0 (no limit) the command runs in the background and its output streams
-live, surviving network cuts. Exit code 124 means the timeout hit.
+live, surviving network cuts. Exit code 124 means the timeout hit. ID may also
+be the sandbox's name; without one the current sandbox runs the command.
 
 Usage:
   crowdvm exec [ID] [flags] [--] COMMAND...
@@ -3139,7 +3140,8 @@ Flags:
 ```text
 Open an SSH session (system ssh through a crowdvm tunnel; the key lives in
 the crowdvm config directory and is authorized automatically). For one command,
-'crowdvm exec' is faster. Pass -t for full-screen tools.
+'crowdvm exec' is faster. Pass -t for full-screen tools. ID may also be the
+sandbox's name.
 
 Usage:
   crowdvm ssh [-t] ID [--] [COMMAND...] [flags]

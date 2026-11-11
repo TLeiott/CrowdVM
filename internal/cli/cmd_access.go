@@ -155,14 +155,15 @@ func (a *App) sshCmd() *cobra.Command {
 		Short: "Open an SSH session in a sandbox, or run one command",
 		Long: `Open an SSH session (system ssh through a crowdvm tunnel; the key lives in
 the crowdvm config directory and is authorized automatically). For one command,
-'crowdvm exec' is faster. Pass -t for full-screen tools.`,
+'crowdvm exec' is faster. Pass -t for full-screen tools. ID may also be the
+sandbox's name.`,
 		Example: `  crowdvm ssh bx_f7k2q9hd
   crowdvm ssh bx_f7k2q9hd "cd my-repo && npm test"
   crowdvm ssh bx_f7k2q9hd -- bash -s < ./setup.sh
   crowdvm ssh -t bx_f7k2q9hd -- tmux attach`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			first, rest, err := reparse(cmd, args)
+			first, rest, err := reparse(cmd, args, a.isSandboxName)
 			if err != nil {
 				return err
 			}

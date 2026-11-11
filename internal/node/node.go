@@ -209,6 +209,7 @@ func (n *Node) Run(ctx context.Context) error {
 	go n.flushEventsLoop(ctx)
 	go n.snapshotLoop(ctx)
 	go n.warmLoop(ctx)
+	go n.keepAwakeLoop(ctx)
 	if n.bench.RanAt.IsZero() || n.bench.Network.Via == "" {
 		// First run (or joined without a network measurement): benchmark once
 		// connected so the network test can run.

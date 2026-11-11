@@ -278,11 +278,32 @@ func (a *App) listCmd() *cobra.Command {
 				return err
 			}
 			rows := []client.Sandbox{}
+			hidden := map[rune]int{} // not shown and not stopped: worth a hint
 			for _, s := range list {
-				if all || strings.ContainsRune(filter, stateGroup(s.State)) {
+				if g := stateGroup(s.State); all || strings.ContainsRune(filter, g) {
 					rows = append(rows, s)
+				} else if g != 's' {
+					hidden[g]++
 				}
 			}
+			// A sandbox that is starting, stopping or failed is still yours to
+			// deal with: say it is there (field test: an error vanished from ls).
+			defer func() {
+				var parts []string
+				var letters string
+				for _, g := range []struct {
+					r    rune
+					what string
+				}{{'p', "starting"}, {'t', "stopping"}, {'e', "with an error"}} {
+					if n := hidden[g.r]; n > 0 {
+						parts = append(parts, fmt.Sprintf("%d %s", n, g.what))
+						letters += string(g.r)
+					}
+				}
+				if len(parts) > 0 && !a.jsonOut {
+					a.info("also %s: crowdvm ls --filter %s\n", strings.Join(parts, ", "), letters)
+				}
+			}()
 			if a.jsonOut {
 				a.emit(map[string]any{"sandboxes": rows})
 				return nil

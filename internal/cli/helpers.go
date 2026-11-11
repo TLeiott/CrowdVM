@@ -91,6 +91,10 @@ func (a *App) waitReady(ctx context.Context, c *client.Client, id, last string) 
 				msg := "waiting for a node with free capacity (see crowdvm nodes; --fail-fast fails instead of waiting)"
 				if s.WaitingForSnapshot != "" {
 					msg = "waiting for snapshot " + s.WaitingForSnapshot + " to finish uploading to the server from the node that holds it"
+				} else if s.NodeID != "" {
+					// Placed: the node is booting it, or first downloading the
+					// base image or snapshot (field test: this read as no capacity).
+					msg = "starting on its node (a node downloads the base image or snapshot first if it does not have it)"
 				} else if told != "" {
 					msg = told // said already; the rest of the boot is no capacity wait
 				}
@@ -280,8 +284,10 @@ func commandLine(args []string) string {
 }
 
 // reparse handles commands with SetInterspersed(false): flags may follow the
-// first positional (the sandbox id); parsing stops at the next positional or "--".
-func reparse(cmd *cobra.Command, args []string) (first string, rest []string, err error) {
+// first positional (the sandbox id or name); parsing stops at the next
+// positional or "--". isName reports whether a first argument that is not an
+// id names one of the user's sandboxes (then it is not the command).
+func reparse(cmd *cobra.Command, args []string, isName func(string) bool) (first string, rest []string, err error) {
 	if len(args) == 0 {
 		return "", nil, nil
 	}
@@ -289,7 +295,7 @@ func reparse(cmd *cobra.Command, args []string) (first string, rest []string, er
 	if first == "--" {
 		return "", args[1:], nil
 	}
-	if !looksLikeID(first) || cmd.ArgsLenAtDash() == 0 {
+	if cmd.ArgsLenAtDash() == 0 || !(looksLikeID(first) || isName != nil && maybeName(first) && isName(first)) {
 		return "", args, nil // no id: the command starts here; use the current sandbox
 	}
 	if err := cmd.Flags().Parse(args[1:]); err != nil {
@@ -387,7 +393,13 @@ func remotePath(p string) string {
 
 // looksLikeID reports a sandbox id or alias.
 func looksLikeID(s string) bool {
-	return strings.HasPrefix(s, "bx_") || strings.HasPrefix(s, "bx_") || s == "current" || s == "self"
+	return strings.HasPrefix(s, "bx_") || s == "current" || s == "self"
+}
+
+// maybeName: s could be a sandbox name typed in place of an id (not a flag
+// or a shell command line), so it is worth looking up.
+func maybeName(s string) bool {
+	return s != "" && !strings.HasPrefix(s, "-") && !strings.ContainsAny(s, " \t\n;|&$<>()'\"`*?=/")
 }
 
 // nonNil makes JSON print [] instead of null.
