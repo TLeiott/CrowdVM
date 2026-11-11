@@ -49,6 +49,9 @@ type Options struct {
 	// CLIBinary: the in-sandbox crowdvm CLI shipped on the config drive
 	// (installed at boot when the file exists; root only).
 	CLIBinary string
+	// Channel: the guest channel the config came from (ConnectChannel); the
+	// API is served on it, the local listener serves the ops subset only.
+	Channel *Channel
 }
 
 type Agent struct {
@@ -83,6 +86,7 @@ type Agent struct {
 	clonesOnce sync.Once
 	playbook   *playbookRun // this boot's startup playbook recording (LIFE-018), guarded by mu
 	cliSource  string
+	channel    *Channel
 	frz        freezer
 	fw         firewallState // direct-port rules (URL-012)
 	browser    browserView
@@ -100,7 +104,7 @@ type Agent struct {
 // New prepares an agent (directories, history) without running boot tasks or
 // listening. Use Run for the full lifecycle, or Handler + Boot in tests.
 func New(o Options) (*Agent, error) {
-	a := &Agent{cfg: o.Config, unpriv: o.Unprivileged, log: o.Logger, started: time.Now(), cliSource: o.CLIBinary,
+	a := &Agent{cfg: o.Config, unpriv: o.Unprivileged, log: o.Logger, started: time.Now(), cliSource: o.CLIBinary, channel: o.Channel,
 		procs: map[int]*proc{}, events: newHub(),
 		attachMaxDuration: 10 * time.Minute, heartbeatEvery: 15 * time.Second, outputCap: 1 << 30} // 1 GiB per stream: a disk guard, not a limit on what exec shows (bugs-r7-opus 2)
 	if a.log == nil {
@@ -199,15 +203,31 @@ func (a *Agent) updateConfig(f func(c *proto.GuestConfig)) {
 }
 
 // Handler returns the full HTTP handler (auth applied to everything except
-// GET /v1/health).
+// GET /v1/health). A channel guest's local listener serves only the node's
+// ops subset (opsPaths): the rest of the API is on the channel.
 func (a *Agent) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if id := r.Header.Get("X-Request-Id"); id != "" {
 			w.Header().Set("X-Request-Id", id)
 		}
+		if a.cfg.Channel != nil && !opsPaths[r.Method+" "+r.URL.Path] {
+			writeErr(w, http.StatusForbidden, "channel_only", "this sandbox's API is served only on its guest channel to the server")
+			return
+		}
 		if r.URL.Path != "/v1/health" && !a.authorized(r) {
 			writeErr(w, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token")
 			return
+		}
+		a.mux.ServeHTTP(w, r)
+	})
+}
+
+// channelHandler serves the whole API to the server over the guest channel
+// (authenticated by the channel itself).
+func (a *Agent) channelHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if id := r.Header.Get("X-Request-Id"); id != "" {
+			w.Header().Set("X-Request-Id", id)
 		}
 		a.mux.ServeHTTP(w, r)
 	})
@@ -267,6 +287,9 @@ func (a *Agent) Run(ctx context.Context) error {
 		if !a.hist.unmonitor {
 			go a.tracer.run(a.stopCh)
 		}
+	}
+	if a.channel != nil {
+		go a.channel.Serve(ctx, a.channelHandler())
 	}
 	srv := &http.Server{Handler: a.Handler(), ReadHeaderTimeout: 30 * time.Second}
 	go func() {

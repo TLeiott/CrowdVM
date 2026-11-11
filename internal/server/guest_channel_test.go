@@ -1,0 +1,116 @@
+package server_test
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/crowdvm/crowdvm/internal/guest"
+	"github.com/crowdvm/crowdvm/internal/proto"
+	"github.com/crowdvm/crowdvm/internal/server/servertest"
+)
+
+// channelGuest runs a real (unprivileged) guest agent for a stub the fake
+// node received, connected over the guest channel.
+func channelGuest(t *testing.T, env *servertest.Env, stub proto.GuestConfig) (*guest.Agent, string) {
+	t.Helper()
+	stub.Channel.URL = env.URL // the agent runs on this host, not behind the node's 10.0.2.2
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	home := t.TempDir()
+	quiet := log.New(io.Discard, "", 0)
+	cfg, ch, err := guest.ConnectChannel(ctx, stub, filepath.Join(home, ".state"), quiet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+	cfg.ListenAddr = addr
+	a, err := guest.New(guest.Options{Config: cfg, Home: home, DataDir: filepath.Join(home, ".data"), Unprivileged: true, Logger: quiet, Channel: ch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { _ = a.Run(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+	return a, addr
+}
+
+// Secure layer: the node gets a boot stub without secrets; the guest fetches
+// its config over the pinned channel, and the server reaches the guest API
+// only through the channel.
+func TestGuestChannelKeepsSecretsFromTheNode(t *testing.T) {
+	env := servertest.New(t)
+	node := env.StartNode(servertest.NodeOptions{GuestChannel: true})
+	key := env.AdminKey
+	id := createSandbox(t, env, key, map[string]any{"env": map[string]any{"MY_SECRET": "hunter2-very-secret"}})
+	env.WaitState(key, id, "ready")
+	spec, ok := node.Spec(id)
+	if !ok {
+		t.Fatal("no spec on the node")
+	}
+	stub := spec.Guest
+	raw, _ := json.Marshal(spec)
+	if stub.Channel == nil || stub.Channel.Ticket == "" || stub.Channel.Pin == "" || len(stub.Env) != 0 || strings.Contains(string(raw), "hunter2") {
+		t.Fatalf("the node got more than a boot stub: %s", raw)
+	}
+	_, local := channelGuest(t, env, stub)
+
+	// The API reaches the guest over the channel.
+	r := env.Do(key, "POST", "/api/v1/sandboxes/"+id+"/commands", map[string]any{"command": "printf %s \"$MY_SECRET\""})
+	if r.Status != 200 || !strings.Contains(string(r.Body), "hunter2-very-secret") {
+		t.Fatalf("command over the channel: %s", r)
+	}
+	for _, c := range node.Calls() {
+		if strings.Contains(c, "/guest/") {
+			t.Fatalf("a guest call went through the node: %s", c)
+		}
+	}
+	// The node's local access (the ops token from the stub) runs nothing.
+	req, _ := http.NewRequest("POST", "http://"+local+"/v1/commands", strings.NewReader(`{"command":"id"}`))
+	req.Header.Set("Authorization", "Bearer "+stub.Token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("node-side command: %d", resp.StatusCode)
+	}
+	req, _ = http.NewRequest("GET", "http://"+local+"/v1/health", nil)
+	if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != 200 {
+		t.Fatalf("node-side health: %v %v", resp, err)
+	}
+
+	// The ticket from the config drive is spent: a second redemption is
+	// refused and the owner is told.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	replay := stub
+	replay.Channel = &proto.GuestChannel{URL: env.URL, Pin: stub.Channel.Pin, Ticket: stub.Channel.Ticket}
+	if _, _, err := guest.ConnectChannel(ctx, replay, t.TempDir(), log.New(io.Discard, "", 0)); err == nil {
+		t.Fatal("the ticket was accepted twice")
+	}
+	env.Eventually("ticket reuse notice", func() bool {
+		return strings.Contains(string(env.Do(key, "GET", "/api/v1/notices", nil).Body), "security_ticket_reused")
+	})
+	// A wrong pin: the guest refuses the server.
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel2()
+	bad := stub
+	bad.Channel = &proto.GuestChannel{URL: env.URL, Pin: "AAAA", Ticket: "x"}
+	if _, _, err := guest.ConnectChannel(ctx2, bad, t.TempDir(), log.New(io.Discard, "", 0)); err == nil {
+		t.Fatal("connected with a wrong pin")
+	}
+}

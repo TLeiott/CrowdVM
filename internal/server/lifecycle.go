@@ -456,6 +456,15 @@ func (s *Server) boot(ctx context.Context, id string, o bootOpts) (err error) {
 	// before the sandbox is reachable.
 	s.scrubForBoot(id, &g)
 	vs.Guest = g
+	if s.channelNode(n) {
+		// Secure layer: the node gets a boot stub, the guest fetches the
+		// config from the server (guest_channel.go).
+		if vs.Guest, err = s.issueGuestChannel(sb, node.ID, g); err != nil {
+			return fmt.Errorf("prepare_failed: guest channel: %v", err)
+		}
+	} else {
+		_, _ = s.DB.Exec(`DELETE FROM guest_channels WHERE sandbox_id=?`, id)
+	}
 	if _, err := s.DB.Exec(`UPDATE sandboxes SET guest_token=?, boot_kind=?, head_snapshot_id=COALESCE(head_snapshot_id, NULLIF(?,'')) WHERE id=?`, token, string(o.Kind), parent, id); err != nil {
 		return err
 	}

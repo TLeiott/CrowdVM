@@ -99,6 +99,10 @@ type Config struct {
 	// loopback, link-local and cloud metadata addresses (outbound_guard.go;
 	// LAN and Tailscale addresses are always allowed).
 	WebhookAllowLocal bool
+	// NoGuestChannel: boot guests the legacy way (the node writes the whole
+	// guest config, secrets included, to the config drive and proxies the
+	// guest API) even on nodes that support the guest channel.
+	NoGuestChannel bool
 
 	// Loop intervals (tests shorten them). Zero = the package defaults
 	// (OTelMetricsInterval, WebhookBackoff, CIPollInterval, CIRetryInterval).
@@ -274,6 +278,8 @@ type Server struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 	start  sync.Once
+	guests guestRegistry // connected guest channels (guest_channel.go)
+	gkey   guestKey
 	// startedAt (ms): nodes cannot reconnect while the server is down, so
 	// their offline time counts from here (seenAt).
 	startedAt int64

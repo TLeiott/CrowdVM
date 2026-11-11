@@ -54,6 +54,30 @@ const (
 	BootWarm BootKind = "warm"
 )
 
+// GuestChannel is how a guest reaches the server's guest channel
+// (GET /guest/v1/connect, Upgrade: crowdvm-guest, then TLS and a JSON hello).
+type GuestChannel struct {
+	URL    string `json:"url"`    // server base URL as the guest reaches it
+	Pin    string `json:"pin"`    // base64 SHA-256 of the server's channel certificate SPKI
+	Ticket string `json:"ticket"` // one-time boot ticket
+}
+
+// GuestHello is the guest's first line on the channel (inside TLS).
+type GuestHello struct {
+	SandboxID string `json:"sandboxId"`
+	Ticket    string `json:"ticket,omitempty"`  // first connect of a boot
+	Session   string `json:"session,omitempty"` // reconnects (agent restart, reboot, network blip)
+	Version   string `json:"version,omitempty"`
+}
+
+// GuestWelcome is the server's answer: the session for reconnects and the
+// full guest config (Token and Channel unset).
+type GuestWelcome struct {
+	Error   string       `json:"error,omitempty"`
+	Session string       `json:"session,omitempty"`
+	Config  *GuestConfig `json:"config,omitempty"`
+}
+
 type GuestConfig struct {
 	SandboxID  string   `json:"sandboxId"`
 	Token      string   `json:"token"`      // bearer token required on every guest API call
@@ -86,6 +110,12 @@ type GuestConfig struct {
 	// (LIFE-018): a saved snapshot's learned startup playbook. Merged ahead
 	// of the disk's own ~/.crowdvm/playbook.json. Optional.
 	Playbook []string `json:"playbook,omitempty"`
+	// Channel (secure layer): this config is a boot stub. The guest fetches
+	// the real config (env, secrets, keys, ...) from the server over TLS
+	// pinned to Channel.Pin and serves its API only on that channel; Token
+	// then authorizes only the node's ops subset (health, prepare-stop,
+	// sync, freeze, thaw, playbook/finish). nil = legacy config drive.
+	Channel *GuestChannel `json:"channel,omitempty"`
 	// ZeroDataRetention: the owner's account has zero data retention on.
 	// Implies NoMonitoring (the server sets both); in addition the guest
 	// keeps no prompt transcripts/events on disk after a turn ends.
@@ -191,6 +221,10 @@ type NodeInfo struct {
 	// need not pull the chain (POST /v1/snapshots/{id}/fetch) before
 	// POST /v1/vms; the node needs only the base image.
 	LazyChain bool `json:"lazyChain,omitempty"`
+	// GuestChannel: the node boots guests that fetch their config from the
+	// server over the pinned guest channel (GuestConfig.Channel) and do not
+	// follow guest events or push guest firewall rules for them.
+	GuestChannel bool `json:"guestChannel,omitempty"`
 	// GPUs: the GPUs this node passes through to sandboxes (VFIO; node
 	// config gpu.passthrough, validated when the node starts). Only these
 	// make a node eligible for placement gpu, and only while one is free

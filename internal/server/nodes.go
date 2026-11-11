@@ -120,7 +120,7 @@ func (s *Server) Nodes() ([]*Node, error) {
 type NodeConn struct {
 	ID          string
 	sess        *yamux.Session
-	transport   *http.Transport
+	transport   *routedTransport // guest calls of channel sandboxes go over their channel
 	client      *http.Client
 	connectedAt time.Time
 	lastSeen    time.Time
@@ -129,7 +129,7 @@ type NodeConn struct {
 }
 
 func newNodeConn(id string, sess *yamux.Session) *NodeConn {
-	tr := mux.Transport(sess)
+	tr := &routedTransport{node: mux.Transport(sess)}
 	return &NodeConn{ID: id, sess: sess, transport: tr, client: &http.Client{Transport: tr}, connectedAt: time.Now(), lastSeen: time.Now(), vms: map[string]proto.VMStatus{}}
 }
 
@@ -189,8 +189,17 @@ func (n *NodeConn) Do(ctx context.Context, method, path string, in, out any) err
 	return nil
 }
 
-// DialTunnel opens a raw TCP tunnel to port inside the sandbox's VM.
+// DialTunnel opens a raw TCP tunnel to port inside the sandbox's VM (over
+// its guest channel when it has one).
 func (n *NodeConn) DialTunnel(sandboxID string, port int) (net.Conn, error) {
+	if n.transport.route != nil {
+		if g, channel := n.transport.route(sandboxID); channel {
+			if g == nil {
+				return nil, errGuestChannelDown
+			}
+			return dialGuestTunnel(g, port)
+		}
+	}
 	st, err := n.Open()
 	if err != nil {
 		return nil, err
@@ -434,6 +443,7 @@ func (s *Server) handleNodeConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn := newNodeConn(n.ID, sess)
+	conn.transport.route = s.guestRoute
 	if old := s.nodes.set(n.ID, conn); old != nil {
 		_ = old.sess.Close()
 	}
@@ -513,6 +523,7 @@ func (s *Server) nodeRoutes() {
 	s.nodeH = s.buildNodeMux()
 	s.router.HandleFunc("POST /node/v1/register", s.handleNodeRegister)
 	s.router.HandleFunc("GET /node/v1/connect", s.handleNodeConnect)
+	s.router.HandleFunc("GET /guest/v1/connect", s.handleGuestConnect)
 	s.router.HandleFunc("/node/v1/", s.handleNodeHTTP)
 	s.API("GET /nodes", ActionAny, s.handleListNodes)
 	s.API("GET /nodes/{nodeId}", ActionAny, s.handleGetNode)

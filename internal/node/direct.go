@@ -233,8 +233,8 @@ func (n *Node) listenDirect(r *vmRec, host string, p proto.DirectPort) (*directP
 // user's own ufw rule, as in Boat's raw-port recipe. Guests without the
 // endpoint (404) are left alone.
 func (n *Node) syncGuestFirewall(ctx context.Context, r *vmRec) {
-	if n.config().DirectHost == "" {
-		return
+	if n.config().DirectHost == "" || r.spec.Guest.Channel != nil {
+		return // channel guests: the server sets their firewall (the node may not)
 	}
 	n.mu.Lock()
 	ports := r.spec.DirectPorts

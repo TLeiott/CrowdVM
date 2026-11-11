@@ -59,7 +59,24 @@ func main() {
 			cfg.ListenAddr = *listen
 		}
 	}
-	a, err := guest.New(guest.Options{Config: cfg, Home: *home, DataDir: *dataDir, Unprivileged: *unpriv, Logger: logger, CLIBinary: cli})
+	var ch *guest.Channel
+	if cfg.Channel != nil {
+		// Secure layer: the config drive is a boot stub; the config comes
+		// from the server over the pinned guest channel.
+		state := *dataDir
+		if state == "" && *unpriv {
+			state = filepath.Join(*home, ".local/state/crowdvm-guest")
+		} else if state == "" {
+			state = "/var/lib/crowdvm"
+		}
+		if cfg, ch, err = guest.ConnectChannel(ctx, cfg, state, logger); err != nil {
+			logger.Fatal(err)
+		}
+		if *listen != "" {
+			cfg.ListenAddr = *listen
+		}
+	}
+	a, err := guest.New(guest.Options{Config: cfg, Home: *home, DataDir: *dataDir, Unprivileged: *unpriv, Logger: logger, CLIBinary: cli, Channel: ch})
 	if err != nil {
 		logger.Fatal(err)
 	}

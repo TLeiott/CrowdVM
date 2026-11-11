@@ -188,7 +188,11 @@ func (n *Node) Info() proto.NodeInfo {
 		Labels: c.Labels, Bench: b, Capacity: cp,
 		DirectHost: c.DirectHost, Images: imgs,
 		LazyChain: ok && lz.LazyChain() && !c.NoLazyChain,
-		GPUs:      gpus, VirGL: vg != nil && vg.VirGL(),
+		// Secure layer: guests fetch their config from the server over a
+		// pinned channel; this node never sees their secrets. Not for the
+		// process driver: its "guests" are host processes (tests only).
+		GuestChannel: n.drv.Name() != "process",
+		GPUs:         gpus, VirGL: vg != nil && vg.VirGL(),
 		Paused: c.Paused,
 	}
 }
