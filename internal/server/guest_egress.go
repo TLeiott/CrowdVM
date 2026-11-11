@@ -37,6 +37,19 @@ func (s *Server) egressBlocked(ap netip.AddrPort) string {
 	if s.isOwnAPI(ap) {
 		return ""
 	}
+	for _, m := range metadataIPs {
+		if net.IP(a.AsSlice()).Equal(m) {
+			return "a cloud metadata address"
+		}
+	}
+	for _, e := range s.Cfg.EgressAllow {
+		if p, err := netip.ParseAddrPort(e); err == nil && p.Addr().Unmap() == a && p.Port() == ap.Port() {
+			return ""
+		}
+		if p, err := netip.ParsePrefix(e); err == nil && p.Contains(a) {
+			return ""
+		}
+	}
 	if ip := net.IP(a.AsSlice()); blockedTarget(ip) != "" {
 		return blockedTarget(ip)
 	}

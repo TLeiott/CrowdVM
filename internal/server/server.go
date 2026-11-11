@@ -107,6 +107,10 @@ type Config struct {
 	// (as legacy ones do) instead of through the guest channel and out of
 	// this server.
 	NodeEgress bool
+	// EgressAllow: addresses on this server's networks that sandboxes may
+	// reach through server egress anyway: CIDRs ("10.0.5.0/24") or exact
+	// "ip:port" (an internal git server). Cloud metadata stays refused.
+	EgressAllow []string
 
 	// Loop intervals (tests shorten them). Zero = the package defaults
 	// (OTelMetricsInterval, WebhookBackoff, CIPollInterval, CIRetryInterval).

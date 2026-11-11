@@ -50,7 +50,8 @@ A sandbox reaches the internet through the server, not through the node that hos
   from the server's network, so they show the server's address, not the node owner's.
 - The server refuses connections to private (LAN), loopback, link-local, CGNAT and
   Tailscale addresses and cloud metadata services. The server's own API stays
-  reachable.
+  reachable, and the server operator can open more on the server's networks, such
+  as an internal git server: `crowdvm-server serve --egress-allow 10.0.5.0/24,192.168.1.20:22`.
 - UDP other than DNS (QUIC, for example) is refused, and `ping` does not work.
   Programs fall back to TCP.
 - If root in the sandbox removes CrowdVM's firewall rules, the sandbox only cuts itself
