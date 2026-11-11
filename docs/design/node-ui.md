@@ -3,7 +3,12 @@
 Status: implemented on branch `feat/node-ui` (2026-11-11): Phases 1–4. Differences
 from the text below: evacuation needed no billing change (a stopped sandbox isn't
 metered), notices give times in UTC, and the dashboard has no per-node page, so the
-`crowdvm-node open` hint sits on the node card. Not done: the "Later" items.
+`crowdvm-node open` hint sits on the node card. After review: `open` uses a single-use
+login code (not the token in the URL), the cookie is derived from the token and only
+allows the page's own settings, "Restart node" exits the daemon and lets systemd or
+the Windows service's recovery actions start it again (not a service-manager call),
+and evacuation ends only once no snapshot is held only by the node. Not done: the
+"Later" items.
 
 ## Summary
 
@@ -260,9 +265,12 @@ already sends. No new inbound port and no cloud relay.
   writes it into the installing user's data dir, which `install-service` already names.
   Check that the file inherits that directory's ACL, so the user can read it and other
   accounts can't.
-- **Browser login**: `crowdvm-node open` reads the token and opens
-  `http://127.0.0.1:8421/login?k=…`. The daemon answers with a `303` to `/` and sets
-  a cookie (`HttpOnly`, `SameSite=Strict`). Every response sends
+- **Browser login**: `crowdvm-node open` asks the daemon for a single-use code
+  (60 s, `POST /api/login-code` with the token) and opens
+  `http://127.0.0.1:8421/login?c=…`. The daemon answers with a `303` to `/` and sets
+  a cookie (`HttpOnly`, `SameSite=Strict`) derived from the token, never the token
+  itself: browsers send localhost cookies to every port. The cookie only allows the
+  page's own settings (pause, schedule, limits, restart, benchmark). Every response sends
   `Referrer-Policy: no-referrer`. The page has no outbound links that carry
   credentials, and dashboard links open in a new tab with `rel=noreferrer`.
 - **Writes** (`POST /api/*`) need the cookie or `Authorization: Bearer <token>`, and

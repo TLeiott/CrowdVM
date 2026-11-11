@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -50,24 +51,59 @@ func TestUILoginCookie(t *testing.T) {
 	if st := getStatus(t, c, srv.URL); st.Authorized || st.Settings != nil {
 		t.Fatalf("anonymous status is authorized: %+v", st.Authorized)
 	}
-	resp, _ := c.Get(srv.URL + "/login?k=wrong")
+	// The token itself is no login link; a single-use code from the CLI is.
+	resp, _ := c.Get(srv.URL + "/login?c=tok")
 	if resp.StatusCode != 403 {
-		t.Fatalf("bad login: %d", resp.StatusCode)
+		t.Fatalf("token as login code: %d", resp.StatusCode)
 	}
-	resp, _ = c.Get(srv.URL + "/login?k=tok")
+	if resp := uiPost(t, c, srv.URL+"/api/login-code", "", ""); resp.StatusCode != 401 {
+		t.Fatalf("login code without token: %d", resp.StatusCode)
+	}
+	resp = uiPost(t, http.DefaultClient, srv.URL+"/api/login-code", "tok", "")
+	var lc struct{ Code string }
+	json.NewDecoder(resp.Body).Decode(&lc)
+	if lc.Code == "" || strings.Contains(lc.Code, "tok") {
+		t.Fatalf("login code %q", lc.Code)
+	}
+	resp, _ = c.Get(srv.URL + "/login?c=" + lc.Code)
 	if resp.StatusCode != 200 || resp.Request.URL.RawQuery != "" {
 		t.Fatalf("login did not redirect to the page: %d %s", resp.StatusCode, resp.Request.URL)
 	}
 	if rp := resp.Header.Get("Referrer-Policy"); rp != "no-referrer" {
 		t.Fatalf("referrer policy %q", rp)
 	}
+	u, _ := url.Parse(srv.URL)
+	for _, ck := range jar.Cookies(u) {
+		if ck.Value == "tok" {
+			t.Fatal("the cookie holds the token")
+		}
+	}
+	if resp, _ := http.Get(srv.URL + "/login?c=" + lc.Code); resp.StatusCode != 403 {
+		t.Fatalf("login code reused: %d", resp.StatusCode)
+	}
 	st := getStatus(t, c, srv.URL)
 	if !st.Authorized || st.Settings["cpus"] != "8" {
 		t.Fatalf("logged-in status: %+v %v", st.Authorized, st.Settings)
 	}
-	// The cookie authorizes writes (with the header).
+	// The cookie authorizes the page's own writes (with the header) ...
 	if resp := uiPost(t, c, srv.URL+"/api/pause", "", `{"paused":true}`); resp.StatusCode != 200 {
 		t.Fatalf("pause with cookie: %d", resp.StatusCode)
+	}
+	if resp := uiPost(t, c, srv.URL+"/api/config", "", `{"key":"schedule","value":"weekends"}`); resp.StatusCode != 200 {
+		t.Fatalf("schedule with cookie: %d", resp.StatusCode)
+	}
+	// ... but not settings that weaken isolation, nor CLI-only calls.
+	if resp := uiPost(t, c, srv.URL+"/api/config", "", `{"key":"driver","value":"process"}`); resp.StatusCode != 403 {
+		t.Fatalf("driver with cookie: %d", resp.StatusCode)
+	}
+	if resp := uiPost(t, c, srv.URL+"/api/images/x/import", "", `{"path":"/etc/passwd"}`); resp.StatusCode != 401 {
+		t.Fatalf("image import with cookie: %d", resp.StatusCode)
+	}
+	if resp := uiPost(t, c, srv.URL+"/api/login-code", "", ""); resp.StatusCode != 401 {
+		t.Fatalf("login code with cookie: %d", resp.StatusCode)
+	}
+	if resp := uiPost(t, http.DefaultClient, srv.URL+"/api/config", "tok", `{"key":"net.allow-lan","value":"true"}`); resp.StatusCode != 200 {
+		t.Fatalf("restart-only key with the token: %d", resp.StatusCode)
 	}
 	// A handler without a token refuses every write.
 	srv2 := httptest.NewServer(h.node.UIHandler(""))
@@ -298,5 +334,21 @@ func TestUITokenFile(t *testing.T) {
 	}
 	if fi, _ := os.Stat(dir + "/" + uiTokenFile); fi.Mode().Perm() != 0o600 {
 		t.Fatalf("mode %v", fi.Mode().Perm())
+	}
+	// An empty file (a crash mid-write before this fix) is replaced.
+	os.WriteFile(dir+"/"+uiTokenFile, nil, 0o600)
+	if c, err := UIToken(dir); err != nil || len(c) != 64 || c == a {
+		t.Fatalf("after empty file: %q %v", c, err)
+	}
+}
+
+func TestCreateRefusedOutsideSchedule(t *testing.T) {
+	h := start(t, func(c *Config) { c.Schedule = "mon 00:00-00:01" })
+	if h.cfg.EffectivePause(time.Now()).Paused == false {
+		t.Skip("inside the one-minute window")
+	}
+	_, err := h.node.CreateVM(proto.VMSpec{SandboxID: "bx_sched", Size: proto.Size{Name: "small", VCPU: 1, MemoryMiB: 512, DiskGiB: 1}})
+	if err == nil || !strings.Contains(err.Error(), "paused") {
+		t.Fatalf("create outside the schedule: %v", err)
 	}
 }

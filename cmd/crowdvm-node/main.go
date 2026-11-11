@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -234,7 +235,7 @@ func runCmd(g *globals) *cobra.Command {
 				}
 				defer func() {
 					if restart.Load() && err == nil {
-						err = errRestart // non-zero exit: the service manager starts it again
+						err = service.ErrRestart // non-zero exit: the service manager starts it again
 					}
 				}()
 				if addr := cfg.UIListen(); addr != "off" {
@@ -268,8 +269,21 @@ func runCmd(g *globals) *cobra.Command {
 	return c
 }
 
-// errRestart ends a daemon whose owner asked for a restart on the local page.
-var errRestart = errors.New("restarting (requested on the local page)")
+// daemonError is a refusal from the running daemon's local API.
+type daemonError struct {
+	status int
+	msg    string
+}
+
+func (e *daemonError) Error() string { return e.msg }
+
+func daemonStatus(err error) int {
+	var de *daemonError
+	if errors.As(err, &de) {
+		return de.status
+	}
+	return 0
+}
 
 // uiURL is the local daemon's status UI base URL.
 func uiURL(cfg *node.Config) string {
@@ -303,7 +317,15 @@ func daemonBody(ctx context.Context, cfg *node.Config, method, path, body string
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode/100 != 2 {
-		return true, fmt.Errorf("daemon: %s: %s", resp.Status, bytes.TrimSpace(b))
+		var e struct {
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(b, &e) == nil && e.Error.Message != "" {
+			return true, &daemonError{status: resp.StatusCode, msg: e.Error.Message}
+		}
+		return true, &daemonError{status: resp.StatusCode, msg: fmt.Sprintf("daemon: %s: %s", resp.Status, bytes.TrimSpace(b))}
 	}
 	if out != nil {
 		return true, json.Unmarshal(b, out)
@@ -574,26 +596,40 @@ schedule-hold: "offer" or "pause" until the schedule's next boundary, "" to clea
 				Applied bool `json:"applied"`
 			}
 			ran, err := daemonBody(c.Context(), cfg, "POST", "/api/config", string(body), &res)
-			if err != nil && !strings.Contains(err.Error(), " 401 ") && !strings.Contains(err.Error(), " 404 ") {
-				return err // e.g. an invalid value
-			}
-			if ran && err == nil {
+			switch st := daemonStatus(err); {
+			case ran && err == nil:
 				if res.Applied {
 					fmt.Println("Applied.")
 				} else {
 					fmt.Println("Saved. Restart the node to apply it (sandboxes keep running).")
 				}
 				return nil
+			case err != nil && st != 401 && st != 404:
+				return err // e.g. an invalid value
 			}
-			// The daemon isn't running (or we can't read its token): write the file.
+			// The daemon isn't running, predates /api/config (404), or its
+			// token isn't readable here (401): write the file ourselves.
 			if err := cfg.Set(args[0], args[1]); err != nil {
 				return err
 			}
 			if err := cfg.Save(); err != nil {
 				return err
 			}
-			if ran {
-				fmt.Println("Saved. The running daemon applies it after a restart (its control token isn't readable here).")
+			switch {
+			case !ran:
+				fmt.Println("Saved. It applies when the node starts.")
+			case daemonStatus(err) == 404 && args[0] == "paused":
+				// A daemon from before the upgrade: it still knows /api/pause.
+				p := strconv.FormatBool(cfg.Paused)
+				if _, perr := daemonBody(c.Context(), cfg, "POST", "/api/pause", `{"paused":`+p+`}`, nil); perr == nil {
+					fmt.Println("Applied.")
+					return nil
+				}
+				fmt.Println("Saved. Restart the node to apply it (sandboxes keep running).")
+			case daemonStatus(err) == 404:
+				fmt.Println("Saved. The running node is older than this CLI: restart it to apply (sandboxes keep running).")
+			default:
+				fmt.Println("Saved, but the running node didn't apply it: its control token isn't readable here. Restart the node to apply.")
 			}
 			return nil
 		},
@@ -621,13 +657,18 @@ in the data dir. Without the login the page is read-only.`,
 			if ran, _ := daemon(c.Context(), cfg, "GET", "/api/status", nil); !ran {
 				return errors.New("the node daemon is not running; start it (crowdvm-node run, or the installed service) first")
 			}
-			t, err := node.ReadUIToken(cfg.DataDir)
-			if err != nil {
+			if _, err := node.ReadUIToken(cfg.DataDir); err != nil {
 				return fmt.Errorf("cannot read the control token (%w); run this as the user who owns %s", err, cfg.DataDir)
 			}
-			u := uiURL(cfg) + "/login?k=" + t
+			var lc struct {
+				Code string `json:"code"`
+			}
+			if _, err := daemonBody(c.Context(), cfg, "POST", "/api/login-code", "", &lc); err != nil {
+				return err
+			}
+			u := uiURL(cfg) + "/login?c=" + lc.Code
 			if printOnly || openBrowser(u) != nil {
-				fmt.Println("Open this link on this machine (it logs you in):")
+				fmt.Println("Open this link on this machine within a minute (it logs you in once):")
 			} else {
 				fmt.Println("Opened the node's page. If no browser appeared, open this link on this machine:")
 			}

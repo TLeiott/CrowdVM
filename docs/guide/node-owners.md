@@ -12,9 +12,15 @@ logged in. From there you pause and resume, set a schedule, change the shared
 resources, see what runs on the machine and what it earned, and follow the steps to
 leave the pool. Without the login the page is read-only.
 
-The login uses the control token in the data dir (`ui-token`, readable only by you).
-The CLI uses the same token, so the page and `crowdvm-node config set` change the same
-settings. Delete the file and restart the node to issue a new token.
+`open` logs the browser in with a link that works once, within a minute. The CLI
+authenticates with the control token in the data dir (`ui-token`, readable only by
+you), so the page and `crowdvm-node config set` change the same settings. The page
+changes only pause, schedule and shared resources; network, GPU, driver and server
+settings stay with `crowdvm-node config set`. Delete `ui-token` and restart the node to
+log out every browser and issue a new token.
+
+The page listens on `127.0.0.1` only. If you set `ui-addr` to a LAN address, its
+login and settings travel over plain HTTP; keep it on loopback.
 
 ## Benchmark, categories and tier
 

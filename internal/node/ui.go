@@ -2,7 +2,9 @@ package node
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	_ "embed"
 	"encoding/hex"
@@ -16,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/crowdvm/crowdvm/internal/api"
@@ -31,12 +34,34 @@ var uiHTML []byte
 const UIHeader = "X-Crowdvm-Ui"
 
 // Local control: state-changing calls also need the token in <data
-// dir>/ui-token, as a Bearer header (the CLI) or as the cookie that
-// GET /login?k=<token> sets (`crowdvm-node open`).
+// dir>/ui-token as a Bearer header (the CLI: every call), or the browser
+// session cookie (the page: its own settings only). `crowdvm-node open`
+// asks for a single-use login code (POST /api/login-code, Bearer) and
+// opens /login?c=<code>, so the token never reaches a URL, the browser's
+// history or a process list. The cookie holds a value derived from the
+// token, not the token: browsers send localhost cookies to every port.
 const (
 	uiTokenFile  = "ui-token"
 	uiCookieName = "crowdvm_node_ui"
+	loginCodeTTL = time.Minute
 )
+
+// uiAccess is what a request may do.
+type uiAccess int
+
+const (
+	accessNone    uiAccess = iota
+	accessBrowser          // session cookie: pause, page settings, restart, bench
+	accessFull             // Bearer token: everything
+)
+
+// sessionValue is the cookie for token: stable across restarts (a restart
+// from the page keeps the page logged in), rotated with the token.
+func sessionValue(token string) string {
+	m := hmac.New(sha256.New, []byte(token))
+	m.Write([]byte("crowdvm-node-ui-session-v1"))
+	return hex.EncodeToString(m.Sum(nil))
+}
 
 // liveKeys apply without a restart: the capacity only limits new
 // placements, so lowering it never touches running sandboxes.
@@ -196,16 +221,21 @@ func (n *Node) settings() map[string]string {
 // UIHandler serves the local status page and its small JSON API. token ""
 // refuses every state-changing call.
 func (n *Node) UIHandler(token string) http.Handler {
-	authed := func(r *http.Request) bool {
+	eq := func(a, b string) bool { return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1 }
+	access := func(r *http.Request) uiAccess {
 		if token == "" {
-			return false
+			return accessNone
 		}
-		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if ck, err := r.Cookie(uiCookieName); err == nil && got == "" {
-			got = ck.Value
+		if b, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok && eq(b, token) {
+			return accessFull
 		}
-		return subtle.ConstantTimeCompare([]byte(got), []byte(token)) == 1
+		if ck, err := r.Cookie(uiCookieName); err == nil && eq(ck.Value, sessionValue(token)) {
+			return accessBrowser
+		}
+		return accessNone
 	}
+	var codesMu sync.Mutex
+	codes := map[string]time.Time{} // single-use login codes -> expiry
 	m := http.NewServeMux()
 	m.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -213,31 +243,57 @@ func (n *Node) UIHandler(token string) http.Handler {
 		_, _ = w.Write(uiHTML)
 	})
 	m.HandleFunc("GET /login", func(w http.ResponseWriter, r *http.Request) {
-		k := r.URL.Query().Get("k")
-		if token == "" || subtle.ConstantTimeCompare([]byte(k), []byte(token)) != 1 {
-			http.Error(w, "This login link is not valid. Run `crowdvm-node open` on this machine for a new one.", http.StatusForbidden)
+		c := r.URL.Query().Get("c")
+		codesMu.Lock()
+		exp, ok := codes[c]
+		delete(codes, c) // single use
+		codesMu.Unlock()
+		if token == "" || c == "" || !ok || time.Now().After(exp) {
+			http.Error(w, "This login link is used up or expired. Run `crowdvm-node open` on this machine for a new one.", http.StatusForbidden)
 			return
 		}
-		http.SetCookie(w, &http.Cookie{Name: uiCookieName, Value: token, Path: "/", MaxAge: 30 * 24 * 3600,
+		http.SetCookie(w, &http.Cookie{Name: uiCookieName, Value: sessionValue(token), Path: "/", MaxAge: 30 * 24 * 3600,
 			HttpOnly: true, SameSite: http.SameSiteStrictMode})
-		http.Redirect(w, r, "/", http.StatusSeeOther) // the token leaves the address bar
+		http.Redirect(w, r, "/", http.StatusSeeOther) // the code leaves the address bar
 	})
 	m.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
 		st := n.Status()
-		st.Authorized = authed(r)
+		st.Authorized = access(r) != accessNone
 		if st.Authorized {
 			st.Settings = n.settings()
 		}
 		api.WriteJSON(w, 200, st)
 	})
 	ctl := http.NewServeMux()
+	// browserOK: routes the page uses; everything else needs the Bearer token.
+	browserOK := map[string]bool{"/api/pause": true, "/api/config": true, "/api/restart": true, "/api/bench": true}
 	m.Handle("POST /api/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !authed(r) {
+		a := access(r)
+		if a == accessNone || (a == accessBrowser && !browserOK[r.URL.Path]) {
 			api.WriteError(w, api.NewError(401, "unauthorized", "Run `crowdvm-node open` on this machine to control the node.", nil))
 			return
 		}
-		ctl.ServeHTTP(w, r)
+		ctl.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), uiAccessKey{}, a)))
 	}))
+	ctl.HandleFunc("POST /api/login-code", func(w http.ResponseWriter, r *http.Request) {
+		if r.Context().Value(uiAccessKey{}) != accessFull {
+			api.WriteError(w, api.NewError(401, "unauthorized", "Needs the control token.", nil))
+			return
+		}
+		b := make([]byte, 16)
+		_, _ = rand.Read(b)
+		code := hex.EncodeToString(b)
+		now := time.Now()
+		codesMu.Lock()
+		for c, exp := range codes {
+			if now.After(exp) {
+				delete(codes, c)
+			}
+		}
+		codes[code] = now.Add(loginCodeTTL)
+		codesMu.Unlock()
+		api.WriteJSON(w, 200, map[string]any{"code": code, "expiresInSec": int(loginCodeTTL / time.Second)})
+	})
 	ctl.HandleFunc("POST /api/pause", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Paused bool `json:"paused"`
@@ -253,6 +309,12 @@ func (n *Node) UIHandler(token string) http.Handler {
 			Value string `json:"value"`
 		}
 		if !decode(w, r, &req) {
+			return
+		}
+		if r.Context().Value(uiAccessKey{}) != accessFull && !slices.Contains(liveKeys, req.Key) {
+			// The page only changes these; the rest (driver, server, network,
+			// binaries) stays with the CLI and its token.
+			api.WriteError(w, api.NewError(403, "cli_only", "Change "+req.Key+" with `crowdvm-node config set` on this machine.", nil))
 			return
 		}
 		applied, err := n.SetConfig(req.Key, req.Value)
@@ -306,6 +368,8 @@ func (n *Node) UIHandler(token string) http.Handler {
 	return localOnly(m)
 }
 
+type uiAccessKey struct{}
+
 // localOnly rejects DNS-rebinding hosts and cross-site writes.
 func localOnly(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -336,15 +400,12 @@ func UIToken(dataDir string) (string, error) {
 	b := make([]byte, 32)
 	_, _ = rand.Read(b)
 	t := hex.EncodeToString(b)
-	f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if errors.Is(err, os.ErrExist) {
-		return ReadUIToken(dataDir) // created concurrently
-	}
-	if err != nil {
+	// Written whole then renamed, so a crash never leaves an empty file.
+	tmp := p + ".tmp"
+	if err := os.WriteFile(tmp, []byte(t+"\n"), 0o600); err != nil {
 		return "", err
 	}
-	defer f.Close()
-	if _, err := f.WriteString(t + "\n"); err != nil {
+	if err := os.Rename(tmp, p); err != nil {
 		return "", err
 	}
 	return t, nil

@@ -107,6 +107,9 @@ func (n *Node) warmLoop(ctx context.Context) {
 	var backoff time.Time
 	for {
 		want := n.config().WarmPool
+		if n.config().EffectivePause(time.Now()).Paused {
+			want = 0 // paused or outside the schedule: give the machine back
+		}
 		n.mu.Lock()
 		shape := n.warmShape
 		var drop []*warmVM
@@ -148,7 +151,7 @@ func (n *Node) warmLoop(ctx context.Context) {
 
 // warmFitsLocked: one more pool VM leaves room (and real disk) for a create.
 func (n *Node) warmFitsLocked(shape proto.VMSpec) bool {
-	if n.config().Paused {
+	if n.config().EffectivePause(time.Now()).Paused {
 		return false
 	}
 	cp, disk := n.capacity()
