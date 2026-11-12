@@ -303,7 +303,7 @@ func (s *Server) requeueBoot(id string, o bootOpts, nf *nodeFullError) bool {
 		// (its next heartbeat): try once more on another node with room now
 		// (bugs-r13-opus 11).
 		spec, _ := api.SizeByName(sb.Size)
-		req := schedReq{Size: spec, Placement: sb.Placement, Chain: s.snapshotChain(nf.parent), ImageID: sb.ImageID, Exclude: nf.node, Owners: s.ownersFor(sb.OwnerID, sb.OrgID)}
+		req := schedReq{Size: spec, Placement: sb.Placement, Chain: s.snapshotChain(nf.parent), ImageID: sb.ImageID, Exclude: nf.node, Owners: s.ownersFor(sb.OwnerID, sb.OrgID), Encrypted: sb.Disk == "luks"}
 		if _, err := s.placeSandbox(id, state, req); err == nil {
 			o.Retried = true
 			if nf.parent != "" {
@@ -474,7 +474,14 @@ func (s *Server) boot(ctx context.Context, id string, o bootOpts) (err error) {
 	// Credentials of a previous owner (or withheld by the environment) go
 	// before the sandbox is reachable.
 	s.scrubForBoot(id, &g)
-	if s.channelNode(n) && !s.Cfg.NodeEgress {
+	// An encrypted disk always boots through the channel (its key comes
+	// that way), also with --no-guest-channel or after a rollback of it.
+	encrypted := sb.Disk == "luks" || (parent != "" && s.encryptedChain(parent))
+	useChannel := s.channelNode(n) || (encrypted && n != nil && n.Info.GuestChannel)
+	if encrypted && !useChannel {
+		return fmt.Errorf("node_unsuitable: this sandbox's disk is encrypted and its node cannot fetch the key (crowdvm-node too old)")
+	}
+	if useChannel && !s.Cfg.NodeEgress {
 		// Internet through the server; the node's netstack lets the VM
 		// reach nothing but the server (a kill switch if the guest drops
 		// its egress rules).
@@ -482,7 +489,7 @@ func (s *Server) boot(ctx context.Context, id string, o bootOpts) (err error) {
 		vs.Net = &proto.NetPolicy{Deny: []string{"0.0.0.0/0"}, NoDNS: true}
 	}
 	vs.Guest = g
-	if s.channelNode(n) {
+	if useChannel {
 		// Secure layer: the node gets a boot stub, the guest fetches the
 		// config from the server (guest_channel.go), and the key of its
 		// encrypted data partition.
@@ -1624,7 +1631,7 @@ func (s *Server) handleResume(c *Ctx) error {
 	if sb.State == api.StateError {
 		prevNode = sb.NodeID
 	}
-	sreq := schedReq{Size: spec, Placement: placement, Chain: chain, ImageID: sb.ImageID, Owners: s.ownersFor(sb.OwnerID, sb.OrgID)}
+	sreq := schedReq{Size: spec, Placement: placement, Chain: chain, ImageID: sb.ImageID, Owners: s.ownersFor(sb.OwnerID, sb.OrgID), Encrypted: sb.Disk == "luks"}
 	// Shrinking below the data on the disk is refused (SIZE-010).
 	if used := diskUsedBytes(sb); used > 0 && newSize != sb.Size && used > int64(spec.DiskGiB)<<30 {
 		return ErrD(409, "type_too_small", fmt.Sprintf("The sandbox holds %.1f GB of data, more than the %d GB disk of %s. Free space first, or pick a larger type.",
@@ -1829,7 +1836,7 @@ func (s *Server) handleFork(c *Ctx) error {
 		return fail(err)
 	}
 	chain := s.snapshotChain(src.HeadSnapshotID)
-	sreq := schedReq{Size: spec, Placement: placement, Chain: chain, ImageID: src.ImageID, Owners: s.ownersFor(fk.OwnerID, fk.OrgID)}
+	sreq := schedReq{Size: spec, Placement: placement, Chain: chain, ImageID: src.ImageID, Owners: s.ownersFor(fk.OwnerID, fk.OrgID), Encrypted: src.Disk == "luks"}
 	var placeErr error
 	if live {
 		sreq.Only = src.NodeID
@@ -2021,6 +2028,7 @@ func (s *Server) DeleteSandbox(sb *Sandbox, reason string) (map[string]any, erro
 	}
 	_, _ = s.DB.Exec(`UPDATE api_keys SET revoked_at=? WHERE sandbox_id=? AND revoked_at IS NULL`, now, sb.ID)
 	_, _ = s.DB.Exec(`UPDATE snapshots SET deleted_at=? WHERE sandbox_id=? AND deleted_at IS NULL`, now, sb.ID)
+	s.dropGuestChannel(sb.ID) // the sealed config of its boot, and its channel
 	s.closeRun(sb.ID)
 	if sb.StopID != "" {
 		_, _ = s.DB.Exec(`UPDATE stops SET status='superseded', ended_at=? WHERE id=? AND status IN ('pending','failing')`, now, sb.StopID)

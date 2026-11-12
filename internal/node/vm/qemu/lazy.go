@@ -119,6 +119,7 @@ func (d *Driver) createLazy(m *machine, spec proto.VMSpec, chain []proto.Snapsho
 	rel := "disks/" + m.id + "-" + randHex(4) + ".qcow2"
 	d.mu.Lock()
 	m.rec = vmRecord{Spec: spec, ImageID: img.imageID, Disk: rel, Parent: spec.ParentID, Lazy: lz}
+	m.rec.Spec.Guest = spec.Guest.WithoutTicket() // the ticket stays in RAM (launch)
 	d.mu.Unlock()
 	topFile := d.store.abs(lz[0].File)
 	if err := d.store.run("create", "-q", "-f", "qcow2", "-u", "-b", topFile, "-F", "qcow2", d.store.abs(rel), strconv.FormatInt(size, 10)); err != nil {

@@ -511,6 +511,12 @@ func (s *Server) secretKey() ([]byte, error) {
 	}
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
+		// A new key cannot open what the lost one sealed. With encrypted
+		// sandbox disks that is their data: refuse instead of hiding it.
+		var sealed int
+		if s.DB != nil && s.DB.QueryRow(`SELECT 1 FROM snapshots WHERE data_key != '' UNION SELECT 1 FROM sandboxes WHERE data_key != '' LIMIT 1`).Scan(&sealed) == nil {
+			return nil, fmt.Errorf("%s is missing, but encrypted sandbox disks are sealed with it: restore it from your backup (a new key cannot open them)", path)
+		}
 		b = []byte(randHex(32))
 		if err := os.WriteFile(path, b, 0o600); err != nil {
 			return nil, err

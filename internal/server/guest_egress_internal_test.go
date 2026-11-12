@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/netip"
+	"strings"
 	"testing"
 )
 
@@ -60,5 +61,15 @@ func TestEgressBlocksServerNetworks(t *testing.T) {
 		if a.Is6() && s.egressBlocked(netip.AddrPortFrom(a.WithZone("eth0"), 22)) == "" {
 			t.Errorf("%s%%eth0 (a server network, zoned) is reachable", a)
 		}
+	}
+}
+
+func TestParseEgressAllow(t *testing.T) {
+	got, err := ParseEgressAllow([]string{"10.0.5.3", "192.168.1.20:22", "10.0.5.0/24", "fd00::1"})
+	if err != nil || strings.Join(got, ",") != "10.0.5.3/32,192.168.1.20:22,10.0.5.0/24,fd00::1/128" {
+		t.Fatalf("%v %v", got, err)
+	}
+	if _, err := ParseEgressAllow([]string{"gitserver:22"}); err == nil {
+		t.Fatal("a host name was accepted")
 	}
 }

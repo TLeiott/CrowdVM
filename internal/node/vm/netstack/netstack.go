@@ -89,6 +89,7 @@ type Network struct {
 	wmu  sync.Mutex // guards w, wc; held while writing
 	w    *bufio.Writer
 	wc   net.Conn // the connection w writes to
+	pkt  bool     // wc is a datagram socket: one frame per write, no w
 
 	closeOnce sync.Once
 	lmu       sync.Mutex
@@ -185,9 +186,44 @@ func (n *Network) Attach(conn net.Conn) {
 		return
 	}
 	n.wmu.Lock()
-	n.w, n.wc = bufio.NewWriterSize(conn, 256<<10), conn
+	n.w, n.wc, n.pkt = bufio.NewWriterSize(conn, 256<<10), conn, false
 	n.wmu.Unlock()
 	go n.readLoop(conn)
+}
+
+// AttachPacket is Attach for a datagram socket (QEMU "-netdev dgram"): one
+// frame per message, no length prefix. A frame is never split, so a new node
+// process can take over the socket at any moment.
+func (n *Network) AttachPacket(conn net.Conn) {
+	n.cmu.Lock()
+	old := n.conn
+	n.conn = conn
+	n.cmu.Unlock()
+	if old != nil {
+		old.Close()
+	}
+	if n.ctx.Err() != nil {
+		conn.Close()
+		return
+	}
+	n.wmu.Lock()
+	n.w, n.wc, n.pkt = nil, conn, true
+	n.wmu.Unlock()
+	go n.readPackets(conn)
+}
+
+func (n *Network) readPackets(conn net.Conn) {
+	defer n.detach(conn)
+	buf := make([]byte, maxFrame)
+	for {
+		nr, err := conn.Read(buf)
+		if err != nil {
+			return
+		}
+		if nr > 0 {
+			n.handleFrame(buf[:nr])
+		}
+	}
 }
 
 func (n *Network) detach(conn net.Conn) {
@@ -199,7 +235,7 @@ func (n *Network) detach(conn net.Conn) {
 	n.cmu.Unlock()
 	n.wmu.Lock()
 	if n.wc == conn {
-		n.w, n.wc = nil, nil
+		n.w, n.wc, n.pkt = nil, nil, false
 	}
 	n.wmu.Unlock()
 }
@@ -228,13 +264,21 @@ func (n *Network) readLoop(conn net.Conn) {
 // whenever the stack has nothing more queued.
 func (n *Network) writeLoop() {
 	var hdr [4]byte
+	frame := make([]byte, 0, maxFrame)
 	for {
 		pkt := n.link.ReadContext(n.ctx)
 		if pkt == nil {
 			return
 		}
 		n.wmu.Lock()
-		if w := n.w; w != nil {
+		if n.pkt && n.wc != nil {
+			frame = frame[:0]
+			for _, s := range pkt.AsSlices() {
+				frame = append(frame, s...)
+			}
+			_, err := n.wc.Write(frame)
+			n.writeErr(err)
+		} else if w := n.w; w != nil {
 			binary.BigEndian.PutUint32(hdr[:], uint32(pkt.Size()))
 			_, err := w.Write(hdr[:])
 			for _, s := range pkt.AsSlices() {
@@ -254,6 +298,11 @@ func (n *Network) writeLoop() {
 func (n *Network) writeFrame(frame []byte) {
 	n.wmu.Lock()
 	defer n.wmu.Unlock()
+	if n.pkt && n.wc != nil {
+		_, err := n.wc.Write(frame)
+		n.writeErr(err)
+		return
+	}
 	if n.w == nil {
 		return
 	}
@@ -269,7 +318,7 @@ func (n *Network) writeFrame(frame []byte) {
 func (n *Network) writeErr(err error) {
 	if err != nil {
 		n.wc.Close()
-		n.w, n.wc = nil, nil
+		n.w, n.wc, n.pkt = nil, nil, false
 	}
 }
 

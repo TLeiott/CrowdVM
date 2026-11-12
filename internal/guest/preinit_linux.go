@@ -61,7 +61,7 @@ func Preinit() error {
 		logger.Printf("root disk: %v; booting as is", err2)
 		return execInit()
 	}
-	part, _ := dataPartition(disk)
+	part, perr := dataPartition(disk)
 	if err != nil || stub.Channel == nil {
 		// No guest channel (an older node): the key cannot come. An
 		// encrypted sandbox must not boot as an empty machine (and then
@@ -71,11 +71,18 @@ func Preinit() error {
 		}
 		return execInit()
 	}
+	if perr != nil {
+		return fmt.Errorf("partition table of %s: %w", disk, perr)
+	}
 	mode := "luks"
 	if part == "" {
-		if part, err = addDataPartition(disk); err != nil {
+		if part, err = addDataPartition(disk); errors.Is(err, errNoRoom) {
+			// An older disk (its root partition was grown): nothing was
+			// written, it stays unencrypted.
 			logger.Printf("no encrypted data partition: %v (the disk stays unencrypted)", err)
 			mode, part = "plain", ""
+		} else if err != nil {
+			return fmt.Errorf("creating the encrypted data partition: %w", err)
 		}
 	}
 	if err := netUp(); err != nil {
@@ -106,9 +113,6 @@ func Preinit() error {
 // redeem fetches the config over the channel (retrying until it works) and
 // returns the disk key. The session stays in /run/crowdvm for the agent.
 func redeem(stub proto.GuestConfig, mode string, logger *log.Logger) ([]byte, error) {
-	if err := fetchTicket(context.Background(), &stub); err != nil {
-		return nil, err
-	}
 	c := &Channel{stub: stub, statePath: filepath.Join(runState, "channel.json"), log: logger, disk: mode}
 	backoff := 500 * time.Millisecond
 	for {
@@ -117,8 +121,10 @@ func redeem(stub proto.GuestConfig, mode string, logger *log.Logger) ([]byte, er
 			break
 		}
 		logger.Printf("guest channel: %v (retrying)", err)
-		if strings.Contains(err.Error(), "ticket_used") || strings.Contains(err.Error(), "ticket_invalid") {
-			return nil, err // someone else redeemed this boot's ticket
+		if strings.Contains(err.Error(), "server refused") {
+			// ticket_used (someone else redeemed it), expired, unknown
+			// sandbox ...: no retry makes this boot valid.
+			return nil, err
 		}
 		time.Sleep(backoff)
 		backoff = min(backoff*2, 5*time.Second)
@@ -217,7 +223,7 @@ func addDataPartition(disk string) (string, error) {
 		return "", err
 	}
 	if t.PartitionTable.Label != "gpt" {
-		return "", errors.New("not a GPT disk")
+		return "", fmt.Errorf("%w: not a GPT disk", errNoRoom)
 	}
 	size, err := sectors(disk)
 	if err != nil {
@@ -228,7 +234,7 @@ func addDataPartition(disk string) (string, error) {
 		end = max(end, p.Start+p.Size)
 	}
 	if (size-end-34)*512 < minDataBytes {
-		return "", fmt.Errorf("only %d MiB free behind the image (an older disk whose root partition was grown)", (size-end)*512>>20)
+		return "", fmt.Errorf("%w: only %d MiB free behind the image (an older disk whose root partition was grown)", errNoRoom, (size-end)*512>>20)
 	}
 	// The image's backup GPT sits where its disk ended; move it to the end.
 	if err := run(nil, "sfdisk", "--no-reread", "--no-tell-kernel", "--relocate", "gpt-bak-std", disk); err != nil {
@@ -255,6 +261,18 @@ func addDataPartition(disk string) (string, error) {
 	return "", err
 }
 
+// errNoRoom: the disk cannot take a data partition (checked before writing).
+var errNoRoom = errors.New("no room for a data partition")
+
+// freshLabel marks a LUKS volume whose file system is not made yet (an
+// interrupted first boot formats it again instead of failing on it).
+const freshLabel = dataPartName + "-new"
+
+func blkLabel(dev string) string {
+	out, _ := exec.Command("blkid", "-p", "-s", "LABEL", "-o", "value", dev).Output()
+	return strings.TrimSpace(string(out))
+}
+
 func blkType(dev string) string {
 	out, _ := exec.Command("blkid", "-p", "-s", "TYPE", "-o", "value", dev).Output()
 	return strings.TrimSpace(string(out))
@@ -267,13 +285,14 @@ func openData(disk, part string, key []byte, logger *log.Logger) error {
 	fresh := false
 	switch t := blkType(part); t {
 	case "crypto_LUKS":
+		fresh = blkLabel(part) == freshLabel // the last first boot ended before mkfs
 	case "":
 		if err := blank(part); err != nil {
 			return err
 		}
 		logger.Printf("formatting the encrypted data partition %s", part)
 		if err := run(key, "cryptsetup", "luksFormat", "--batch-mode", "--type", "luks2", "--pbkdf", "pbkdf2",
-			"--pbkdf-force-iterations", "1000", "--sector-size", "4096", "--label", dataPartName, "--key-file=-", part); err != nil {
+			"--pbkdf-force-iterations", "1000", "--sector-size", "4096", "--label", freshLabel, "--key-file=-", part); err != nil {
 			return err
 		}
 		fresh = true
@@ -289,7 +308,10 @@ func openData(disk, part string, key []byte, logger *log.Logger) error {
 		// Nothing is zeroed up front: over dm-crypt zeros become
 		// ciphertext, which would fill a fresh sandbox's first snapshot
 		// layer with a gigabyte of encrypted inode tables and journal.
-		if err := run(nil, "mkfs.ext4", "-q", "-m", "1", "-E", "nodiscard,lazy_itable_init=1,lazy_journal_init=1", "-L", dataPartName, dev); err != nil {
+		if err := run(nil, "mkfs.ext4", "-q", "-F", "-m", "1", "-E", "nodiscard,lazy_itable_init=1,lazy_journal_init=1", "-L", dataPartName, dev); err != nil {
+			return err
+		}
+		if err := run(nil, "cryptsetup", "config", "--label", dataPartName, part); err != nil {
 			return err
 		}
 	} else {
@@ -306,14 +328,18 @@ func openData(disk, part string, key []byte, logger *log.Logger) error {
 				return fmt.Errorf("e2fsck %s: %v", dev, err)
 			}
 		}
-		_ = run(nil, "resize2fs", dev)
 	}
 	if err := os.MkdirAll(dataMount, 0o700); err != nil {
 		return err
 	}
 	// noinit_itable: no background zeroing of inode tables either (the
 	// group descriptors say which inodes are unused).
-	return unix.Mount(dev, dataMount, "ext4", 0, "noinit_itable")
+	if err := unix.Mount(dev, dataMount, "ext4", 0, "noinit_itable"); err != nil {
+		return err
+	}
+	// Online: offline resize2fs wants a fresh e2fsck -f first.
+	_ = run(nil, "resize2fs", dev)
+	return nil
 }
 
 // blank: the first MiB is all zeros (a partition nobody wrote yet).

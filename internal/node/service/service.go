@@ -18,6 +18,10 @@ type Options struct {
 	DryRun  bool     // print what would be done
 	// LogonTask (Windows): a logon scheduled task instead of a service.
 	LogonTask bool
+	// FDStore (Linux): keep the VMs' QMP and NIC sockets in the unit's fd
+	// store. Install sets it when systemd keeps the store across a stop
+	// (FileDescriptorStorePreserve, systemd 254+).
+	FDStore bool
 }
 
 // Name of the unit / scheduled task.

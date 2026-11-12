@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -31,6 +32,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/crowdvm/crowdvm/internal/node/vm"
@@ -77,6 +79,10 @@ type Options struct {
 	// ServerAddr (host:port) is the CrowdVM server. Guests can always reach
 	// it, also as 10.0.2.2:<port> (like slirp's host alias).
 	ServerAddr string
+	// ServerURL is the server's URL as this node reaches it. A channel
+	// guest dials it (scheme, Host, path) through the gateway alias; the
+	// server's public URL may sit behind a proxy that speaks another scheme.
+	ServerURL string
 
 	// VirGL: "on" or a /dev/dri/renderD* path gives every VM an OpenGL
 	// virtio-gpu rendered on this machine's GPU (egl-headless); checked in New.
@@ -243,6 +249,7 @@ func New(opt Options) (*Driver, error) {
 		return nil, err
 	}
 	d := &Driver{opt: opt, qemu: qemuBin, accel: opt.Accel, rules: rules, store: st, vms: map[string]*machine{}, changed: make(chan struct{})}
+	d.fds = openFDStore() // first: marks the passed-back sockets close-on-exec before anything forks
 	if d.accel == "" {
 		d.accel = defaultAccel()
 	}
@@ -258,7 +265,15 @@ func New(opt Options) (*Driver, error) {
 	d.lazyOK = detectLazy(qimg)
 	d.ctx, d.cancel = context.WithCancel(context.Background())
 	st.inUse = d.inUse
-	d.fds = openFDStore()
+	if d.fds == nil {
+		if err := d.checkFDVMs(); err != nil {
+			return nil, err
+		}
+		if runtime.GOOS == "linux" && os.Getenv("INVOCATION_ID") != "" {
+			opt.Logf("qemu: WARNING: running under systemd without the fd store, so VM control sockets are files a local user can connect to; " +
+				"rerun `crowdvm-node install-service` to update the unit (systemd 254+)")
+		}
+	}
 	d.adoptAll()
 	st.gcOrphans(true)
 	return d, nil
@@ -968,6 +983,7 @@ func (d *Driver) saveRec(m *machine) {
 	d.mu.Lock()
 	rec := m.rec
 	d.mu.Unlock()
+	rec.Spec.Guest = rec.Spec.Guest.WithoutTicket()
 	if err := writeJSON(filepath.Join(d.vmDir(m.id), "vm.json"), rec); err != nil {
 		d.opt.Logf("qemu: %s: save vm.json: %v", m.id, err)
 	}
@@ -1000,6 +1016,9 @@ func (d *Driver) launch(m *machine, cfg proto.GuestConfig) error {
 		if _, port, err := net.SplitHostPort(d.opt.ServerAddr); err == nil {
 			ch := *cfg.Channel
 			ch.Addr = net.JoinHostPort(netstack.Gateway.String(), port)
+			if d.opt.ServerURL != "" {
+				ch.URL = strings.TrimRight(d.opt.ServerURL, "/")
+			}
 			cfg.Channel = &ch
 		}
 	}
@@ -1061,7 +1080,9 @@ func (d *Driver) spawn(m *machine, dir string) (err error) {
 		qmpArgs = []string{"-chardev", fmt.Sprintf("socket,id=qmp,fd=%d,server=off", 2+len(extra)), "-mon", "chardev=qmp,mode=control"}
 		qnet = "fd"
 		if d.opt.Net == NetNetstack {
-			a, b, err := socketPair()
+			// Datagrams: one frame per message, so a node restart can never
+			// leave the stream mid-frame for the next node process.
+			a, b, err := socketPairType(syscall.SOCK_DGRAM)
 			if err != nil {
 				return err
 			}
@@ -1090,7 +1111,7 @@ func (d *Driver) spawn(m *machine, dir string) (err error) {
 		}()
 		port = gl.Addr().(*net.TCPAddr).Port
 		if nicNode != nil {
-			nsock = fmt.Sprintf("fd:%d", 2+len(extra))
+			nsock = fmt.Sprintf("dgram:%d", 2+len(extra))
 		} else {
 			nsock = unixSocket(dir, "net.sock")
 			os.Remove(nsock)
@@ -1125,8 +1146,10 @@ func (d *Driver) spawn(m *machine, dir string) (err error) {
 
 	ctx, cancel := context.WithTimeout(d.ctx, 30*time.Second)
 	defer cancel()
+	pid := cmd.Process.Pid
 	if qmpNode != nil {
-		if err = d.storeFD("qmp-"+m.id, qmpNode); err == nil {
+		// Stored by qemu's pid: stable across a rename and a node restart.
+		if err = d.storeFD(fmt.Sprintf("qmp-%d", pid), qmpNode); err == nil {
 			var c net.Conn
 			if c, err = net.FileConn(qmpNode); err == nil {
 				r.q, err = startQMP(ctx, c, true)
@@ -1153,11 +1176,22 @@ func (d *Driver) spawn(m *machine, dir string) (err error) {
 	}
 	if nicNode != nil {
 		var c net.Conn
-		if err = d.storeFD("net-"+m.id, nicNode); err == nil {
+		if err = d.storeFD(fmt.Sprintf("net-%d", pid), nicNode); err == nil {
 			c, err = net.FileConn(nicNode)
 		}
+		d.mu.Lock()
+		ticket := m.ticket
+		d.mu.Unlock()
+		if err == nil && ticket != "" {
+			// The boot ticket survives a node restart in the fd store too
+			// (never in a file).
+			if f, merr := memFile("ticket", []byte(ticket)); merr == nil {
+				_ = d.storeFD(fmt.Sprintf("ticket-%d", pid), f)
+				f.Close()
+			}
+		}
 		if err == nil {
-			r.net, err = d.attachNet(ctx, m.id, rec.Spec.Net, "", c, gl)
+			r.net, err = d.attachNet(ctx, m.id, rec.Spec.Net, nsock, c, gl)
 		}
 		if err != nil {
 			d.kill(r)
@@ -1213,7 +1247,11 @@ func (d *Driver) attachNet(ctx context.Context, id string, pol *proto.NetPolicy,
 		return nil, err
 	}
 	if conn != nil { // the node's end of the NIC socketpair
-		n.Attach(conn)
+		if strings.HasPrefix(sock, "dgram:") {
+			n.AttachPacket(conn)
+		} else {
+			n.Attach(conn)
+		}
 		n.Forward(gl, proto.GuestPort)
 		return n, nil
 	}
@@ -1263,7 +1301,7 @@ func (d *Driver) args(rec vmRecord, dir string, port int, netSock string, qmpArg
 	a := []string{
 		"-name", esc("crowdvm-" + rec.Spec.SandboxID),
 		"-nodefaults", "-no-user-config", "-display", display,
-		"-machine", "q35,smm=off,vmport=off",
+		"-machine", "q35,smm=off,vmport=off,dump-guest-core=off", // guest RAM never in a core file
 		"-smp", strconv.Itoa(max(rec.Spec.Size.VCPU, 1)),
 		"-m", strconv.Itoa(mem),
 	}
@@ -1294,7 +1332,10 @@ func (d *Driver) args(rec vmRecord, dir string, port int, netSock string, qmpArg
 	}
 	netdev := fmt.Sprintf("user,id=net0,hostfwd=tcp:127.0.0.1:%d-:%d", port, proto.GuestPort)
 	nic := "virtio-net-pci,netdev=net0"
-	if fd, ok := strings.CutPrefix(netSock, "fd:"); ok {
+	if fd, ok := strings.CutPrefix(netSock, "dgram:"); ok {
+		netdev = "dgram,id=net0,local.type=fd,local.str=" + fd
+		nic += fmt.Sprintf(",mac=%s,host_mtu=%d", netstack.GuestMAC, netstack.DefaultMTU)
+	} else if fd, ok := strings.CutPrefix(netSock, "fd:"); ok {
 		netdev = "stream,id=net0,server=off,addr.type=fd,addr.str=" + fd
 		nic += fmt.Sprintf(",mac=%s,host_mtu=%d", netstack.GuestMAC, netstack.DefaultMTU)
 	} else if netSock != "" {
@@ -1330,7 +1371,7 @@ func (d *Driver) args(rec vmRecord, dir string, port int, netSock string, qmpArg
 		a = append(a, "-device", "virtio-gpu-gl-pci")
 	}
 	a = append(a,
-		"-chardev", "file,id=con0,path="+esc(filepath.Join(dir, "console.log")),
+		"-chardev", "file,id=con0,append=on,path="+esc(filepath.Join(dir, "console.log")),
 		"-serial", "chardev:con0",
 	)
 	return append(a, qmpArgs...), nil
@@ -1406,6 +1447,24 @@ func (d *Driver) watch(m *machine, r *run) {
 		}
 	}()
 	go d.waitBoot(m, r)
+}
+
+// checkFDVMs refuses to start without the fd store while VMs started under it
+// still run: their sockets are only in the store, and adopting them is
+// impossible (killing them would lose their state).
+func (d *Driver) checkFDVMs() error {
+	ents, _ := os.ReadDir(filepath.Join(d.opt.DataDir, "vms"))
+	for _, e := range ents {
+		dir := filepath.Join(d.opt.DataDir, "vms", e.Name())
+		var rec vmRecord
+		if b, err := os.ReadFile(filepath.Join(dir, "vm.json")); err != nil || json.Unmarshal(b, &rec) != nil {
+			continue
+		}
+		if rec.QMPNet == "fd" && rec.PID > 0 && pidIsOurs(rec.PID, dir) {
+			return fmt.Errorf("VM %s was started by the node's systemd service and is still running; its sockets are kept by that service: start the node with `systemctl --user start crowdvm-node`", rec.Spec.SandboxID)
+		}
+	}
+	return nil
 }
 
 // storeFD keeps the node's end of a VM socket in systemd's fd store.
@@ -1589,8 +1648,17 @@ func (d *Driver) adoptNet(m *machine, r *run) error {
 	ctx, cancel := context.WithTimeout(d.ctx, 5*time.Second)
 	defer cancel()
 	var conn net.Conn
-	if strings.HasPrefix(m.rec.NetSock, "fd:") {
-		f := d.takeFD("net-" + m.id)
+	if t := d.takeFD(fmt.Sprintf("ticket-%d", m.rec.PID)); t != nil {
+		if b, err := io.ReadAll(io.NewSectionReader(t, 0, 4096)); err == nil {
+			m.ticket = string(b)
+		}
+		t.Close()
+	}
+	if strings.HasPrefix(m.rec.NetSock, "fd:") || strings.HasPrefix(m.rec.NetSock, "dgram:") {
+		f := d.takeFD(fmt.Sprintf("net-%d", m.rec.PID))
+		if f == nil {
+			f = d.takeFD("net-" + m.id) // stored by an earlier version
+		}
 		if f == nil {
 			gl.Close()
 			return errors.New("its NIC socket was not passed back (systemd fd store)")
@@ -1615,7 +1683,10 @@ func (d *Driver) adoptNet(m *machine, r *run) error {
 // alive (ours) gets up to 10s, as a loaded host can be slow to answer.
 func (d *Driver) dialAdopt(rec vmRecord, ours bool) (*qmp, error) {
 	if rec.QMPNet == "fd" {
-		f := d.takeFD("qmp-" + rec.Spec.SandboxID)
+		f := d.takeFD(fmt.Sprintf("qmp-%d", rec.PID))
+		if f == nil {
+			f = d.takeFD("qmp-" + rec.Spec.SandboxID) // stored by an earlier version
+		}
 		if f == nil {
 			return nil, errors.New("its QMP socket was not passed back (systemd fd store)")
 		}

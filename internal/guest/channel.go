@@ -70,14 +70,13 @@ func ConnectChannel(ctx context.Context, stub proto.GuestConfig, stateDir string
 	if logger == nil {
 		logger = log.New(os.Stderr, "crowdvm-guest: ", log.LstdFlags)
 	}
-	if err := fetchTicket(ctx, &stub); err != nil {
-		return proto.GuestConfig{}, nil, err
-	}
 	c := &Channel{stub: stub, statePath: filepath.Join(stateDir, "channel.json"), log: logger}
 	if b, err := os.ReadFile(c.statePath); err == nil {
 		var st channelState
-		if json.Unmarshal(b, &st) == nil && st.SandboxID == stub.SandboxID && st.TicketHash == ticketHash(stub.Channel.Ticket) {
-			c.session = st.Session // same boot (agent restart or reboot): the ticket is spent
+		// Same boot (the state is in /run): the ticket is spent. A drive
+		// without the ticket (TicketFrom) cannot compare its hash.
+		if json.Unmarshal(b, &st) == nil && st.SandboxID == stub.SandboxID && (stub.Channel.Ticket == "" || st.TicketHash == ticketHash(stub.Channel.Ticket)) {
+			c.session = st.Session
 		}
 	}
 	backoff := 500 * time.Millisecond
@@ -144,6 +143,10 @@ func (c *Channel) connect(ctx context.Context) (proto.GuestConfig, error) {
 	if session != "" {
 		hello.Session = session
 	} else {
+		if err := fetchTicket(ctx, &c.stub); err != nil {
+			conn.Close()
+			return proto.GuestConfig{}, err
+		}
 		hello.Ticket, hello.Disk = c.stub.Channel.Ticket, c.disk
 	}
 	w, err := exchange(conn, br, hello)
@@ -151,6 +154,9 @@ func (c *Channel) connect(ctx context.Context) (proto.GuestConfig, error) {
 		// A new boot of this sandbox reused the disk but not the session:
 		// the ticket on this config drive is the one to use.
 		conn.Close()
+		if err := fetchTicket(ctx, &c.stub); err != nil {
+			return proto.GuestConfig{}, err
+		}
 		if conn, br, err = c.dial(ctx); err != nil {
 			return proto.GuestConfig{}, err
 		}

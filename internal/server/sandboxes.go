@@ -988,7 +988,7 @@ func (s *Server) handleCreateSandbox(c *Ctx) error {
 		if src != nil && src.Foreign {
 			s.addPendingScrub(sb.ID, s.foreignDeployScrub(src.OwnerID, src.SourceSandboxID))
 		}
-		sreq := schedReq{Size: spec, Placement: sb.Placement, Chain: chain, ImageID: image, Owners: s.ownersFor(sb.OwnerID, sb.OrgID)}
+		sreq := schedReq{Size: spec, Placement: sb.Placement, Chain: chain, ImageID: image, Owners: s.ownersFor(sb.OwnerID, sb.OrgID), Encrypted: sb.Disk == "luks"}
 		if _, err := s.placeSandbox(sb.ID, api.StateProvisioning, sreq); err != nil {
 			if req.FailFast || !s.couldEverPlace(sreq) {
 				_, _ = s.DB.Exec(`DELETE FROM sandboxes WHERE id=?`, sb.ID)

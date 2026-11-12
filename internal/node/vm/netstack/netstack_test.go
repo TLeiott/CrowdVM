@@ -8,6 +8,8 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"os"
+	"syscall"
 	"testing"
 	"time"
 
@@ -47,6 +49,11 @@ func streamPair(t *testing.T) (qemuSide, nodeSide net.Conn) {
 // fakeGuest is a gVisor stack standing in for the VM: 10.0.2.15/24, default
 // route via 10.0.2.2, frames over a QEMU stream connection.
 func fakeGuest(t *testing.T, conn net.Conn, mtu int) *stack.Stack {
+	return fakeGuestMode(t, conn, mtu, false)
+}
+
+// fakeGuestMode: packet = QEMU "-netdev dgram" framing (one frame per message).
+func fakeGuestMode(t *testing.T, conn net.Conn, mtu int, packet bool) *stack.Stack {
 	s := stack.New(stack.Options{
 		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, arp.NewProtocol},
 		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol, icmp.NewProtocol4},
@@ -63,6 +70,18 @@ func fakeGuest(t *testing.T, conn net.Conn, mtu int) *stack.Stack {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() { cancel(); s.Close(); ep.Close() })
 	go func() {
+		if packet {
+			buf := make([]byte, maxFrame)
+			for {
+				n, err := conn.Read(buf)
+				if err != nil {
+					return
+				}
+				pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{Payload: buffer.MakeWithData(append([]byte(nil), buf[:n]...))})
+				ep.InjectInbound(0, pkt)
+				pkt.DecRef()
+			}
+		}
 		r := bufio.NewReader(conn)
 		var hdr [4]byte
 		for {
@@ -90,6 +109,9 @@ func fakeGuest(t *testing.T, conn net.Conn, mtu int) *stack.Stack {
 			copy(b[4:], v.AsSlice())
 			v.Release()
 			pkt.DecRef()
+			if packet {
+				b = b[4:]
+			}
 			if _, err := conn.Write(b); err != nil {
 				return
 			}
@@ -403,5 +425,48 @@ func TestDNSRelayOffForNoDNS(t *testing.T) {
 	case <-answered:
 		t.Fatal("the query reached the node's upstream resolver")
 	default:
+	}
+}
+
+// Datagram NIC (the fd-store socketpair) and an in-process gateway service
+// (the boot ticket): frames cross intact, the service answers only inside
+// the VM's network.
+func TestPacketAttachAndGatewayService(t *testing.T) {
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_DGRAM, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conns := make([]net.Conn, 2)
+	for i, fd := range fds {
+		f := os.NewFile(uintptr(fd), "pair")
+		if conns[i], err = net.FileConn(f); err != nil {
+			t.Fatal(err)
+		}
+		f.Close()
+		t.Cleanup(func() { conns[i].Close() })
+	}
+	rules, _ := NewRules(Policy{})
+	n, err := New(Config{Rules: rules, MTU: 9000, GatewayServices: map[uint16]func(net.Conn){7072: func(c net.Conn) {
+		c.Write([]byte("ticket-xyz\n"))
+	}}, Logf: t.Logf})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(n.Close)
+	n.AttachPacket(conns[0])
+	g := fakeGuestMode(t, conns[1], 9000, true)
+	c, err := dialTCP(g, netip.AddrPortFrom(Gateway, 7072))
+	if err != nil {
+		t.Fatalf("gateway service: %v", err)
+	}
+	defer c.Close()
+	c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	b, _ := io.ReadAll(c)
+	if string(b) != "ticket-xyz\n" {
+		t.Fatalf("gateway service answered %q", b)
+	}
+	if c, err := dialTCP(g, netip.AddrPortFrom(Gateway, 7073)); err == nil {
+		c.Close()
+		t.Fatal("an unserved gateway port answered")
 	}
 }

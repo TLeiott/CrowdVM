@@ -292,7 +292,7 @@ func (s *Server) evacUploadDone(nodeID string) {
 // Not counted as a start of the owner's (the move was not theirs).
 func (s *Server) evacuationResume(sb *Sandbox, from string) {
 	spec, _ := api.SizeByName(sb.Size)
-	if !s.couldEverPlace(schedReq{Size: spec, Placement: sb.Placement, Exclude: from, Owners: s.ownersFor(sb.OwnerID, sb.OrgID)}) {
+	if !s.couldEverPlace(schedReq{Size: spec, Placement: sb.Placement, Exclude: from, Owners: s.ownersFor(sb.OwnerID, sb.OrgID), Encrypted: sb.Disk == "luks"}) {
 		s.evacuationStranded(sb)
 		return
 	}

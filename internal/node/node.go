@@ -164,6 +164,20 @@ func New(cfg *Config, drv vm.Driver, log *slog.Logger) *Node {
 	return n
 }
 
+// guestChannel: this node can boot channel guests. Not the process driver
+// (its "guests" are host processes, tests only), and not QEMU's slirp
+// network: the guest dials the server through the netstack's gateway alias,
+// and the ticket is served on the VM's netstack.
+func (n *Node) guestChannel() bool {
+	if n.drv.Name() == "process" {
+		return false
+	}
+	if nm, ok := n.drv.(interface{ NetMode() string }); ok && nm.NetMode() != "netstack" {
+		return false
+	}
+	return true
+}
+
 // reticket asks the server for a new boot ticket for a channel guest that
 // rebooted. The server answers 409 until the old boot's channel has closed.
 func (n *Node) reticket(ctx context.Context, id string) (*proto.GuestChannel, error) {
@@ -180,7 +194,10 @@ func (n *Node) reticket(ctx context.Context, id string) (*proto.GuestChannel, er
 			}
 			return nil, fmt.Errorf("server: bad ticket answer: %v", err)
 		}
-		if !isStatus(err, 409) {
+		// 409: the old boot's channel is still up. Network errors and 5xx:
+		// the server restarts or is busy. Both are retried in the budget.
+		var he *httpError
+		if errors.As(err, &he) && he.Status != 409 && he.Status < 500 {
 			return nil, err
 		}
 		select {
@@ -239,7 +256,7 @@ func (n *Node) Info() proto.NodeInfo {
 		// Secure layer: guests fetch their config from the server over a
 		// pinned channel; this node never sees their secrets. Not for the
 		// process driver: its "guests" are host processes (tests only).
-		GuestChannel: n.drv.Name() != "process",
+		GuestChannel: n.guestChannel(),
 		GPUs:         gpus, VirGL: vg != nil && vg.VirGL(),
 		Paused: ps.Paused, PauseReason: ps.Reason,
 	}

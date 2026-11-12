@@ -62,9 +62,7 @@ func (a *Agent) startEgress(ctx context.Context) error {
 	go a.serveEgressProxy(tl)
 	go a.serveDNSUDP(ul)
 	go a.serveDNSTCP(dl)
-	if err := egressRules(); err != nil {
-		return err
-	}
+	err = egressRules()
 	go func() { // re-apply when something (dockerd, ufw reset) dropped the jump rules
 		t := time.NewTicker(10 * time.Second)
 		defer t.Stop()
@@ -81,6 +79,9 @@ func (a *Agent) startEgress(ctx context.Context) error {
 			}
 		}
 	}()
+	if err != nil {
+		return err // the loop above retries
+	}
 	a.log.Printf("egress: through the server (proxy :%d, dns :%d)", egressProxyPort, egressDNSPort)
 	return nil
 }
@@ -98,31 +99,54 @@ func egressRulesPresent() bool {
 		ipt("-t", "nat", "-C", "PREROUTING", "-j", egressChain) == nil &&
 		ipt("-t", "filter", "-C", "OUTPUT", "-j", egressChain) == nil &&
 		ipt("-t", "filter", "-C", "FORWARD", "-j", egressChain) == nil &&
+		firstRule("filter", "FORWARD") == "-A FORWARD -j "+egressChain && // dockerd puts its own first
+		firstRule("nat", "PREROUTING") == "-A PREROUTING -j "+egressChain &&
 		ipt("-t", "filter", "-C", "INPUT", "-j", egressChain+"_IN") == nil &&
 		// the chains themselves (a flush empties them and keeps the jumps)
 		ipt("-t", "nat", "-C", egressChain, "-p", "tcp", "-j", "REDIRECT", "--to-ports", strconv.Itoa(egressProxyPort)) == nil &&
 		ipt("-t", "filter", "-C", egressChain+"_IN", "-p", "tcp", "--dport", strconv.Itoa(egressProxyPort), "-j", "ACCEPT") == nil
 }
 
+// firstRule is chain's first rule as `iptables -S` prints it.
+func firstRule(table, chain string) string {
+	out, _ := exec.Command("iptables", "-w", "5", "-t", table, "-S", chain).Output()
+	for _, l := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(l, "-A ") {
+			return strings.TrimSpace(l)
+		}
+	}
+	return ""
+}
+
 // egressRules (re)builds the chains and puts their jumps first.
 func egressRules() error {
 	mark := "0x" + strconv.FormatInt(channelMark, 16)
-	nat := [][]string{
+	// Private destinations are not internet: containers, docker bridges
+	// and pod networks live inside the VM, and anything else private ends
+	// at the node, which lets the VM reach only the server.
+	private := [][]string{}
+	for _, p := range []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"} {
+		private = append(private, []string{"-d", p, "-j", "RETURN"})
+	}
+	nat := append([][]string{
 		{"-m", "mark", "--mark", mark, "-j", "RETURN"},
-		{"-p", "udp", "--dport", "53", "-j", "REDIRECT", "--to-ports", strconv.Itoa(egressDNSPort)},
-		{"-p", "tcp", "--dport", "53", "-j", "REDIRECT", "--to-ports", strconv.Itoa(egressDNSPort)},
+		// the node's resolver (DHCP's DNS) answers through the server
+		{"-d", "10.0.2.0/24", "-p", "udp", "--dport", "53", "-j", "REDIRECT", "--to-ports", strconv.Itoa(egressDNSPort)},
+		{"-d", "10.0.2.0/24", "-p", "tcp", "--dport", "53", "-j", "REDIRECT", "--to-ports", strconv.Itoa(egressDNSPort)},
 		{"-m", "addrtype", "--dst-type", "LOCAL", "-j", "RETURN"},
 		{"-d", "127.0.0.0/8", "-j", "RETURN"},
-		{"-d", "10.0.2.0/24", "-j", "RETURN"}, // the node's gateway: DHCP and the server pinhole
-		{"-p", "tcp", "-j", "REDIRECT", "--to-ports", strconv.Itoa(egressProxyPort)},
-	}
-	filter := [][]string{
+	}, append(private,
+		[]string{"-p", "udp", "--dport", "53", "-j", "REDIRECT", "--to-ports", strconv.Itoa(egressDNSPort)},
+		[]string{"-p", "tcp", "--dport", "53", "-j", "REDIRECT", "--to-ports", strconv.Itoa(egressDNSPort)},
+		[]string{"-p", "tcp", "-j", "REDIRECT", "--to-ports", strconv.Itoa(egressProxyPort)},
+	)...)
+	filter := append([][]string{
 		{"-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "RETURN"}, // e.g. the resolver's answers to containers
 		{"-m", "mark", "--mark", mark, "-j", "RETURN"},
 		{"-d", "127.0.0.0/8", "-j", "RETURN"},
-		{"-d", "10.0.2.0/24", "-j", "RETURN"},
-		{"-p", "udp", "-m", "addrtype", "!", "--dst-type", "LOCAL", "-j", "REJECT", "--reject-with", "icmp-port-unreachable"},
-	}
+	}, append(private,
+		[]string{"-p", "udp", "-m", "addrtype", "!", "--dst-type", "LOCAL", "-j", "REJECT", "--reject-with", "icmp-port-unreachable"},
+	)...)
 	// Redirected traffic of containers arrives on INPUT, which ufw drops by
 	// default: let it reach the proxy and the resolver. Never from the
 	// node's side of the NIC.

@@ -21,6 +21,8 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 type fdStore struct {
@@ -89,9 +91,25 @@ func (s *fdStore) take(name string) *os.File {
 	return f
 }
 
+// memFile returns an anonymous in-memory file holding data.
+func memFile(name string, data []byte) (*os.File, error) {
+	fd, err := unix.MemfdCreate(name, unix.MFD_CLOEXEC)
+	if err != nil {
+		return nil, err
+	}
+	f := os.NewFile(uintptr(fd), name)
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return f, nil
+}
+
 // socketPair returns two connected stream sockets (close-on-exec).
-func socketPair() (*os.File, *os.File, error) {
-	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
+func socketPair() (*os.File, *os.File, error) { return socketPairType(syscall.SOCK_STREAM) }
+
+func socketPairType(typ int) (*os.File, *os.File, error) {
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, typ|syscall.SOCK_CLOEXEC, 0)
 	if err != nil {
 		return nil, nil, err
 	}

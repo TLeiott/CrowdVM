@@ -1374,7 +1374,14 @@ func (s *Server) handleRevokeJoinToken(c *Ctx) error {
 var blobGrants sync.Map
 
 func (s *Server) grantChain(nodeID, snapID string) {
-	exp := time.Now().Add(24 * time.Hour)
+	now := time.Now()
+	blobGrants.Range(func(k, v any) bool { // expired ones go
+		if now.After(v.(time.Time)) {
+			blobGrants.Delete(k)
+		}
+		return true
+	})
+	exp := now.Add(24 * time.Hour)
 	for _, id := range s.snapshotChain(snapID) {
 		blobGrants.Store(nodeID+"/"+id, exp)
 	}

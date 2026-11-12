@@ -33,6 +33,7 @@ func init() {
 			Net:         cfg.Net.Mode,
 			NetPolicy:   netstack.Policy{AllowLAN: cfg.Net.AllowLAN, Allow: allow, Deny: deny},
 			ServerAddr:  cfg.ServerAddr(),
+			ServerURL:   cfg.Server,
 			VirGL:       cfg.GPU.VirGL,
 			Logf:        logf(log, "qemu"),
 		})

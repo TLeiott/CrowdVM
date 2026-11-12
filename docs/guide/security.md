@@ -38,7 +38,7 @@ CrowdVM does not use it yet. What CrowdVM does is make the attempts visible:
 - When a sandbox reboots, it tells the server first, and its node gets a new ticket. A
   sandbox that goes down without that (a kernel panic, `sysrq`, or a node that kills it
   to get a ticket of its own) stays down, and its owner gets a notice ("Stopped after an
-  unexpected restart"). `crowdvm resume` or `crowdvm recover` starts it again.
+  unexpected restart"). `crowdvm recover` starts it again with its disk as it was (`crowdvm resume` would go back to its last snapshot).
 
 Sandboxes from images before v4 (`ubuntu-24.04-crowdvm-v3` and older) keep an
 unencrypted disk. A snapshot of an encrypted sandbox can be resumed or forked only on
@@ -199,7 +199,7 @@ internet looks like it came from your network.
   operations token that only checks the VM's health and pauses or stops it.
 - **Stored:** the VM's disk and snapshot layers, which hold the public base image and
   the sandbox's writes as ciphertext (images v4 and later; older images write in the
-  clear), and the last 256 KiB of its serial console. CrowdVM's processes write no core dumps, so a crashed VM
+  clear), and its serial console (trimmed to the last 256 KiB at each start). CrowdVM's processes write no core dumps, so a crashed VM
   leaves none of its memory on your disk. Swap and hibernation can still write VM
   memory to disk; use encrypted swap if that matters to you.
 
@@ -221,10 +221,27 @@ See [Node owner guide](node-owners.md#taking-the-machine-back).
 ## For the server operator
 
 - The server stores secrets encrypted with keys in its data directory: environment
-  variables and secret files with `env-secrets.key`; AI credentials, telemetry headers
-  and webhook secrets with `secret.key`. Back up the whole data directory (both keys,
-  the database and the blobs) while the server is stopped, and keep the keys as private
-  as the database: a backup without them cannot decrypt those secrets.
+  variables and secret files with `env-secrets.key`; AI credentials, telemetry headers,
+  webhook secrets, each boot's guest configuration and **the disk keys of encrypted
+  sandboxes** with `secret.key`. Back up the whole data directory (the keys,
+  `guest-tls.pem`, the database and the blobs) while the server is stopped, and keep
+  the keys as private as the database. Without `secret.key` every encrypted sandbox's
+  data is lost for good; the server refuses to start a new key while such sandboxes
+  exist. `guest-tls.pem` is the key sandboxes pin: a new one makes running sandboxes
+  unreachable until each is recovered (`crowdvm recover`).
+- Sandboxes reach the internet **through the server** by default: all their downloads
+  use the server's uplink and show its address, and a server restart cuts their open
+  connections. `--node-egress` sends it out through the nodes again (the node then sees
+  the sandbox's traffic). `--egress-allow` opens hosts on the server's own networks.
+- Sandboxes connect to the server with an HTTP upgrade (`Upgrade: crowdvm-guest`). A
+  reverse proxy in front of the server must pass it on, as for WebSockets (Caddy and
+  nginx with `proxy_set_header Upgrade $http_upgrade` do; Cloudflare's proxy does not).
+  Nodes give their sandboxes the server URL they use themselves, so a node that joined
+  through the LAN keeps working when the public URL sits behind a proxy.
+- Upgrading: nodes rerun `crowdvm-node install-service` once, so systemd keeps their
+  VMs' control sockets (systemd 254 or later). Once a sandbox on image v4 exists, do
+  not go back to a server or node release without the secure layer: its disk can only
+  be unlocked through the guest channel.
 - Without `--tls-cert`/`--tls-key` the API is plain HTTP. API keys and session cookies
   cross the network unencrypted, so run the server on a network you trust, or put it
   on a tailnet, which encrypts traffic between machines.

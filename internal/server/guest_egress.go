@@ -11,6 +11,7 @@ package server
 import (
 	"bufio"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -69,8 +70,14 @@ func localNets() []netip.Prefix {
 	for _, ad := range addrs {
 		if n, ok := ad.(*net.IPNet); ok {
 			if a, ok := netip.AddrFromSlice(n.IP); ok {
+				a = a.Unmap()
 				ones, _ := n.Mask.Size()
-				c.nets = append(c.nets, netip.PrefixFrom(a.Unmap(), ones).Masked())
+				if a.Is4() && !a.IsPrivate() && !a.IsLoopback() && !a.IsLinkLocalUnicast() {
+					// A public IPv4 network (a VPS's /20) holds strangers:
+					// only this server's own address.
+					ones = 32
+				}
+				c.nets = append(c.nets, netip.PrefixFrom(a, ones).Masked())
 			}
 		}
 	}
@@ -150,13 +157,57 @@ func (s *Server) isOwnAPI(ap netip.AddrPort) bool {
 	if a, err := netip.ParseAddr(u.Hostname()); err == nil {
 		return a.Unmap() == ap.Addr().Unmap()
 	}
-	ips, _ := net.LookupIP(u.Hostname())
-	for _, ip := range ips {
-		if a, ok := netip.AddrFromSlice(ip); ok && a.Unmap() == ap.Addr().Unmap() {
+	for _, a := range apiAddrs(u.Hostname()) {
+		if a == ap.Addr().Unmap() {
 			return true
 		}
 	}
 	return false
+}
+
+var apiAddrCache struct {
+	sync.Mutex
+	host  string
+	at    time.Time
+	addrs []netip.Addr
+}
+
+// apiAddrs resolves the public URL's host, at most once a minute (every
+// egress dial to its port asks).
+func apiAddrs(host string) []netip.Addr {
+	c := &apiAddrCache
+	c.Lock()
+	defer c.Unlock()
+	if c.host == host && time.Since(c.at) < time.Minute {
+		return c.addrs
+	}
+	c.host, c.at, c.addrs = host, time.Now(), nil
+	ips, _ := net.LookupIP(host)
+	for _, ip := range ips {
+		if a, ok := netip.AddrFromSlice(ip); ok {
+			c.addrs = append(c.addrs, a.Unmap())
+		}
+	}
+	return c.addrs
+}
+
+// ParseEgressAllow checks --egress-allow entries: ip:port, a CIDR, or a
+// bare IP (taken as /32 or /128).
+func ParseEgressAllow(list []string) ([]string, error) {
+	out := make([]string, 0, len(list))
+	for _, e := range list {
+		e = strings.TrimSpace(e)
+		if _, err := netip.ParseAddrPort(e); err == nil {
+			out = append(out, e)
+		} else if _, err := netip.ParsePrefix(e); err == nil {
+			out = append(out, e)
+		} else if a, err := netip.ParseAddr(e); err == nil {
+			out = append(out, netip.PrefixFrom(a, a.BitLen()).String())
+		} else {
+			return nil, fmt.Errorf("--egress-allow %q: want ip:port, a CIDR or an IP", e)
+		}
+	}
+	return out, nil
 }
 
 // guestStreams serves what a guest opens on its channel.

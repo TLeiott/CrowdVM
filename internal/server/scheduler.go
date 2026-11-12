@@ -68,6 +68,12 @@ type schedReq struct {
 	Only      string // must run on this node (fork of a running sandbox)
 	Exclude   string
 	Owners    []string // users whose nodes are "own" (placement.trust)
+	Encrypted bool     // the sandbox's disk is encrypted: guest-channel nodes only
+}
+
+// encrypted: the request needs a node that can give the guest its disk key.
+func (r schedReq) encrypted(s *Server) bool {
+	return r.Encrypted || (len(r.Chain) > 0 && s.encryptedChain(r.Chain[0]))
 }
 
 // reservedOn sums the sizes of the sandboxes the server placed on a node.
@@ -186,7 +192,7 @@ func (s *Server) pickNode(req schedReq) (*Node, error) {
 	var cands []candidate
 	var reasons []string
 	matching := 0
-	encrypted := len(req.Chain) > 0 && s.encryptedChain(req.Chain[0])
+	encrypted := req.encrypted(s)
 	for id := range online {
 		n, err := s.NodeByID(id)
 		if err != nil || n.Disabled {

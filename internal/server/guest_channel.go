@@ -85,6 +85,9 @@ func (s *Server) ensureDiskKey(sbID, parent string) (string, error) {
 	var sealed string
 	if parent != "" {
 		_ = s.DB.QueryRow(`SELECT data_key FROM snapshots WHERE id=?`, parent).Scan(&sealed)
+		if sealed == "" { // recorded without one (a rollback): the sandbox that made it
+			_ = s.DB.QueryRow(`SELECT COALESCE(data_key,'') FROM sandboxes WHERE id=(SELECT sandbox_id FROM snapshots WHERE id=?)`, parent).Scan(&sealed)
+		}
 		if sealed == "" { // a snapshot from before disk keys: the sandbox's own
 			_ = s.DB.QueryRow(`SELECT data_key FROM sandboxes WHERE id=?`, sbID).Scan(&sealed)
 		}
@@ -359,8 +362,8 @@ func (s *Server) handleGuestReboot(w http.ResponseWriter, r *http.Request) {
 		// ticket: the sandbox stops until its owner recovers it.
 		s.Log.Warn("guest channel: unannounced reboot, no new ticket", "sandbox", sb.ID, "node", n.ID)
 		s.notifySandbox(sb, "security_unannounced_reboot", "warning", time.Minute, "Stopped after an unexpected restart",
-			sb.Name+" went down without shutting down, so it was not started again: a crash or kernel panic does this, and so does a node that tries to read the sandbox's configuration and disk key. Run `crowdvm resume "+sb.ID+"` (or `crowdvm recover`) to start it again.")
-		http.Error(w, "unannounced_reboot: the machine went down without shutting down; recover the sandbox to start it again", 403)
+			sb.Name+" went down without shutting down, so it was not started again: a crash or kernel panic does this, and so does a node that tries to read the sandbox's configuration and disk key. Run `crowdvm recover "+sb.ID+"` to start it again with its disk as it was (`crowdvm resume` would start from the last snapshot).")
+		http.Error(w, "unannounced_reboot: the machine went down without shutting down; `crowdvm recover` starts it again", 403)
 		return
 	}
 	plain, err := s.openSecret(sealed)
@@ -429,7 +432,10 @@ func (s *Server) redeemGuest(h proto.GuestHello) (string, *proto.GuestConfig, *S
 		session = randToken(40)
 		res, err := s.DB.Exec(`UPDATE guest_channels SET session_hash=?, redeemed_at=? WHERE sandbox_id=? AND ticket_hash=? AND redeemed_at IS NULL`,
 			hashToken(session), store.Now(), sb.ID, ticketHash)
-		if n, _ := res.RowsAffected(); err != nil || n != 1 {
+		if err != nil {
+			return fail("config_unreadable")
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
 			return fail("ticket_used")
 		}
 		if h.Disk == "luks" || h.Disk == "plain" {
@@ -503,7 +509,16 @@ func (s *Server) handleGuestConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	g := &GuestConn{SandboxID: sb.ID, NodeID: sb.NodeID, sess: sess, transport: mux.Transport(sess), connectedAt: time.Now()}
-	if old := s.guests.set(g); old != nil && !old.closed() {
+	old := s.guests.set(g)
+	var cur string
+	if s.DB.QueryRow(`SELECT session_hash FROM guest_channels WHERE sandbox_id=?`, sb.ID).Scan(&cur) != nil || cur != hashToken(welcome.Session) {
+		// A new boot was issued while this (old) session connected: it
+		// must not take the new boot's place.
+		s.guests.remove(g)
+		_ = sess.Close()
+		return
+	}
+	if old != nil && !old.closed() {
 		// The machine rebooted or its network blipped; or someone holding
 		// the session took over. The newest connection wins.
 		s.Log.Info("guest channel replaced", "sandbox", sb.ID)
@@ -529,6 +544,25 @@ var guestLastEvent sync.Map // sandbox id -> time.Time
 // followGuestChannelEvents does over the channel what the node does for
 // legacy guests: follow /v1/internal/events/stream and handle each event.
 func (s *Server) followGuestChannelEvents(ctx context.Context, g *GuestConn) {
+	// The stream ends with the channel, or early (a guest error, an agent
+	// restart that kept the channel): follow again while it is up.
+	for backoff := time.Second; !g.closed() && ctx.Err() == nil; backoff = min(backoff*2, 30*time.Second) {
+		start := time.Now()
+		s.followGuestEventsOnce(ctx, g)
+		if time.Since(start) > time.Minute {
+			backoff = time.Second
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-g.sess.CloseChan():
+			return
+		case <-time.After(backoff):
+		}
+	}
+}
+
+func (s *Server) followGuestEventsOnce(ctx context.Context, g *GuestConn) {
 	since := time.Unix(1, 0)
 	if v, ok := guestLastEvent.Load(g.SandboxID); ok {
 		since = v.(time.Time)
@@ -551,6 +585,9 @@ func (s *Server) followGuestChannelEvents(ctx context.Context, g *GuestConn) {
 		return
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return
+	}
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 64<<10), 16<<20)
 	for sc.Scan() {

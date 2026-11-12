@@ -163,6 +163,11 @@ func serve(args []string) error {
 		NodeEgress:        *nodeEgress,
 		EgressAllow:       splitList(*egressAllow),
 	}
+	allow, err := server.ParseEgressAllow(cfg.EgressAllow)
+	if err != nil {
+		return err
+	}
+	cfg.EgressAllow = allow
 	srv, err := server.New(cfg)
 	if err != nil {
 		return err

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -44,16 +45,40 @@ RestartSec=5
 # KillMode=mixed killed every VM on "systemctl --user restart" (bugs-r8-opus 1).
 KillMode=process
 TimeoutStopSec=60
-# The VMs' QMP and NIC sockets live in systemd's fd store, not at paths
+%s
+[Install]
+WantedBy=default.target
+`, strings.Join(q, " "), fdStoreUnit(o.FDStore))
+}
+
+// fdStoreUnit: the VMs' QMP and NIC sockets live in systemd's fd store, not
+// at paths another process of this user could connect to; a restart (and a
+// stop/start, with Preserve) gets them back.
+func fdStoreUnit(on bool) string {
+	if !on {
+		return ""
+	}
+	return `# The VMs' QMP and NIC sockets live in systemd's fd store, not at paths
 # another process of this user could connect to; a restart gets them back.
 NotifyAccess=main
 FileDescriptorStoreMax=1024
 FileDescriptorStorePreserve=yes
 Environment=CROWDVM_FDSTORE=1
+`
+}
 
-[Install]
-WantedBy=default.target
-`, strings.Join(q, " "))
+// systemdVersion is the running systemd's version (0 if unknown).
+func systemdVersion() int {
+	out, err := exec.Command("systemctl", "--version").Output()
+	if err != nil {
+		return 0
+	}
+	f := strings.Fields(string(out))
+	if len(f) < 2 || f[0] != "systemd" {
+		return 0
+	}
+	v, _ := strconv.Atoi(f[1])
+	return v
 }
 
 func systemdQuote(s string) string {
@@ -67,6 +92,7 @@ func systemdQuote(s string) string {
 // Install writes the user unit and (unless NoStart) enables and starts it.
 func Install(o Options, out io.Writer) error {
 	p := UnitPath()
+	o.FDStore = o.FDStore || systemdVersion() >= 254
 	unit := Unit(o)
 	if o.DryRun {
 		fmt.Fprintf(out, "# would write %s:\n%s", p, unit)
