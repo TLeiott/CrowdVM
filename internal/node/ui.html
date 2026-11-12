@@ -247,8 +247,14 @@ const cat = (c) => `<span class="cat ${esc(c || "none")}">${esc(c || "none")}</s
 let state = null, schedMode = null, limitsDirty = false;
 
 function say(id, text, ok) { const e = $(id); e.textContent = text || ""; e.className = "msg " + (ok ? "ok" : "bad"); }
+// bugs-r12-opus 1: the login session lives in localStorage (per origin, so per
+// port; a cookie would go to every local port) and goes out in a header.
+function sessHeaders(h) {
+  try { const v = localStorage.getItem("crowdvm_node_session"); if (v) h["X-Crowdvm-Ui-Session"] = v; } catch (e) {}
+  return h;
+}
 async function call(path, body) {
-  const r = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json", "X-Crowdvm-Ui": "1"},
+  const r = await fetch(path, {method: "POST", headers: sessHeaders({"Content-Type": "application/json", "X-Crowdvm-Ui": "1"}),
     body: body ? JSON.stringify(body) : undefined});
   let j = {};
   try { j = await r.json(); } catch (e) {}
@@ -453,7 +459,7 @@ function render(s) {
 
 async function refresh() {
   try {
-    const r = await fetch("/api/status", {cache: "no-store"});
+    const r = await fetch("/api/status", {cache: "no-store", headers: sessHeaders({})});
     render(await r.json());
     $("banner").style.display = "none";
   } catch (e) {

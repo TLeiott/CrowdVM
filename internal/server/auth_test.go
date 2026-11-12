@@ -90,7 +90,8 @@ func TestSignupLoginSessions(t *testing.T) {
 	if st, m := b3.do("POST", "/auth/login", map[string]any{"username": "alice", "password": "nope"}, false); st != 401 || m["code"] != "invalid_credentials" {
 		t.Fatalf("bad login: %d %v", st, m)
 	}
-	st, m = b3.do("POST", "/auth/login", map[string]any{"username": "alice@x.test", "password": "secret-123", "client": "cli"}, false)
+	// A signup email counts only once confirmed (bugs-r11-sonnet 7): log in by name.
+	st, m = b3.do("POST", "/auth/login", map[string]any{"username": "alice", "password": "secret-123", "client": "cli"}, false)
 	tok, _ := m["token"].(string)
 	if st != 200 || !strings.HasPrefix(tok, server.SessionPrefix) {
 		t.Fatalf("cli login: %d %v", st, m)

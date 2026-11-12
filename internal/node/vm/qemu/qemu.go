@@ -571,7 +571,9 @@ func (d *Driver) Snapshot(ctx context.Context, id, snapID string) (proto.Snapsho
 		d.saveRec(m)
 	}
 	// Consistent point: the guest syncs and freezes its filesystems for the
-	// instant of the overlay switch (sync only with older guests).
+	// instant of the overlay switch (sync only with older guests). Not for a
+	// guest that stalled them before: crash-consistent instead (bugs-r11-opus 7).
+	ready = ready && !vm.NoQuiesce(ctx)
 	frozen := ready && d.guest(m).Post(ctx, "/v1/internal/freeze", proto.FreezeRequest{TimeoutSeconds: 30}, time.Minute) == nil
 	if ready && !frozen {
 		if err := d.guest(m).Post(ctx, "/v1/internal/sync", nil, time.Minute); err != nil {

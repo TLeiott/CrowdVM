@@ -87,12 +87,33 @@ func (s *Server) UserByID(id string) (*User, error) {
 	return scanUser(s.DB.QueryRow(`SELECT `+userCols+` FROM users WHERE id=?`, id))
 }
 
-// UserByLogin finds a user by username, email or id.
+// UserByLogin finds a user by username, email or id. An exact id wins.
 func (s *Server) UserByLogin(login string) (*User, error) {
-	return scanUser(s.DB.QueryRow(`SELECT `+userCols+` FROM users WHERE username=? OR email=? OR id=? LIMIT 1`, login, login, login))
+	// bugs-r11-sonnet 15: an id match first, so an older squatting username cannot shadow it.
+	return scanUser(s.DB.QueryRow(`SELECT `+userCols+` FROM users WHERE username=? OR email=? OR id=? ORDER BY id=? DESC LIMIT 1`, login, login, login, login))
 }
 
 var usernameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{1,38}$`)
+
+// checkUsername validates the shape of a username.
+func checkUsername(name string) error {
+	if !usernameRe.MatchString(name) || strings.HasPrefix(strings.ToLower(name), PrefixUser) { // bugs-r11-sonnet 15
+		return Err(400, "invalid_username", "Username must be 2-39 letters, digits, dots, dashes or underscores, and must not start with "+PrefixUser+".")
+	}
+	return nil
+}
+
+// hashPassword checks the length rules and bcrypts a password.
+func hashPassword(password string) (string, error) {
+	if len(password) < 8 {
+		return "", Err(400, "weak_password", "Password must have at least 8 characters.")
+	}
+	if len(password) > 72 { // bugs-r11-sonnet 10: bcrypt refuses more
+		return "", Err(400, "password_too_long", "Password must have at most 72 bytes.")
+	}
+	h, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	return string(h), err
+}
 
 // NewUserParams creates an account (CLI admin commands, signup, tests).
 type NewUserParams struct {
@@ -104,19 +125,16 @@ type NewUserParams struct {
 
 // CreateUser inserts a user and its wallet.
 func (s *Server) CreateUser(p NewUserParams) (*User, error) {
-	if !usernameRe.MatchString(p.Username) {
-		return nil, Err(400, "invalid_username", "Username must be 2-39 letters, digits, dots, dashes or underscores.")
+	if err := checkUsername(p.Username); err != nil {
+		return nil, err
 	}
 	var hash string
 	if p.Password != "" {
-		if len(p.Password) < 8 {
-			return nil, Err(400, "weak_password", "Password must have at least 8 characters.")
-		}
-		h, err := bcrypt.GenerateFromPassword([]byte(p.Password), bcrypt.DefaultCost)
+		h, err := hashPassword(p.Password)
 		if err != nil {
 			return nil, err
 		}
-		hash = string(h)
+		hash = h
 	}
 	if p.Kind == "" {
 		p.Kind = "user"
@@ -156,17 +174,21 @@ func (s *Server) CreateUser(p NewUserParams) (*User, error) {
 	return s.UserByID(id)
 }
 
-// SetPassword replaces a user's password.
-func (s *Server) SetPassword(userID, password string) error {
-	if len(password) < 8 {
-		return Err(400, "weak_password", "Password must have at least 8 characters.")
-	}
-	h, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+// SetPassword replaces a user's password and ends the account's sessions,
+// except keepSession (the caller's own; "" keeps none).
+func (s *Server) SetPassword(userID, password, keepSession string) error {
+	h, err := hashPassword(password)
 	if err != nil {
 		return err
 	}
-	_, err = s.DB.Exec(`UPDATE users SET password_hash=? WHERE id=?`, string(h), userID)
-	return err
+	// bugs-r11-sonnet 6: a new password must log out a thief holding an old session.
+	return s.DB.Tx(s.ctx, func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`UPDATE users SET password_hash=? WHERE id=?`, h, userID); err != nil {
+			return err
+		}
+		_, err := tx.Exec(`DELETE FROM sessions WHERE user_id=? AND id<>?`, userID, keepSession)
+		return err
+	})
 }
 
 func (s *Server) userCount() int {
@@ -333,6 +355,7 @@ func (s *Server) authRoutes() {
 	s.Route("GET /auth/me", ActionAny, s.handleAuthMe)
 	s.Route("PATCH /auth/me", ActionSession, s.handleUpdateMe)
 	s.Route("POST /auth/password", ActionSession, s.handleChangePassword)
+	s.Route("POST /auth/me/email/verify", ActionSession, s.handleVerifyMyEmail) // bugs-r11-sonnet 7
 	s.Route("POST /auth/email/start", ActionPublic, s.handleEmailStart)
 	s.Route("POST /auth/email/verify", ActionPublic, s.handleEmailVerify)
 	s.Route("GET /auth/config", ActionPublic, func(c *Ctx) error {
@@ -389,9 +412,23 @@ func (s *Server) handleSignup(c *Ctx) error {
 	if req.Password == "" {
 		return Err(400, "password_required", "password is required.")
 	}
-	u, err := s.CreateUser(NewUserParams{Username: req.Username, Password: req.Password, Email: req.Email, DisplayName: req.DisplayName, Admin: first})
+	// bugs-r11-sonnet 7: a signup email is stored only after its code is entered
+	// (POST /auth/me/email/verify), like a changed email.
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	if email != "" {
+		if !emailRe.MatchString(email) {
+			return Err(400, "invalid_email", "A valid email address is required.")
+		}
+		if err := s.checkEmailFree(email, ""); err != nil {
+			return err
+		}
+	}
+	u, err := s.CreateUser(NewUserParams{Username: req.Username, Password: req.Password, DisplayName: req.DisplayName, Admin: first})
 	if err != nil {
 		return err
+	}
+	if email != "" {
+		s.sendEmailCode(email, "Confirm your CrowdVM email", "Your CrowdVM email confirmation code is %s. It expires in 10 minutes.")
 	}
 	s.useInvite(req.InviteCode, first)
 	s.Log.Info("user signed up", "user", u.Username, "admin", u.IsAdmin)
@@ -477,18 +514,63 @@ func (s *Server) handleUpdateMe(c *Ctx) error {
 		}
 		_, _ = s.DB.Exec(`UPDATE users SET display_name=? WHERE id=?`, n, c.P.User.ID)
 	}
+	out := map[string]any{}
 	if req.Email != nil {
 		e := strings.ToLower(strings.TrimSpace(*req.Email))
-		var v any
-		if e != "" {
-			if !emailRe.MatchString(e) {
-				return Err(400, "invalid_email", "A valid email address is required.")
+		switch {
+		case e == "":
+			_, _ = s.DB.Exec(`UPDATE users SET email=NULL WHERE id=?`, c.P.User.ID)
+		case !emailRe.MatchString(e):
+			return Err(400, "invalid_email", "A valid email address is required.")
+		case e != c.P.User.Email:
+			// bugs-r11-sonnet 7: the address is stored only after its owner enters the code
+			// (POST /auth/me/email/verify), so an email login never lands in a squatter's account.
+			if err := s.checkEmailFree(e, c.P.User.ID); err != nil {
+				return err
 			}
-			v = e
+			s.sendEmailCode(e, "Confirm your CrowdVM email", "Your CrowdVM email confirmation code is %s. It expires in 10 minutes.")
+			out["emailPending"] = map[string]any{"email": e, "expiresInSeconds": 600}
 		}
-		if _, err := s.DB.Exec(`UPDATE users SET email=? WHERE id=?`, v, c.P.User.ID); err != nil {
-			return Err(409, "user_exists", "Another account uses that email.")
-		}
+	}
+	u, err := s.UserByID(c.P.User.ID)
+	if err != nil {
+		return err
+	}
+	out["user"] = s.userJSON(u)
+	return c.OK(200, "auth.me", out)
+}
+
+// checkEmailFree refuses an address another account holds.
+func (s *Server) checkEmailFree(email, self string) error {
+	var n int
+	_ = s.DB.QueryRow(`SELECT COUNT(*) FROM users WHERE email=? AND id<>?`, email, self).Scan(&n)
+	if n > 0 {
+		return Err(409, "user_exists", "Another account uses that email.")
+	}
+	return nil
+}
+
+// handleVerifyMyEmail stores the pending email once its code is entered.
+func (s *Server) handleVerifyMyEmail(c *Ctx) error { // bugs-r11-sonnet 7
+	var req struct {
+		Email string `json:"email"`
+		Code  string `json:"code"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return err
+	}
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	if !emailRe.MatchString(email) {
+		return Err(400, "invalid_email", "A valid email address is required.")
+	}
+	if err := s.checkEmailFree(email, c.P.User.ID); err != nil {
+		return err
+	}
+	if err := s.consumeEmailCode(email, req.Code); err != nil {
+		return err
+	}
+	if _, err := s.DB.Exec(`UPDATE users SET email=? WHERE id=?`, email, c.P.User.ID); err != nil {
+		return Err(409, "user_exists", "Another account uses that email.")
 	}
 	u, err := s.UserByID(c.P.User.ID)
 	if err != nil {
@@ -519,7 +601,7 @@ func (s *Server) handleChangePassword(c *Ctx) error {
 	if c.P.User.passwordHash != "" && bcrypt.CompareHashAndPassword([]byte(c.P.User.passwordHash), []byte(req.Current)) != nil {
 		return Err(401, "invalid_credentials", "The current password is wrong.")
 	}
-	if err := s.SetPassword(c.P.User.ID, req.New); err != nil {
+	if err := s.SetPassword(c.P.User.ID, req.New, c.P.Session.ID); err != nil { // bugs-r11-sonnet 6 (ActionSession: Session is set)
 		return err
 	}
 	return c.OK(200, "auth.password_changed", nil)
@@ -538,16 +620,42 @@ func (s *Server) handleEmailStart(c *Ctx) error {
 	if !emailRe.MatchString(email) {
 		return Err(400, "invalid_email", "A valid email address is required.")
 	}
+	s.sendEmailCode(email, "Your CrowdVM login code", "Your CrowdVM login code is %s. It expires in 10 minutes.")
+	return c.OK(200, "auth.email_code_sent", map[string]any{"email": email, "expiresInSeconds": 600})
+}
+
+// sendEmailCode stores a fresh 6-digit code for email and mails it (body has one %s).
+func (s *Server) sendEmailCode(email, subject, body string) {
 	code := randDigits(6)
 	now := store.Now()
 	if _, err := s.DB.Exec(`INSERT INTO email_codes(email,code_hash,created_at,expires_at,attempts) VALUES(?,?,?,?,0)
 		ON CONFLICT(email) DO UPDATE SET code_hash=excluded.code_hash, created_at=excluded.created_at, expires_at=excluded.expires_at, attempts=0`,
 		email, hashToken(email+":"+code), now, now+10*60_000); err != nil {
+		s.Log.Warn("email code not stored", "err", err)
+		return
+	}
+	s.Log.Info("email code", "email", email, "code", code)
+	s.sendMail(email, subject, fmt.Sprintf(body, code))
+}
+
+// consumeEmailCode checks code against the stored one (at most 5 guesses) and
+// deletes it on a match.
+func (s *Server) consumeEmailCode(email, code string) error {
+	bad := Err(401, "invalid_code", "The code is wrong or expired. Request a new one.")
+	// bugs-r11-sonnet 8: count the attempt atomically before comparing.
+	res, err := s.DB.Exec(`UPDATE email_codes SET attempts=attempts+1 WHERE email=? AND attempts<5 AND expires_at>=?`, email, store.Now())
+	if err != nil {
 		return err
 	}
-	s.Log.Info("email login code", "email", email, "code", code)
-	s.sendMail(email, "Your CrowdVM login code", "Your CrowdVM login code is "+code+". It expires in 10 minutes.")
-	return c.OK(200, "auth.email_code_sent", map[string]any{"email": email, "expiresInSeconds": 600})
+	if n, _ := res.RowsAffected(); n == 0 {
+		return bad
+	}
+	var hash string
+	if err := s.DB.QueryRow(`SELECT code_hash FROM email_codes WHERE email=?`, email).Scan(&hash); err != nil || hashToken(email+":"+strings.TrimSpace(code)) != hash {
+		return bad
+	}
+	_, _ = s.DB.Exec(`DELETE FROM email_codes WHERE email=?`, email)
+	return nil
 }
 
 func (s *Server) handleEmailVerify(c *Ctx) error {
@@ -562,18 +670,9 @@ func (s *Server) handleEmailVerify(c *Ctx) error {
 		return err
 	}
 	email := strings.ToLower(strings.TrimSpace(req.Email))
-	var hash string
-	var exp int64
-	var attempts int
-	err := s.DB.QueryRow(`SELECT code_hash,expires_at,attempts FROM email_codes WHERE email=?`, email).Scan(&hash, &exp, &attempts)
-	if err != nil || exp < store.Now() || attempts >= 5 {
-		return Err(401, "invalid_code", "The code is wrong or expired. Request a new one.")
+	if err := s.consumeEmailCode(email, req.Code); err != nil {
+		return err
 	}
-	if hashToken(email+":"+strings.TrimSpace(req.Code)) != hash {
-		_, _ = s.DB.Exec(`UPDATE email_codes SET attempts=attempts+1 WHERE email=?`, email)
-		return Err(401, "invalid_code", "The code is wrong or expired. Request a new one.")
-	}
-	_, _ = s.DB.Exec(`DELETE FROM email_codes WHERE email=?`, email)
 	u, err := scanUser(s.DB.QueryRow(`SELECT `+userCols+` FROM users WHERE email=?`, email))
 	if err != nil {
 		first := s.userCount() == 0
@@ -606,6 +705,9 @@ func (s *Server) freeUsername(base string) string {
 	}
 	if len(base) > 30 {
 		base = base[:30]
+	}
+	if strings.HasPrefix(strings.ToLower(base), PrefixUser) { // bugs-r11-sonnet 15
+		base = "u-" + base
 	}
 	name := base
 	for i := 2; ; i++ {

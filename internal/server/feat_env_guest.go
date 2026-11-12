@@ -256,7 +256,7 @@ func (s *Server) envGuestDo(ctx context.Context, sb *Sandbox, method, rest strin
 		return err
 	}
 	if out != nil {
-		return json.NewDecoder(resp.Body).Decode(out)
+		return json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(out) // bugs-r11-opus 4
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	return nil

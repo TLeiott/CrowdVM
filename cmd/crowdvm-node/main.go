@@ -18,7 +18,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -310,11 +309,15 @@ func daemonBody(ctx context.Context, cfg *node.Config, method, path, body string
 	if cfg.UIListen() == "off" {
 		return false, nil
 	}
+	// bugs-r12-opus 2: no verified daemon (nobody answers, or the listener
+	// can't prove it holds the token): treat it as not running, send nothing.
+	token := verifiedToken(ctx, cfg)
+	if token == "" {
+		return false, nil
+	}
 	req, _ := http.NewRequestWithContext(ctx, method, uiURL(cfg)+path, strings.NewReader(body))
 	req.Header.Set(node.UIHeader, "cli")
-	if t, err := node.ReadUIToken(cfg.DataDir); err == nil {
-		req.Header.Set("Authorization", "Bearer "+t)
-	}
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -602,7 +605,7 @@ schedule-hold: "offer" or "pause" until the schedule's next boundary, "" to clea
 				Applied bool `json:"applied"`
 			}
 			ran, err := daemonBody(c.Context(), cfg, "POST", "/api/config", string(body), &res)
-			switch st := daemonStatus(err); {
+			switch {
 			case ran && err == nil:
 				if res.Applied {
 					fmt.Println("Applied.")
@@ -610,33 +613,19 @@ schedule-hold: "offer" or "pause" until the schedule's next boundary, "" to clea
 					fmt.Println("Saved. Restart the node to apply it (sandboxes keep running).")
 				}
 				return nil
-			case err != nil && st != 401 && st != 404:
+			case err != nil && ran:
 				return err // e.g. an invalid value
 			}
-			// The daemon isn't running, predates /api/config (404), or its
-			// token isn't readable here (401): write the file ourselves.
+			// bugs-r12-opus 2: no verified daemon (not running, or nothing on
+			// the UI port proved it holds the token): write the file ourselves
+			// and never claim it applied.
 			if err := cfg.Set(args[0], args[1]); err != nil {
 				return err
 			}
 			if err := cfg.Save(); err != nil {
 				return err
 			}
-			switch {
-			case !ran:
-				fmt.Println("Saved. It applies when the node starts.")
-			case daemonStatus(err) == 404 && args[0] == "paused":
-				// A daemon from before the upgrade: it still knows /api/pause.
-				p := strconv.FormatBool(cfg.Paused)
-				if _, perr := daemonBody(c.Context(), cfg, "POST", "/api/pause", `{"paused":`+p+`}`, nil); perr == nil {
-					fmt.Println("Applied.")
-					return nil
-				}
-				fmt.Println("Saved. Restart the node to apply it (sandboxes keep running).")
-			case daemonStatus(err) == 404:
-				fmt.Println("Saved. The running node is older than this CLI: restart it to apply (sandboxes keep running).")
-			default:
-				fmt.Println("Saved, but the running node didn't apply it: its control token isn't readable here. Restart the node to apply.")
-			}
+			fmt.Println("Saved. No running node confirmed it, so it applies at the next start.")
 			return nil
 		},
 	})
@@ -661,7 +650,8 @@ in the data dir. Without the login the page is read-only.`,
 				return errors.New("the local page is off (ui-addr off); turn it on with: crowdvm-node config set ui-addr \"\"")
 			}
 			if ran, _ := daemon(c.Context(), cfg, "GET", "/api/status", nil); !ran {
-				return errors.New("the node daemon is not running; start it (crowdvm-node run, or the installed service) first")
+				// bugs-r12-opus 2: also when the UI port answers but isn't a node holding this ui-token.
+				return errors.New("the node daemon is not running (or the UI port is not answered by a node with this data dir's control token); start it (crowdvm-node run, or the installed service) first")
 			}
 			if _, err := node.ReadUIToken(cfg.DataDir); err != nil {
 				return fmt.Errorf("cannot read the control token (%w); run this as the user who owns %s", err, cfg.DataDir)

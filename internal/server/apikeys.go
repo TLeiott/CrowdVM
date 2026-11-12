@@ -245,7 +245,8 @@ func covers(p *Principal, acts, sbs, envs []string, exp *time.Time) bool {
 	k := p.Key
 	if !k.hasAction("*") {
 		for _, a := range acts {
-			if a == "*" || !k.Allows(a) {
+			// bugs-r11-sonnet 9: exact match; Allows maps sandbox.delete onto sandbox.delete-own.
+			if a == "*" || !(k.hasAction(a) || (a == "account.read" && k.hasAction("account.admin"))) {
 				return false
 			}
 		}

@@ -226,6 +226,9 @@ type Size struct {
 type RegisterRequest struct {
 	JoinToken string   `json:"joinToken"`
 	Info      NodeInfo `json:"info"`
+	// NodeToken: the node's current token, when it re-joins the same server
+	// with its old id (proof that it is that node).
+	NodeToken string `json:"nodeToken,omitempty"`
 }
 
 type RegisterResponse struct {

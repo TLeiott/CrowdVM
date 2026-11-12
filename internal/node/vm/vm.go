@@ -131,6 +131,21 @@ type Reticketer interface {
 	SetReticket(fn func(ctx context.Context, sandboxID string) (*proto.GuestChannel, error))
 }
 
+type noQuiesceKey struct{}
+
+// WithoutQuiesce marks ctx: a live Snapshot skips the guest freeze and sync
+// (a crash-consistent snapshot) because the guest did not answer them before
+// (bugs-r11-opus 7).
+func WithoutQuiesce(ctx context.Context) context.Context {
+	return context.WithValue(ctx, noQuiesceKey{}, true)
+}
+
+// NoQuiesce reports whether ctx came from WithoutQuiesce.
+func NoQuiesce(ctx context.Context) bool {
+	v, _ := ctx.Value(noQuiesceKey{}).(bool)
+	return v
+}
+
 // ChangeTracker is optionally implemented by drivers that know whether a
 // VM's disk was written since its last snapshot (true when unknown);
 // periodic snapshots skip VMs whose disk did not change.

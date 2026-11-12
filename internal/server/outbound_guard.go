@@ -62,6 +62,25 @@ func withOutboundPolicy(ctx context.Context, allowLocal bool) context.Context {
 	return context.WithValue(ctx, outboundKey{}, allowLocal)
 }
 
+type noPrivateKey struct{}
+
+// withNoPrivate marks ctx: its dials also refuse private (LAN, CGNAT, ULA)
+// addresses, unless the policy allows local ones (bugs-r11-opus 12).
+func withNoPrivate(ctx context.Context) context.Context {
+	return context.WithValue(ctx, noPrivateKey{}, true)
+}
+
+var cgnat = netip.MustParsePrefix("100.64.0.0/10")
+
+// privateTarget reports a LAN, Tailscale/CGNAT or ULA address.
+func privateTarget(ip net.IP) bool {
+	if ip.IsPrivate() {
+		return true
+	}
+	a, ok := netip.AddrFromSlice(ip)
+	return ok && cgnat.Contains(a.Unmap())
+}
+
 // checkOutboundURL refuses a URL whose host is (or resolves to) a blocked
 // address. Names that do not resolve now are accepted; dials check again.
 func (s *Server) checkOutboundURL(ctx context.Context, raw, code string) error {
@@ -100,6 +119,7 @@ func (s *Server) checkOutboundURL(ctx context.Context, raw, code string) error {
 // the request context allows them.
 func guardedDial(ctx context.Context, network, addr string) (net.Conn, error) {
 	allow, _ := ctx.Value(outboundKey{}).(bool)
+	noPrivate, _ := ctx.Value(noPrivateKey{}).(bool)
 	d := net.Dialer{Timeout: 10 * time.Second, Control: func(_, address string, _ syscall.RawConn) error {
 		if allow {
 			return nil
@@ -111,6 +131,9 @@ func guardedDial(ctx context.Context, network, addr string) (net.Conn, error) {
 		}
 		if why := blockedTarget(ip); why != "" {
 			return fmt.Errorf("refused to connect to %s (%s); the server admin can allow it with --webhook-allow-local", ip, why)
+		}
+		if noPrivate && privateTarget(ip) {
+			return fmt.Errorf("refused to connect to %s (a private address); the server admin can allow it with --ai-custom-api-allow-private", ip)
 		}
 		return nil
 	}}

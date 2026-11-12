@@ -266,6 +266,12 @@ func (s *Server) handleAIProxy(w http.ResponseWriter, r *http.Request) {
 		// and loopback custom APIs) and --webhook-allow-local lift the guard.
 		allow := s.Cfg.WebhookAllowLocal || os.Getenv("CROWDVM_AI_CUSTOM_API_ALLOW_PRIVATE") == "1"
 		r = r.WithContext(withOutboundPolicy(r.Context(), allow))
+		// bugs-r11-opus 12: without the opt-in a DNS name that resolves to a
+		// LAN address is refused at dial time too (aiValidBaseURL only reads
+		// the text of the URL).
+		if !allow {
+			r = r.WithContext(withNoPrivate(r.Context()))
+		}
 	}
 	rp.ServeHTTP(w, r)
 }

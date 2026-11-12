@@ -43,7 +43,8 @@ CrowdVM does not use it yet. What CrowdVM does is make the attempts visible:
 Sandboxes from images before v4 (`ubuntu-24.04-crowdvm-v3` and older) keep an
 unencrypted disk. A snapshot of an encrypted sandbox can be resumed or forked only on
 nodes recent enough to fetch its key, and the server cannot list or download its files
-while it is stopped (`crowdvm files` on a stopped encrypted sandbox: resume it first).
+while it is stopped (`crowdvm snapshot tree` and `crowdvm snapshot pull` answer
+`snapshot_encrypted`: resume the sandbox first).
 
 - Only put secrets into a sandbox when you trust the owners of the nodes it can land on.
 - Pin sensitive work to nodes you trust: `crowdvm new --node <name>` or
@@ -129,6 +130,19 @@ the values of credential headers (`Authorization`, `X-Registry-Auth`, `X-Api-Key
 the history like any other output. Create the sandbox with `--no-monitoring` to keep no
 history at all.
 
+### Your account
+
+- A password is 8 to 72 bytes long. A longer one is refused with 400.
+- Changing a password (`POST /auth/password`), or having an admin reset it, signs the
+  account out everywhere else. The session that changed it stays signed in.
+- An email address counts only after you prove it. Setting one with `PATCH /auth/me`
+  (or giving one at signup) mails a 6-digit code to that address, and the address is
+  stored once you send the code to `POST /auth/me/email/verify` with
+  `{"email": "...", "code": "123456"}`. Until then the account has no such email, so it
+  cannot be used for email login or for approving an agent that names that address.
+  Emails an administrator sets are stored as given.
+- Usernames cannot start with `usr_`, which user ids use.
+
 ## For node owners
 
 A node runs VMs for everyone on the server. CrowdVM limits what those VMs can do to
@@ -167,6 +181,7 @@ ordinary sockets of your machine after an egress check:
 | LAN ranges (10/8, 172.16/12, 192.168/16) | blocked |
 | Tailscale and CGNAT (100.64/10) | blocked |
 | Link-local, incl. cloud metadata (169.254.169.254) | blocked |
+| Azure WireServer (168.63.129.16) | blocked |
 | Multicast, IPv6 ULA and link-local | blocked |
 
 Nothing can connect into a VM from outside: SSH, public URLs and the desktop all go

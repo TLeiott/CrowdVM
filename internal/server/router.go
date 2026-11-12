@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -137,11 +138,41 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 	if limited(req.URL.Path) {
-		if !r.s.ipLim.allow(sw, r.s.clientIP(req)) {
+		// bugs-r11-opus 9: a request that authenticates counts against its
+		// user, not its IP (all guests of a node share the node's IP). One
+		// that does not (no credentials, or invalid ones) keeps the IP bucket,
+		// so random tokens cannot open buckets of their own.
+		key := r.s.clientIP(req)
+		// Only on /api/: the public routes under /auth/, /agent/ and
+		// /oauth2/ (logins, codes, anonymous agent keys) ignore credentials,
+		// so a key there must not open a bucket of its own (bugs-r12-sonnet 3).
+		if strings.HasPrefix(req.URL.Path, "/api/") && (req.Header.Get("Authorization") != "" || hasSessionCookie(req)) {
+			if p, err := r.s.authenticate(sw, req); err == nil {
+				key = "user:" + p.User.ID
+				req = req.WithContext(context.WithValue(req.Context(), principalKey{}, p))
+			}
+		}
+		if !r.s.ipLim.allow(sw, key) {
 			return
 		}
 	}
 	r.mux.ServeHTTP(sw, req)
+}
+
+type principalKey struct{}
+
+func hasSessionCookie(r *http.Request) bool {
+	c, err := r.Cookie(SessionCookie)
+	return err == nil && c.Value != ""
+}
+
+// authenticated is s.authenticate that reuses the principal the rate limit
+// already resolved for this request (bugs-r11-opus 9).
+func (s *Server) authenticated(w http.ResponseWriter, r *http.Request) (*Principal, error) {
+	if p, ok := r.Context().Value(principalKey{}).(*Principal); ok {
+		return p, nil
+	}
+	return s.authenticate(w, r)
 }
 
 // limited reports whether the IP rate limit applies to path.
@@ -242,7 +273,7 @@ func (s *Server) wrap(action string, fn HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c := &Ctx{W: w, R: r, S: s, Action: action, RequestID: w.Header().Get("X-Request-Id")}
 		if action != ActionPublic {
-			p, err := s.authenticate(w, r)
+			p, err := s.authenticated(w, r)
 			if err != nil {
 				c.Fail(err)
 				return

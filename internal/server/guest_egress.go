@@ -30,7 +30,7 @@ import (
 const maxEgressFlows = 1024
 
 var (
-	cgnat      = netip.MustParsePrefix("100.64.0.0/10")
+	// cgnat: outbound_guard.go
 	teredo     = netip.MustParsePrefix("2001::/32")
 	nat64      = netip.MustParsePrefix("64:ff9b::/96")
 	nat64Local = netip.MustParsePrefix("64:ff9b:1::/48")

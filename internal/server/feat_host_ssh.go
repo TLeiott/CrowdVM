@@ -9,6 +9,8 @@ import (
 	"context"
 	"net"
 	"time"
+
+	"github.com/crowdvm/crowdvm/internal/api"
 )
 
 func init() {
@@ -53,6 +55,14 @@ func (s *Server) handleSSHKey(c *Ctx) error {
 	}
 	delete(out, "ok")
 	delete(out, "type")
+	// The guest's user and host key end up in the user's ssh config and
+	// known_hosts: only a plain name and one key line pass (bugs-r11-opus 1).
+	if u, _ := out["sshUser"].(string); !api.ValidSSHUser(u) {
+		out["sshUser"] = nil
+	}
+	if hk, _ := out["hostKey"].(string); hk != "" && !api.ValidHostKey(hk) {
+		out["hostKey"] = ""
+	}
 	// The guest regenerates SSH host keys in the background after create,
 	// fork and resume (API-127): a real VM without one yet cannot be pinned.
 	if hk, _ := out["hostKey"].(string); hk == "" && s.nodeDriver(sb.NodeID) == "qemu" {

@@ -2,12 +2,11 @@ package node
 
 import (
 	"context"
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/subtle"
 	_ "embed"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -35,15 +34,16 @@ const UIHeader = "X-Crowdvm-Ui"
 
 // Local control: state-changing calls also need the token in <data
 // dir>/ui-token as a Bearer header (the CLI: every call), or the browser
-// session cookie (the page: its own settings only). `crowdvm-node open`
+// page session (the page: its own settings only). `crowdvm-node open`
 // asks for a single-use login code (POST /api/login-code, Bearer) and
 // opens /login?c=<code>, so the token never reaches a URL, the browser's
-// history or a process list. The cookie holds a value derived from the
-// token, not the token: browsers send localhost cookies to every port.
+// history or a process list. The page session is derived from the token
+// (ui_session.go), not the token, and travels in a header, not a cookie:
+// browsers send localhost cookies to every port.
 const (
-	uiTokenFile  = "ui-token"
-	uiCookieName = "crowdvm_node_ui"
-	loginCodeTTL = time.Minute
+	uiTokenFile     = "ui-token"
+	uiOldCookieName = "crowdvm_node_ui" // bugs-r12-opus 1: no longer set; cleared
+	loginCodeTTL    = time.Minute
 )
 
 // uiAccess is what a request may do.
@@ -51,17 +51,9 @@ type uiAccess int
 
 const (
 	accessNone    uiAccess = iota
-	accessBrowser          // session cookie: pause, page settings, restart, bench
+	accessBrowser          // page session: pause, page settings, restart, bench
 	accessFull             // Bearer token: everything
 )
-
-// sessionValue is the cookie for token: stable across restarts (a restart
-// from the page keeps the page logged in), rotated with the token.
-func sessionValue(token string) string {
-	m := hmac.New(sha256.New, []byte(token))
-	m.Write([]byte("crowdvm-node-ui-session-v1"))
-	return hex.EncodeToString(m.Sum(nil))
-}
 
 // liveKeys apply without a restart: the capacity only limits new
 // placements, so lowering it never touches running sandboxes.
@@ -227,6 +219,7 @@ func (n *Node) settings() map[string]string {
 // refuses every state-changing call.
 func (n *Node) UIHandler(token string) http.Handler {
 	eq := func(a, b string) bool { return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1 }
+	sessions := newUISessions(n.config().DataDir, token) // bugs-r12-opus 1
 	access := func(r *http.Request) uiAccess {
 		if token == "" {
 			return accessNone
@@ -234,10 +227,14 @@ func (n *Node) UIHandler(token string) http.Handler {
 		if b, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok && eq(b, token) {
 			return accessFull
 		}
-		if ck, err := r.Cookie(uiCookieName); err == nil && eq(ck.Value, sessionValue(token)) {
+		if sessions.valid(r.Header.Get(UISessionHeader)) { // bugs-r12-opus 1
 			return accessBrowser
 		}
 		return accessNone
+	}
+	// clearOldCookie expires the cookie older versions set (bugs-r12-opus 1).
+	clearOldCookie := func(w http.ResponseWriter) {
+		http.SetCookie(w, &http.Cookie{Name: uiOldCookieName, Value: "", Path: "/", MaxAge: -1})
 	}
 	var codesMu sync.Mutex
 	codes := map[string]time.Time{} // single-use login codes -> expiry
@@ -245,7 +242,19 @@ func (n *Node) UIHandler(token string) http.Handler {
 	m.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'")
+		clearOldCookie(w)
 		_, _ = w.Write(uiHTML)
+	})
+	// bugs-r12-opus 2: the CLI checks, before it sends the token, that the
+	// listener holds it. No token: no proof.
+	m.HandleFunc("GET /api/hello", func(w http.ResponseWriter, r *http.Request) {
+		nonce := r.URL.Query().Get("nonce")
+		if token == "" || nonce == "" || len(nonce) > 128 {
+			http.Error(w, "no proof", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		api.WriteJSON(w, 200, map[string]string{"proof": HelloProof(token, nonce)})
 	})
 	m.HandleFunc("GET /login", func(w http.ResponseWriter, r *http.Request) {
 		c := r.URL.Query().Get("c")
@@ -257,9 +266,18 @@ func (n *Node) UIHandler(token string) http.Handler {
 			http.Error(w, "This login link is used up or expired. Run `crowdvm-node open` on this machine for a new one.", http.StatusForbidden)
 			return
 		}
-		http.SetCookie(w, &http.Cookie{Name: uiCookieName, Value: sessionValue(token), Path: "/", MaxAge: 30 * 24 * 3600,
-			HttpOnly: true, SameSite: http.SameSiteStrictMode})
-		http.Redirect(w, r, "/", http.StatusSeeOther) // the code leaves the address bar
+		// bugs-r12-opus 1: the session goes to the page in the body; the page
+		// keeps it in localStorage and goes on to "/", so the address bar
+		// and history never hold it. No cookie.
+		clearOldCookie(w)
+		sess, _ := json.Marshal(sessions.create())
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'")
+		_, _ = w.Write([]byte(`<!doctype html><meta charset="utf-8"><title>Signing in</title><script>
+try { localStorage.setItem("crowdvm_node_session", ` + string(sess) + `); } catch (e) {}
+location.replace("/");
+</script>`))
 	})
 	m.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
 		st := n.Status()
@@ -271,7 +289,8 @@ func (n *Node) UIHandler(token string) http.Handler {
 	})
 	ctl := http.NewServeMux()
 	// browserOK: routes the page uses; everything else needs the Bearer token.
-	browserOK := map[string]bool{"/api/pause": true, "/api/config": true, "/api/restart": true, "/api/bench": true}
+	browserOK := map[string]bool{"/api/pause": true, "/api/config": true, "/api/restart": true, "/api/bench": true,
+		"/api/logout": true} // bugs-r12-opus 1
 	m.Handle("POST /api/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		a := access(r)
 		if a == accessNone || (a == accessBrowser && !browserOK[r.URL.Path]) {
@@ -298,6 +317,11 @@ func (n *Node) UIHandler(token string) http.Handler {
 		codes[code] = now.Add(loginCodeTTL)
 		codesMu.Unlock()
 		api.WriteJSON(w, 200, map[string]any{"code": code, "expiresInSec": int(loginCodeTTL / time.Second)})
+	})
+	// bugs-r12-opus 1: end this page session (the token stays).
+	ctl.HandleFunc("POST /api/logout", func(w http.ResponseWriter, r *http.Request) {
+		sessions.revoke(r.Header.Get(UISessionHeader))
+		api.WriteJSON(w, 200, map[string]bool{"ok": true})
 	})
 	ctl.HandleFunc("POST /api/pause", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {

@@ -64,8 +64,9 @@ var (
 	// lanNets are opened by AllowLAN.
 	lanNets = mustPrefixes("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fc00::/7", "fec0::/10")
 	// otherNets are never reachable by default: link-local (cloud metadata),
-	// multicast, reserved and broadcast.
-	otherNets = mustPrefixes("169.254.0.0/16", "fe80::/10", "224.0.0.0/4", "240.0.0.0/4", "ff00::/8")
+	// multicast, reserved and broadcast. 168.63.129.16 is Azure's WireServer
+	// (a public address, so not link-local).
+	otherNets = mustPrefixes("169.254.0.0/16", "168.63.129.16/32", "fe80::/10", "224.0.0.0/4", "240.0.0.0/4", "ff00::/8") // bugs-r11-opus 11
 )
 
 func contains(list []netip.Prefix, a netip.Addr) bool {
