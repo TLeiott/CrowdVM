@@ -149,3 +149,23 @@ func TestClientGate(t *testing.T) {
 		t.Fatalf("server info: %s", r)
 	}
 }
+
+// A node that stays outdated past the grace period loses its sandboxes to
+// current nodes (stopped with their disk saved, resumed there).
+func TestOutdatedNodeGraceMovesSandboxes(t *testing.T) {
+	setGen(t, &compat.RequiredNodeGen, compat.NodeGen)
+	env := servertest.New(t, func(c *server.Config) { c.NodeUpdateGrace = 500 * time.Millisecond })
+	a := env.StartNode(servertest.NodeOptions{})
+	sb := createSandbox(t, env, env.AdminKey, nil)
+	env.WaitState(env.AdminKey, sb, "ready")
+	b := env.StartNode(servertest.NodeOptions{})
+	a.Disconnect()
+	a.SetGen(compat.NodeGen - 1)
+	if err := a.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	env.Eventually("moved to the current node", func() bool {
+		r := env.Do(env.AdminKey, "GET", "/api/v1/sandboxes/"+sb, nil)
+		return r.Str("sandbox.state") == "ready" && r.Str("sandbox.nodeId") == b.ID
+	})
+}

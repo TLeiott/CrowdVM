@@ -193,6 +193,9 @@ func (s *Server) clientGate(w http.ResponseWriter, r *http.Request) bool {
 		gen = 0
 	}
 	w.Header().Set(compat.Header, strconv.Itoa(compat.ServerGen))
+	if gen >= compat.RequiredAPIGen && gen >= compat.MinAPIGen {
+		return false
+	}
 	latest := s.latestRelease()
 	if gen < compat.MinAPIGen {
 		api.WriteError(w, ErrD(426, "client_outdated",
@@ -201,13 +204,11 @@ func (s *Server) clientGate(w http.ResponseWriter, r *http.Request) bool {
 			map[string]any{"gen": gen, "minGen": compat.MinAPIGen, "latest": latest}))
 		return true
 	}
-	if gen < compat.RequiredAPIGen {
-		v := "outdated"
-		if latest != "" {
-			v += "; latest=" + latest
-		}
-		w.Header().Set(compat.ClientStatusHeader, v)
+	v := "outdated"
+	if latest != "" {
+		v += "; latest=" + latest
 	}
+	w.Header().Set(compat.ClientStatusHeader, v)
 	return false
 }
 
