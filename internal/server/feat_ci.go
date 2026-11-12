@@ -191,6 +191,42 @@ func (g ciGH) orgAdmin(ctx context.Context, org, me string) bool {
 }
 
 func (g ciGH) do(ctx context.Context, method, path string, in, out any) error {
+	_, err := g.doH(ctx, method, path, in, out)
+	return err
+}
+
+// ciMaxPages bounds a paged listing (bugs-r20-sonnet 2).
+const ciMaxPages = 20
+
+// ciPaged reads a list one page after the other (bugs-r20-sonnet 2): it
+// follows the Link header's rel="next" (GitHub, Gitea) and, when the answer
+// has no Link header, goes on while a page comes back full. count and add
+// read the decoded page; a failed page returns its error with the pages
+// collected so far.
+func ciPaged[T any](ctx context.Context, g ciGH, path string, perPage int, count func(*T) int, add func(*T)) error {
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	for page := 1; page <= ciMaxPages; page++ {
+		var v T
+		h, err := g.doH(ctx, "GET", path+sep+"page="+strconv.Itoa(page), nil, &v)
+		if err != nil {
+			return err
+		}
+		add(&v)
+		more := count(&v) >= perPage
+		if link := h.Get("Link"); link != "" {
+			more = strings.Contains(link, `rel="next"`)
+		}
+		if !more {
+			return nil
+		}
+	}
+	return nil
+}
+
+func (g ciGH) doH(ctx context.Context, method, path string, in, out any) (http.Header, error) {
 	var body io.Reader
 	if in != nil {
 		b, _ := json.Marshal(in)
@@ -198,7 +234,7 @@ func (g ciGH) do(ctx context.Context, method, path string, in, out any) error {
 	}
 	req, err := http.NewRequestWithContext(withOutboundPolicy(ctx, g.allowLocal), method, strings.TrimRight(g.api, "/")+path, body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.Header.Set("User-Agent", "CrowdVM-CI")
 	if g.gitea {
@@ -218,22 +254,22 @@ func (g ciGH) do(ctx context.Context, method, path string, in, out any) error {
 	}
 	resp, err := ciHTTP.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 200)) // enough for "Bad credentials"; not a page of whatever answered
-		return &ciHTTPError{resp.StatusCode, strings.TrimSpace(string(b))}
+		return nil, &ciHTTPError{resp.StatusCode, strings.TrimSpace(string(b))}
 	}
 	if out == nil {
 		_, _ = io.Copy(io.Discard, resp.Body)
-		return nil
+		return resp.Header, nil
 	}
 	if w, ok := out.(*[]byte); ok {
 		*w, err = io.ReadAll(io.LimitReader(resp.Body, 64<<20))
-		return err
+		return resp.Header, err
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	return resp.Header, json.NewDecoder(resp.Body).Decode(out)
 }
 
 type ghRepo struct {
@@ -444,11 +480,20 @@ func (ci *ciState) pollLink(ctx context.Context, l *ciLink) {
 	gh := l.gh()
 	var repos []ghRepo
 	var err error
+	// bugs-r20-sonnet 2: every page of the account's repositories. GitHub has
+	// no limit parameter (per_page=100); Gitea pages with limit (50).
+	perPage, size := 100, "per_page=100"
+	if gh.gitea {
+		perPage, size = 50, "limit=50"
+	}
+	var all []ghRepo
+	count := func(p *[]ghRepo) int { return len(*p) }
+	add := func(p *[]ghRepo) { all = append(all, *p...) }
 	if l.AccountType == "Organization" {
-		err = gh.do(ctx, "GET", "/orgs/"+url.PathEscape(l.Login)+"/repos?per_page=100&limit=50", nil, &repos)
+		err = ciPaged(ctx, gh, "/orgs/"+url.PathEscape(l.Login)+"/repos?"+size, perPage, count, add)
+		repos = all
 	} else {
-		var all []ghRepo
-		err = gh.do(ctx, "GET", "/user/repos?affiliation=owner&per_page=100&limit=50", nil, &all)
+		err = ciPaged(ctx, gh, "/user/repos?affiliation=owner&"+size, perPage, count, add)
 		for _, r := range all {
 			if strings.EqualFold(r.Owner.Login, l.Login) {
 				repos = append(repos, r)
@@ -469,12 +514,14 @@ func (ci *ciState) pollLink(ctx context.Context, l *ciLink) {
 	})
 	for _, r := range repos {
 		for _, status := range []string{"queued", "in_progress"} {
-			var runs struct {
+			// bugs-r20-sonnet 2: page the runs too; the pages read before a
+			// failure are still handled.
+			type runList struct {
 				WorkflowRuns []ghRun `json:"workflow_runs"`
 			}
-			if gh.do(ctx, "GET", "/repos/"+r.FullName+"/actions/runs?status="+status+"&per_page=50", nil, &runs) != nil {
-				continue
-			}
+			var runs runList
+			_ = ciPaged(ctx, gh, "/repos/"+r.FullName+"/actions/runs?status="+status+"&per_page=50", 50,
+				func(p *runList) int { return len(p.WorkflowRuns) }, func(p *runList) { runs.WorkflowRuns = append(runs.WorkflowRuns, p.WorkflowRuns...) })
 			for _, run := range runs.WorkflowRuns {
 				var jobs struct {
 					Jobs []ghJob `json:"jobs"`
@@ -604,9 +651,16 @@ func (ci *ciState) setJob(id string, sets map[string]any) {
 	_, _ = ci.s.DB.Exec(`UPDATE ci_jobs SET `+strings.Join(parts, ",")+` WHERE id=?`, append(args, id)...)
 }
 
-// retryWaiting restarts queued jobs that wait on a start limit.
+// retryWaiting restarts queued jobs that wait on a start limit, and (bugs-r20-sonnet 7)
+// queued jobs recorded without a sandbox and without a retry time: a restart
+// between the insert in newJob and the sandbox create leaves such a row; start
+// skips a job a goroutine already works on (busy), so a live boot is not doubled.
+// Not covered: a sandbox that exists (sandbox_id set) whose runner command was
+// never sent, because the process stopped during WaitUsable or before the
+// command. boot returns early for such a row (SandboxID valid) and nothing
+// resumes it: the sandbox idles until its TTL / cleanup and the job stays queued.
 func (ci *ciState) retryWaiting(ctx context.Context) {
-	for _, j := range ci.jobs(`state='queued' AND sandbox_id IS NULL AND next_try_at>0 AND next_try_at<=?`, store.Now()) {
+	for _, j := range ci.jobs(`state='queued' AND sandbox_id IS NULL AND next_try_at<=?`, store.Now()) {
 		ci.start(ctx, j.ID)
 	}
 }
@@ -1006,7 +1060,16 @@ func (ci *ciState) connect(c *Ctx) error {
 		if !req.Confirm {
 			return Err(400, "confirmation_required", "Send confirm: true to link the account.")
 		}
-		_, _ = ci.s.DB.Exec(`UPDATE ci_links SET status='active', confirmed_at=? WHERE id=?`, store.Now(), req.LinkID)
+		// bugs-r20-sonnet 6: the create path's duplicate check, atomic with the
+		// activation (another active link of the same forge account refuses).
+		res, err := ci.s.DB.Exec(`UPDATE ci_links SET status='active', confirmed_at=? WHERE id=? AND NOT EXISTS (
+			SELECT 1 FROM ci_links o, ci_links me WHERE me.id=ci_links.id AND o.id<>me.id AND lower(o.login)=lower(me.login) AND o.api_url=me.api_url AND o.status='active')`, store.Now(), req.LinkID)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 && status != "active" {
+			return Err(409, "ci_account_linked", "That account is already linked to CrowdVM. Unlink it first.")
+		}
 		return ci.linkResponse(c, req.LinkID)
 	}
 	if strings.TrimSpace(req.Token) == "" {

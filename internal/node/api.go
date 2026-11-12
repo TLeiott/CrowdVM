@@ -252,6 +252,9 @@ type readerConn struct {
 	r io.Reader
 }
 
+// Unwrap gives mux.Join the conn below, to abort it (bugs-r20-sonnet 4).
+func (c *readerConn) Unwrap() net.Conn { return c.Conn }
+
 func (c *readerConn) Read(p []byte) (int, error) { return c.r.Read(p) }
 
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {

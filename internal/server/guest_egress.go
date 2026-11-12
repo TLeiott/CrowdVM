@@ -328,6 +328,9 @@ type stallConn struct {
 	stalled atomic.Bool
 }
 
+// Unwrap gives mux.Join the conn below, to abort it (bugs-r20-sonnet 4).
+func (c *stallConn) Unwrap() net.Conn { return c.Conn }
+
 func (c *stallConn) Write(p []byte) (int, error) {
 	_ = c.Conn.SetWriteDeadline(time.Now().Add(egressStall))
 	n, err := c.Conn.Write(p)

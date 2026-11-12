@@ -393,7 +393,11 @@ func (s *Server) envApplyLive(ctx context.Context, sb *Sandbox, scrub bool) erro
 	// Preferred: the guest applies it in place, which also reaches the env
 	// of new exec'd commands and running integrated agents (not only new
 	// shells). Secret files and registry logins are full replacements.
-	ac := proto.ApplyConfig{EnvSet: desired, EnvUnset: unset, SecretFiles: []proto.File{}, RegistryLogins: []proto.RegistryLogin{}, Repos: p.Repos, ClearAIProxy: clearProxy}
+	repos := p.Repos
+	if repos == nil {
+		repos = []proto.Repo{} // "none": a null list would keep the old repos and their tokens (bugs-r20-opus 2)
+	}
+	ac := proto.ApplyConfig{EnvSet: desired, EnvUnset: unset, SecretFiles: []proto.File{}, RegistryLogins: []proto.RegistryLogin{}, Repos: repos, ClearAIProxy: clearProxy}
 	if p.Proxied && !clearProxy && p.AIProxy != nil {
 		ac.AIProxy = p.AIProxy // the vendors the profile holds keys for now (bugs-r17-opus 7)
 	}

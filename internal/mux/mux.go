@@ -120,6 +120,9 @@ type limitConn struct {
 	release func()
 }
 
+// Unwrap gives mux.Join the conn below, to abort it (bugs-r20-sonnet 4).
+func (c *limitConn) Unwrap() net.Conn { return c.Conn }
+
 func (c *limitConn) Close() error {
 	err := c.Conn.Close()
 	c.once.Do(c.release)
@@ -205,6 +208,9 @@ type bufConn struct {
 	r *bufio.Reader
 }
 
+// Unwrap gives mux.Join the conn below, to abort it (bugs-r20-sonnet 4).
+func (c *bufConn) Unwrap() net.Conn { return c.Conn }
+
 func (c *bufConn) Read(p []byte) (int, error) { return c.r.Read(p) }
 
 // CloseWrite half-closes, so Join still delivers the reply to a program that
@@ -258,8 +264,8 @@ func Join(a, b io.ReadWriteCloser) {
 			// (bugs-r18-sonnet).
 			ne, isNet := tw.err.(net.Error)
 			if tw.err == nil || (isNet && ne.Timeout()) {
-				if l, ok := dst.(interface{ SetLinger(int) error }); ok && tw.err == nil {
-					_ = l.SetLinger(0) // a TCP receiver sees a reset, not a clean end
+				if tw.err == nil {
+					resetConn(dst) // a TCP receiver sees a reset, not a clean end
 				}
 				closeBoth()
 				return
@@ -301,4 +307,20 @@ func (w *touchWriter) Write(p []byte) (int, error) {
 		w.err = err
 	}
 	return n, err
+}
+
+// resetConn makes the TCP conn below c (through wrappers that Unwrap) send
+// a reset when it is closed. A yamux stream has no reset: it ends cleanly.
+func resetConn(c any) {
+	for i := 0; i < 8 && c != nil; i++ {
+		if l, ok := c.(interface{ SetLinger(int) error }); ok {
+			_ = l.SetLinger(0)
+			return
+		}
+		u, ok := c.(interface{ Unwrap() net.Conn })
+		if !ok {
+			return
+		}
+		c = u.Unwrap()
+	}
 }

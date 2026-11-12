@@ -832,7 +832,8 @@ func (s *Server) handleEnvUpdate(c *Ctx) error {
 	if req.ProxyAICredentials != nil && *req.ProxyAICredentials && !s.aiProxyOnForProfile(sc, cfg.CredentialProfileID) {
 		return Err(400, "ai_proxy_off", "proxyAiCredentials needs the AI credentials proxy on for the profile owner. Turn it on with PUT /ai-proxy.")
 	}
-	// Non-versioned fields.
+	// bugs-r20-sonnet 5: validate the non-versioned fields and mint the version
+	// before anything is written, so a refused request changes nothing.
 	if req.Name != nil && *req.Name != e.Name {
 		if !envNameRe.MatchString(*req.Name) {
 			return Err(400, "invalid_name", "name must be 1-64 letters, digits, '.', '_' or '-'.")
@@ -842,16 +843,28 @@ func (s *Server) handleEnvUpdate(c *Ctx) error {
 		if n > 0 {
 			return Err(409, "environment_exists", "An environment named "+*req.Name+" already exists.")
 		}
-		_, _ = s.DB.Exec(`UPDATE environments SET name=?, updated_at=? WHERE id=?`, *req.Name, store.Now(), e.ID)
-		// Sandboxes pinned to it show the new name too (info, ls).
-		_, _ = s.DB.Exec(`UPDATE sandboxes SET environment=? WHERE environment_id=?`, *req.Name, e.ID)
 	}
+	var newAccess any
 	if req.Access != nil {
 		acc, err := s.envResolveAccess(sc.Org, req.Access)
 		if err != nil {
 			return err
 		}
-		_, _ = s.DB.Exec(`UPDATE environments SET access=?, updated_at=? WHERE id=?`, mustJSON(acc), store.Now(), e.ID)
+		newAccess = acc
+	}
+	if mustJSON(cfg) != mustJSON(cur.Config) {
+		if _, err := s.envMint(e, cfg); err != nil {
+			return err
+		}
+	}
+	// Non-versioned fields.
+	if req.Name != nil && *req.Name != e.Name {
+		_, _ = s.DB.Exec(`UPDATE environments SET name=?, updated_at=? WHERE id=?`, *req.Name, store.Now(), e.ID)
+		// Sandboxes pinned to it show the new name too (info, ls).
+		_, _ = s.DB.Exec(`UPDATE sandboxes SET environment=? WHERE environment_id=?`, *req.Name, e.ID)
+	}
+	if req.Access != nil {
+		_, _ = s.DB.Exec(`UPDATE environments SET access=?, updated_at=? WHERE id=?`, mustJSON(newAccess), store.Now(), e.ID)
 	}
 	if req.IsDefault != nil && *req.IsDefault && !e.IsDefault {
 		if err := s.DB.Tx(s.ctx, func(tx *sql.Tx) error {
@@ -866,11 +879,6 @@ func (s *Server) handleEnvUpdate(c *Ctx) error {
 	}
 	if req.SafeForThirdParties != nil {
 		_, _ = s.DB.Exec(`UPDATE environments SET safety_answered_at=? WHERE id=?`, store.Now(), e.ID)
-	}
-	if mustJSON(cfg) != mustJSON(cur.Config) {
-		if _, err := s.envMint(e, cfg); err != nil {
-			return err
-		}
 	}
 	e, _ = s.envByID(e.ID)
 	m, err := s.envJSON(e, sc.User)

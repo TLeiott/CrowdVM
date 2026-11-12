@@ -71,6 +71,7 @@ func (a *Agent) Boot(ctx context.Context) {
 		if unsaved {
 			a.cleanUnsavedAtBoot()
 		}
+		a.dockerRestoring.Store(true)
 		go a.dockerAfterBoot(ctx, unsaved)
 		st = bootState{BootID: a.bootID, SandboxID: a.cfg.SandboxID, FirstBootDone: st.FirstBootDone}
 	}
@@ -453,10 +454,12 @@ func (a *Agent) cleanUnsavedAtBoot() {
 // again and, on a disk from a live snapshot, deletes the build cache and
 // the images nothing uses.
 func (a *Agent) dockerAfterBoot(ctx context.Context, unsaved bool) {
+	defer a.dockerRestoring.Store(false)
 	if a.inspect() || !a.dockerOK() {
 		return
 	}
 	a.restartDocker(ctx)
+	a.dockerRestoring.Store(false)
 	if unsaved && a.waitDocker(ctx, dockerWait) {
 		var errs []string
 		a.pruneDocker(ctx, true, &errs)

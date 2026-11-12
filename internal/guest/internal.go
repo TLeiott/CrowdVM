@@ -113,6 +113,9 @@ type hijacked struct {
 	r *bufio.Reader
 }
 
+// Unwrap gives mux.Join the conn below, to abort it (bugs-r20-sonnet 4).
+func (c *hijacked) Unwrap() net.Conn { return c.Conn }
+
 func (h *hijacked) Read(p []byte) (int, error) { return h.r.Read(p) }
 
 // POST /v1/internal/prepare-stop [proto.PrepareStopRequest]: Boat's stop

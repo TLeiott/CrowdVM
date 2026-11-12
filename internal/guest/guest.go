@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -55,13 +56,16 @@ type Options struct {
 }
 
 type Agent struct {
-	cfgMu  sync.RWMutex
-	cfg    proto.GuestConfig // immutable fields read directly; use config() for the rest
-	unpriv bool
-	home   string // real home dir
-	tmp    string // real /tmp
-	data   string // real data dir
-	log    *log.Logger
+	// dockerRestoring: this boot has not restarted the recorded containers
+	// yet; a snapshot meanwhile keeps the record (bugs-r20-opus 4).
+	dockerRestoring atomic.Bool
+	cfgMu           sync.RWMutex
+	cfg             proto.GuestConfig // immutable fields read directly; use config() for the rest
+	unpriv          bool
+	home            string // real home dir
+	tmp             string // real /tmp
+	data            string // real data dir
+	log             *log.Logger
 
 	uid, gid int
 	groups   []uint32

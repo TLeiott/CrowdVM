@@ -371,9 +371,14 @@ func (s *Server) grantQuotas() {
 		// Only the unused part of last month's quota expires: credits spent
 		// since it was granted came out of it first, and other credits
 		// (grants, earnings, transfers) never expire (bugs-r19-sonnet 7).
-		var spent float64 // every debit since the last quota grant
-		_ = s.DB.QueryRow(`SELECT COALESCE(-SUM(delta),0) FROM credit_ledger WHERE wallet_id=? AND delta<0 AND kind!='quota'
-			AND created_at>=COALESCE((SELECT MAX(created_at) FROM credit_ledger WHERE wallet_id=? AND kind='quota' AND delta>0),0)`, x.w, x.w).Scan(&spent)
+		// Spent since the last quota grant: every debit except transfers,
+		// plus what was transferred out net of what came back in, so moving
+		// the quota away and back does not keep it (bugs-r20-opus 3).
+		var spent, netOut float64
+		since := `AND created_at>=COALESCE((SELECT MAX(created_at) FROM credit_ledger WHERE wallet_id=? AND kind='quota' AND delta>0),0)`
+		_ = s.DB.QueryRow(`SELECT COALESCE(-SUM(delta),0) FROM credit_ledger WHERE wallet_id=? AND delta<0 AND kind NOT IN ('quota','transfer') `+since, x.w, x.w).Scan(&spent)
+		_ = s.DB.QueryRow(`SELECT COALESCE(-SUM(delta),0) FROM credit_ledger WHERE wallet_id=? AND kind='transfer' `+since, x.w, x.w).Scan(&netOut)
+		spent += math.Max(0, netOut)
 		expire := math.Max(0, math.Min(bal, st.QuotaGranted-spent))
 		_ = s.DB.Tx(s.ctx, func(tx *sql.Tx) error {
 			if expire > 0 {

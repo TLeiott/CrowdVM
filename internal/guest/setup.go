@@ -253,10 +253,12 @@ func (a *Agent) writeGitCredentials() {
 	hosts := map[string]bool{}
 	for _, r := range a.config().Repos {
 		u, err := url.Parse(r.URL)
-		if r.Token == "" || err != nil || u.Scheme != "https" {
+		// http too: the server sends the token for an http git host as well
+		// (bugs-r20-opus 1).
+		if r.Token == "" || err != nil || (u.Scheme != "https" && u.Scheme != "http") {
 			continue
 		}
-		lines = append(lines, "https://x-access-token:"+url.QueryEscape(r.Token)+"@"+u.Host)
+		lines = append(lines, u.Scheme+"://x-access-token:"+url.QueryEscape(r.Token)+"@"+u.Host)
 		hosts[u.Host] = true
 	}
 	gh := a.config().Env["GH_TOKEN"]

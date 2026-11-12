@@ -313,6 +313,11 @@ func validProfile(p string) (string, error) {
 		return "", Err(400, "invalid_profile", "profile must be an absolute path in the sandbox.")
 	}
 	p = path.Clean(p)
+	// A folder of its own below a top-level one: /home, /opt, /mnt ... would
+	// be handed to the browser user (bugs-r20-opus 6).
+	if strings.Count(p, "/") < 2 {
+		return "", Err(400, "invalid_profile", "profile must be a folder below a top-level directory, e.g. /data/chrome-profile.")
+	}
 	for _, d := range systemDirs {
 		if p == "/" || p == d || strings.HasPrefix(p, d+"/") {
 			return "", Err(400, "invalid_profile", "profile must be outside /home/user and system directories, e.g. /data/chrome-profile.")

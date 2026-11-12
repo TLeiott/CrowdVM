@@ -52,6 +52,9 @@ func validBrowserProfile(p string) (string, error) {
 	if p == DefaultBrowserProfile {
 		return p, nil
 	}
+	if strings.Count(p, "/") < 2 { // /home, /opt, ... (bugs-r20-opus 6)
+		return "", errors.New("profile must be a folder below a top-level directory, e.g. /data/chrome-profile")
+	}
 	for _, d := range browserSystemDirs {
 		if p == "/" || p == d || strings.HasPrefix(p, d+"/") {
 			return "", errors.New("profile must be outside /home/user and system directories, e.g. /data/chrome-profile")
@@ -177,6 +180,13 @@ func (a *Agent) startBrowser(b *browserView, profile string, width, height int) 
 	if isolated {
 		uid, _ := strconv.Atoi(u.Uid)
 		gid, _ := strconv.Atoi(u.Gid)
+		// An existing folder of someone else is never taken over (/home,
+		// /opt, another user's folder: bugs-r20-opus 6).
+		if fi, err := os.Stat(profile); err == nil {
+			if st, ok := fi.Sys().(*syscall.Stat_t); ok && int(st.Uid) != uid {
+				return fmt.Errorf("the profile folder %s exists and belongs to another user; use a new folder, e.g. /data/chrome-profile", profile)
+			}
+		}
 		if err := os.MkdirAll(profile, 0o700); err != nil {
 			return fmt.Errorf("cannot create the profile folder %s: %v", profile, err)
 		}

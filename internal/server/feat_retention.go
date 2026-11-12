@@ -381,6 +381,18 @@ func (r *retState) erase(c *Ctx) error {
 	if orgs > 0 {
 		return Err(409, "owner_of_organization", "You own an organization with other members. Transfer its ownership (or delete it) before you erase your account.")
 	}
+	// Organizations it owns alone go with it, with their environments,
+	// secrets, git sources and AI credentials (bugs-r20-sonnet 3).
+	for _, id := range r.s.walletIDs(`SELECT m.org_id FROM org_members m WHERE m.user_id=? AND m.role='owner'
+		AND NOT EXISTS (SELECT 1 FROM org_members o WHERE o.org_id=m.org_id AND o.user_id!=m.user_id)`, u.ID) {
+		if o, err := r.s.OrgByID(id); err == nil {
+			// Its sandboxes are this account's (it is the only member): they
+			// come back to personal billing here and the purge deletes them.
+			if err := r.s.deleteOrg(o, u.ID, false); err != nil {
+				return err
+			}
+		}
+	}
 	n, err := r.purge(u.ID)
 	if err != nil {
 		return err

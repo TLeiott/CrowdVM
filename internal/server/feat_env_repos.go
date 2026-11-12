@@ -140,6 +140,15 @@ func (s *Server) handleGitSourceAdd(c *Ctx) error {
 	if u, err := url.Parse(req.BaseURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return Err(400, "invalid_base_url", "baseUrl must be an http(s) URL of the git host.")
 	}
+	// bugs-r20-sonnet 1: same guard as webhooks and CI links, for both URLs.
+	for _, raw := range []string{req.BaseURL, req.APIURL} {
+		if raw == "" {
+			continue
+		}
+		if err := s.checkOutboundURL(c.R.Context(), raw, "invalid_base_url"); err != nil {
+			return err
+		}
+	}
 	if strings.TrimSpace(req.Token) == "" || len(req.Token) > 8192 {
 		return Err(400, "invalid_token", "token is required (a personal access token).")
 	}
@@ -180,7 +189,9 @@ type gitRepo struct {
 	AccountLogin, AccountType, AccountAvatar                                      string
 }
 
-var gitHTTP = &http.Client{Timeout: 30 * time.Second}
+// bugs-r20-sonnet 1: every dial (also after a redirect, the context carries the
+// policy) goes through the outbound guard.
+var gitHTTP = &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{DialContext: guardedDial, TLSHandshakeTimeout: 10 * time.Second}}
 
 func gitGet(ctx context.Context, src *gitSource, u string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
@@ -202,8 +213,8 @@ func gitGet(ctx context.Context, src *gitSource, u string, out any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("%s: HTTP %d %s", src.Name, resp.StatusCode, strings.TrimSpace(string(b)))
+		// bugs-r20-sonnet 1: status only; the remote body is not echoed.
+		return fmt.Errorf("%s: HTTP %d", src.Name, resp.StatusCode)
 	}
 	return json.NewDecoder(io.LimitReader(resp.Body, 32<<20)).Decode(out)
 }
@@ -309,6 +320,7 @@ func (s *Server) gitSync(ctx context.Context, ownerID string) error {
 		return err
 	}
 	var firstErr error
+	ctx = withOutboundPolicy(ctx, s.Cfg.WebhookAllowLocal) // bugs-r20-sonnet 1
 	for _, src := range srcs {
 		repos, err := gitFetch(ctx, src)
 		if err != nil {

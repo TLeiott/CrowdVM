@@ -369,93 +369,7 @@ func (s *Server) handleDeleteOrg(c *Ctx) error {
 	if n > 0 {
 		return Err(409, "org_has_running_sandboxes", "Stop the organization's sandboxes first.")
 	}
-	err = s.DB.Tx(s.ctx, func(tx *sql.Tx) error {
-		// Refuse deletion while credits remain so deleting an org cannot destroy its balance.
-		var balance float64
-		if err := tx.QueryRow(`SELECT COALESCE((SELECT balance FROM wallets WHERE id=?),0)`, o.ID).Scan(&balance); err != nil {
-			return err
-		}
-		if round6(balance) > 0 { // what the API shows: a sub-micro remainder of a transfer does not count
-			return Err(409, "org_has_balance", "Transfer the organization's remaining credits before deleting it.")
-		}
-		// Sandboxes go back to their creators' personal billing.
-		if _, err := tx.Exec(`UPDATE sandboxes SET org_id=NULL, visibility=NULL WHERE org_id=?`, o.ID); err != nil {
-			return err
-		}
-		// So do usage not billed yet and saved snapshots: nothing stays on
-		// the deleted organization (bugs-r5-sonnet).
-		if _, err := tx.Exec(`UPDATE sandbox_runs SET wallet_id=(SELECT owner_id FROM sandboxes WHERE id=sandbox_runs.sandbox_id)
-			WHERE wallet_id=? AND (ended_at IS NULL OR billed_until<ended_at)`, o.ID); err != nil {
-			return err
-		}
-		// An organization's saved snapshots go to whoever saved them (else
-		// the source sandbox's owner, else the deleting owner), renamed when
-		// that name is taken.
-		type saved struct{ id, name, to string }
-		var list []saved
-		rows, err := tx.Query(`SELECT ss.id, ss.name, COALESCE(NULLIF(ss.saved_by,''), (SELECT owner_id FROM sandboxes WHERE id=ss.source_sandbox_id), ?)
-			FROM saved_snapshots ss WHERE ss.owner_id=? OR ss.org_id=?`, c.P.User.ID, o.ID, o.ID)
-		if err != nil {
-			return err
-		}
-		for rows.Next() {
-			var x saved
-			if rows.Scan(&x.id, &x.name, &x.to) == nil {
-				list = append(list, x)
-			}
-		}
-		rows.Close()
-		for _, x := range list {
-			name := x.name
-			for i := 1; ; i++ {
-				var taken int
-				_ = tx.QueryRow(`SELECT COUNT(*) FROM saved_snapshots WHERE owner_id=? AND name=? AND id<>?`, x.to, name, x.id).Scan(&taken)
-				if taken == 0 {
-					break
-				}
-				name = x.name + "-" + o.Name + "-" + strconv.Itoa(i)
-			}
-			if _, err := tx.Exec(`UPDATE saved_snapshots SET owner_id=?, org_id=NULL, name=? WHERE id=?`, x.to, name, x.id); err != nil {
-				return err
-			}
-		}
-		// Environments (with their sealed vars and secret files) and git
-		// sources belong to the organization alone: they go with it.
-		for _, q := range []string{
-			// Versions a saved snapshot's sandbox ran with stay: a foreign
-			// deploy of it must still scrub their secret files
-			// (bugs-r7-sonnet 5). The rest go.
-			`DELETE FROM environment_versions WHERE env_id IN (SELECT id FROM environments WHERE owner_id=?)
-				AND env_id NOT IN (SELECT b.environment_id FROM saved_snapshots ss JOIN sandboxes b ON b.id=ss.source_sandbox_id WHERE b.environment_id IS NOT NULL)`,
-			`DELETE FROM environments WHERE owner_id=?`,
-			`DELETE FROM git_repos WHERE owner_id=? OR source_id IN (SELECT id FROM git_sources WHERE owner_id=?)`,
-			`DELETE FROM git_sources WHERE owner_id=?`,
-			// Its CI links: the token goes, like an unlink (bugs-r8-sonnet 7).
-			`DELETE FROM ci_repos WHERE link_id IN (SELECT id FROM ci_links WHERE org_id=?)`,
-			`UPDATE ci_links SET status='unlinked', token='', org_id=NULL WHERE org_id=?`,
-			// AI credentials stored for the organization (bugs-r7-sonnet 16).
-			`DELETE FROM credential_accounts WHERE profile_id IN (SELECT id FROM credential_profiles WHERE owner_id=?)`,
-			`DELETE FROM credential_custom_apis WHERE profile_id IN (SELECT id FROM credential_profiles WHERE owner_id=?)`,
-			`DELETE FROM credential_profiles WHERE owner_id=?`,
-		} {
-			args := make([]any, strings.Count(q, "?"))
-			for i := range args {
-				args[i] = o.ID
-			}
-			if _, err := tx.Exec(q, args...); err != nil {
-				return err
-			}
-		}
-		if _, err := tx.Exec(`UPDATE users SET active_org=NULL WHERE active_org=?`, o.ID); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(`UPDATE api_keys SET revoked_at=? WHERE org_id=? AND revoked_at IS NULL`, store.Now(), o.ID); err != nil {
-			return err
-		}
-		_, err = tx.Exec(`DELETE FROM orgs WHERE id=?`, o.ID)
-		return err
-	})
-	if err != nil {
+	if err := s.deleteOrg(o, c.P.User.ID, true); err != nil {
 		return err
 	}
 	return c.OK(200, "org.deleted", map[string]any{"id": o.ID})
@@ -779,4 +693,99 @@ func (s *Server) handleAcceptInvite(c *Ctx) error {
 		return err
 	}
 	return c.OK(200, "org.joined", map[string]any{"org": s.orgJSON(o, c.P.User, false)})
+}
+
+// deleteOrg removes organization o and everything that is its alone (see
+// handleDeleteOrg); saved snapshots without a saver go to fallback. The
+// balance check is skipped for an account erasure (bugs-r20-sonnet 3).
+func (s *Server) deleteOrg(o *Org, fallback string, checkBalance bool) error {
+	return s.DB.Tx(s.ctx, func(tx *sql.Tx) error {
+		// Refuse deletion while credits remain so deleting an org cannot destroy its balance.
+		var balance float64
+		if err := tx.QueryRow(`SELECT COALESCE((SELECT balance FROM wallets WHERE id=?),0)`, o.ID).Scan(&balance); err != nil {
+			return err
+		}
+		if checkBalance && round6(balance) > 0 { // what the API shows: a sub-micro remainder of a transfer does not count
+			return Err(409, "org_has_balance", "Transfer the organization's remaining credits before deleting it.")
+		}
+		// Sandboxes go back to their creators' personal billing.
+		if _, err := tx.Exec(`UPDATE sandboxes SET org_id=NULL, visibility=NULL WHERE org_id=?`, o.ID); err != nil {
+			return err
+		}
+		// So do usage not billed yet and saved snapshots: nothing stays on
+		// the deleted organization (bugs-r5-sonnet).
+		if _, err := tx.Exec(`UPDATE sandbox_runs SET wallet_id=(SELECT owner_id FROM sandboxes WHERE id=sandbox_runs.sandbox_id)
+			WHERE wallet_id=? AND (ended_at IS NULL OR billed_until<ended_at)`, o.ID); err != nil {
+			return err
+		}
+		// An organization's saved snapshots go to whoever saved them (else
+		// the source sandbox's owner, else the deleting owner), renamed when
+		// that name is taken.
+		type saved struct{ id, name, to string }
+		var list []saved
+		rows, err := tx.Query(`SELECT ss.id, ss.name, COALESCE(NULLIF(ss.saved_by,''), (SELECT owner_id FROM sandboxes WHERE id=ss.source_sandbox_id), ?)
+			FROM saved_snapshots ss WHERE ss.owner_id=? OR ss.org_id=?`, fallback, o.ID, o.ID)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var x saved
+			if rows.Scan(&x.id, &x.name, &x.to) == nil {
+				list = append(list, x)
+			}
+		}
+		rows.Close()
+		for _, x := range list {
+			name := x.name
+			for i := 1; ; i++ {
+				var taken int
+				_ = tx.QueryRow(`SELECT COUNT(*) FROM saved_snapshots WHERE owner_id=? AND name=? AND id<>?`, x.to, name, x.id).Scan(&taken)
+				if taken == 0 {
+					break
+				}
+				name = x.name + "-" + o.Name + "-" + strconv.Itoa(i)
+			}
+			if _, err := tx.Exec(`UPDATE saved_snapshots SET owner_id=?, org_id=NULL, name=? WHERE id=?`, x.to, name, x.id); err != nil {
+				return err
+			}
+		}
+		// Environments (with their sealed vars and secret files) and git
+		// sources belong to the organization alone: they go with it.
+		for _, q := range []string{
+			// Versions a saved snapshot's sandbox ran with stay: a foreign
+			// deploy of it must still scrub their secret files
+			// (bugs-r7-sonnet 5). The rest go.
+			`DELETE FROM environment_versions WHERE env_id IN (SELECT id FROM environments WHERE owner_id=?)
+				AND env_id NOT IN (SELECT b.environment_id FROM saved_snapshots ss JOIN sandboxes b ON b.id=ss.source_sandbox_id WHERE b.environment_id IS NOT NULL)`,
+			`DELETE FROM environments WHERE owner_id=?`,
+			`DELETE FROM git_repos WHERE owner_id=? OR source_id IN (SELECT id FROM git_sources WHERE owner_id=?)`,
+			`DELETE FROM git_sources WHERE owner_id=?`,
+			// Its CI links: the token goes, like an unlink (bugs-r8-sonnet 7).
+			`DELETE FROM ci_repos WHERE link_id IN (SELECT id FROM ci_links WHERE org_id=?)`,
+			`UPDATE ci_links SET status='unlinked', token='', org_id=NULL WHERE org_id=?`,
+			// AI credentials stored for the organization (bugs-r7-sonnet 16).
+			`DELETE FROM credential_accounts WHERE profile_id IN (SELECT id FROM credential_profiles WHERE owner_id=?)`,
+			`DELETE FROM credential_custom_apis WHERE profile_id IN (SELECT id FROM credential_profiles WHERE owner_id=?)`,
+			`DELETE FROM credential_profiles WHERE owner_id=?`,
+			// Pending invites go with it: nobody joins an organization
+			// without an owner (bugs-r20-opus 5).
+			`DELETE FROM org_invites WHERE org_id=?`,
+		} {
+			args := make([]any, strings.Count(q, "?"))
+			for i := range args {
+				args[i] = o.ID
+			}
+			if _, err := tx.Exec(q, args...); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.Exec(`UPDATE users SET active_org=NULL WHERE active_org=?`, o.ID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE api_keys SET revoked_at=? WHERE org_id=? AND revoked_at IS NULL`, store.Now(), o.ID); err != nil {
+			return err
+		}
+		_, err = tx.Exec(`DELETE FROM orgs WHERE id=?`, o.ID)
+		return err
+	})
 }

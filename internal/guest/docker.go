@@ -82,6 +82,11 @@ func (a *Agent) recordDocker(ctx context.Context, timeout time.Duration) []strin
 	if !a.dockerOK() {
 		return nil
 	}
+	if a.dockerRestoring.Load() {
+		// The recorded containers are not started again yet: what runs
+		// now is not the list (bugs-r20-opus 4).
+		return a.loadDockerState().Containers
+	}
 	out, err := a.docker(ctx, timeout, "ps", "-q", "--no-trunc")
 	if err != nil {
 		a.log.Printf("docker ps: %v", err)

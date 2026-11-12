@@ -338,6 +338,11 @@ func TestMachineFailedAfterNodeReturnBootsAgain(t *testing.T) {
 	env.WaitState(key, id, "ready")
 	node.Disconnect()
 	env.WaitState(key, id, "error")
+	// The machine's boot did not come up (its guest never answered), so the
+	// reconnect does not bring the sandbox back: a guest-ready report won
+	// the race against the failure event under load, and the failure was
+	// then an ordinary one.
+	node.SetVMState(id, proto.VMRunning, false, "")
 	if err := node.Connect(); err != nil {
 		t.Fatal(err)
 	}

@@ -140,7 +140,11 @@ func (m *Manager) codexComputerBlock(c *mcpCommand) {
 		if j := strings.Index(s[i:], codexBlockEnd); j >= 0 {
 			end = i + j + len(codexBlockEnd)
 		}
-		s = strings.TrimRight(s[:i], "\n") + strings.TrimLeft(s[end:], "\n")
+		before, after := strings.TrimRight(s[:i], "\n"), strings.TrimLeft(s[end:], "\n")
+		if before != "" && after != "" {
+			before += "\n\n" // keep the text around the old block apart (bugs-r20-sonnet 8)
+		}
+		s = before + after
 		if s != "" && !strings.HasSuffix(s, "\n") {
 			s += "\n"
 		}
