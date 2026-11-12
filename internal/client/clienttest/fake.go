@@ -211,7 +211,8 @@ func (f *Fake) routes() {
 	})
 	m.HandleFunc("GET "+v+"/limits", func(w http.ResponseWriter, r *http.Request) {
 		OK(w, "limits", map[string]any{"activeSandboxes": len(f.Sandboxes), "maxActiveSandboxes": 10, "canStart": true,
-			"starts": map[string]any{"minute": map[string]any{"remaining": 5}}})
+			"starts":       map[string]any{"minute": map[string]any{"remaining": 5}},
+			"machineTypes": []any{map[string]any{"type": "default", "available": true, "fitsNow": 3}}})
 	})
 	m.HandleFunc("GET "+v+"/credits", func(w http.ResponseWriter, r *http.Request) {
 		OK(w, "credits.info", map[string]any{"wallet": map[string]any{"balanceCredits": 42.5, "enforced": false}, "earnedCredits": 3, "spentCredits": 1})

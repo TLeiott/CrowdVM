@@ -721,7 +721,7 @@ func TestMiscCommands(t *testing.T) {
 		t.Fatal("completion script")
 	}
 	r = e.mustRun("limits", "--json=false")
-	if !strings.Contains(r.out, "active sandboxes: 1/10") {
+	if !strings.Contains(r.out, "active sandboxes: 1/10") || !strings.Contains(r.out, "default (3 fit now)") {
 		t.Fatalf("limits %q", r.out)
 	}
 }

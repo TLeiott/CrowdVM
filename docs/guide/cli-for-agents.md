@@ -129,8 +129,25 @@ and the exit code is not 0. Codes worth handling:
 | `local_login_not_found` | `--local-login` found no login for that provider here | Sign in (`claude`, `codex login`), set the API key, or drop `--local-login` |
 | `local_login_expired` | The local subscription token expires within ~2 minutes | Run `claude` (or `codex`) once on this machine, then retry |
 
-Without `--fail-fast`, `new`, `fork` and `resume` wait up to 15 minutes for a node with
-room instead of failing.
+Without `--fail-fast`, `new`, `fork`, `run` and `resume` wait up to 15 minutes for a
+node with room instead of failing.
+
+## Using what is free
+
+To spread work over the pool as availability allows, ask how much fits before you
+split it, and fall back to local compute instead of waiting:
+
+```sh
+crowdvm limits --json | jq -c '.machineTypes[] | {type, fitsNow}'
+```
+
+`fitsNow` is how many sandboxes of that size the caller can start right now: free room
+on online, unpaused nodes (by the same checks the scheduler runs, including a host
+short of memory), capped by the account's active-sandbox limit, and 0 when starts are
+blocked (credits, rate limit) or the size is not allowed. It is an estimate: others
+start sandboxes too. So send out at most `fitsNow` pieces, start each with
+`--fail-fast`, and run a piece locally when it fails with `no_ready_machine`,
+`limit_reached` or `rate_limited`. Check again before the next batch.
 
 ## Placement
 

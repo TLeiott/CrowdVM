@@ -1,6 +1,6 @@
 ---
 name: crowdvm
-description: Add compute to this computer with CrowdVM sandboxes, remote persistent Ubuntu VMs with root, Docker and a desktop on the team's own machines. Use them in addition to local compute, not instead of it, unless the user says otherwise - keep running work here and put extra or parallel work on sandboxes (test shards, a second build, variants, other agents), and move work there entirely only when it needs Docker, root or a clean machine, runs untrusted or AI-generated code, must keep running after this session, or needs a browser, GUI or a URL other people can open. Use when local CPU or RAM is busy or short, a build or test suite can be split, or work can run in parallel. Also use whenever the user mentions CrowdVM, the `crowdvm` CLI or a sandbox id (`bx_...`), and when you are running inside a CrowdVM sandbox (`CROWDVM_SANDBOX_ID` is set) and need to host a port, keep work across a stop, snapshot or stop the sandbox, or use its desktop.
+description: Add compute to this computer with CrowdVM sandboxes, remote persistent Ubuntu VMs with root, Docker and a desktop on the team's own machines. Use them in addition to local compute, not instead of it, unless the user says otherwise - keep running work here and put extra or parallel work on sandboxes (test shards, a second build, variants, other agents), and move work there entirely only when it needs Docker, root or a clean machine, runs untrusted or AI-generated code, must keep running after this session, or needs a browser, GUI or a URL other people can open. Use when local CPU or RAM is busy or short, a build or test suite can be split, work can run in parallel, or the user says to use CrowdVM as availability allows. Also use whenever the user mentions CrowdVM, the `crowdvm` CLI or a sandbox id (`bx_...`), and when you are running inside a CrowdVM sandbox (`CROWDVM_SANDBOX_ID` is set) and need to host a port, keep work across a stop, snapshot or stop the sandbox, or use its desktop.
 ---
 
 # CrowdVM
@@ -120,8 +120,8 @@ done
 
 - A fork copies the disk, not running programs. Start them again in the fork. Docker
   containers that ran and enabled systemd services start by themselves.
-- Each sandbox needs room on a node. `crowdvm limits` and `crowdvm nodes` show how many
-  fit; without `--fail-fast`, `new`, `fork` and `resume` wait up to 15 minutes for room.
+- Each sandbox needs room on a node. Without `--fail-fast`, `new`, `fork`, `run` and
+  `resume` wait up to 15 minutes for room. To size the batch, see the next section.
 - `crowdvm snapshot "$base" NAME` saves the disk; `crowdvm new --from NAME` starts from
   it later (`--count N` creates N at once and does not wait until they are ready).
 - To put a coding agent to work inside a sandbox, run
@@ -130,6 +130,29 @@ done
   `prompt` prints the agent's work until the turn ends. `--provider` picks `claude`,
   `codex`, `opencode`, `pi` and others. On `provider_not_configured`, add
   `--provider claude --local-login` (or `codex`) to use this machine's own login.
+
+## Use what is free
+
+The pool is other people's machines and fills up. When the user says to use CrowdVM
+"as availability allows", or you split work without knowing how much room there is,
+send out only what fits now and run the rest here. Never wait for room.
+
+```sh
+crowdvm limits --json | jq -c '.machineTypes[] | {type, fitsNow}'
+```
+
+- `fitsNow` is how many sandboxes of that size you can start right now: free room on
+  the pool's nodes, capped by your account limits. It is an estimate; others start
+  sandboxes too. The text form is `crowdvm limits` (`large (3 fit now)`).
+- Send out at most `fitsNow` pieces. If the size you want fits 0, a smaller one may
+  fit. If every size fits 0, run everything locally.
+- Start each with `--fail-fast` (`new`, `fork`, `run`, `resume`). On
+  `no_ready_machine`, `limit_reached` or `rate_limited`, run that piece locally
+  instead and go on.
+- Check `fitsNow` again before each new batch, and stop or delete each sandbox as soon
+  as its piece is done, so its room goes back to the pool.
+- `crowdvm nodes` shows the pool per node: free room, and live load in `--json`
+  (`load.cpuBusy`, `load.hot`: the owner is using that machine).
 
 ## URLs and ports
 
