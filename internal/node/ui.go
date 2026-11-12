@@ -1,6 +1,7 @@
 package node
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -8,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -227,8 +229,17 @@ func (n *Node) UIHandler(token string) http.Handler {
 		if b, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok && eq(b, token) {
 			return accessFull
 		}
-		if sessions.validRequest(r.Header.Get(UISessionHeader), r.Method, r.URL.RequestURI(), time.Now()) { // bugs-r12-opus 1, bugs-r13-opus 5
-			return accessBrowser
+		if v := r.Header.Get(UISessionHeader); v != "" {
+			// The signature covers the body (bugs-r14-sonnet 5): read it
+			// here, and hand the handler a copy.
+			body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+			if err != nil {
+				return accessNone
+			}
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			if sessions.validRequest(v, r.Method, r.URL.RequestURI(), body, time.Now()) { // bugs-r12-opus 1, bugs-r13-opus 5
+				return accessBrowser
+			}
 		}
 		return accessNone
 	}

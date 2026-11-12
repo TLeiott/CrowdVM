@@ -486,3 +486,6 @@ type readerConn struct {
 }
 
 func (c *readerConn) Read(p []byte) (int, error) { return c.r.Read(p) }
+
+// CloseWrite half-closes the conn (bugs-r14-sonnet 4).
+func (c *readerConn) CloseWrite() error { return mux.CloseWrite(c.Conn) }

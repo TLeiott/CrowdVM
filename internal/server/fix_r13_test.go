@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -59,9 +60,12 @@ func TestR13EvacMoveWaitsForNewerSnapshotOfDeadNode(t *testing.T) {
 	if r := env.Do(key, "POST", "/api/v1/nodes/"+a.ID+"/evacuate", map[string]any{"graceSec": 0}); r.Status != 200 {
 		t.Fatalf("evacuate: %s", r)
 	}
+	// Settled: the forced stop parked the move for the newer snapshot; or
+	// the node-offline handling came first (error node_offline, the stop
+	// waits for the node); or, without the fix, the move booted on b.
 	env.Eventually("the stop gave up on the dead node", func() bool {
 		sb, err := env.S.SandboxByID(id)
-		return err == nil && (sb.State == "error" || sb.NodeID == b.ID)
+		return err == nil && (sb.State == "error" && (strings.HasPrefix(sb.Error, "snapshot_unavailable") || sb.Error == "node_offline") || sb.NodeID == b.ID)
 	})
 	time.Sleep(500 * time.Millisecond)
 	if sb, _ := env.S.SandboxByID(id); sb.NodeID == b.ID {
@@ -71,9 +75,17 @@ func TestR13EvacMoveWaitsForNewerSnapshotOfDeadNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	a.ReleaseUploads()
+	// When the node came back before the forced stop, its stop finished
+	// normally with a snapshot of its own.
 	env.Eventually("booted on b from the newer snapshot", func() bool {
 		sb, err := env.S.SandboxByID(id)
-		return err == nil && sb.NodeID == b.ID && sb.State == "ready" && sb.HeadSnapshotID == snap
+		if err != nil || sb.NodeID != b.ID || sb.State != "ready" {
+			return false
+		}
+		// The newer snapshot itself, or one taken after it.
+		var newer bool
+		_ = env.S.DB.QueryRow(`SELECT h.created_at>=s.created_at FROM snapshots h, snapshots s WHERE h.id=? AND s.id=?`, sb.HeadSnapshotID, snap).Scan(&newer)
+		return newer
 	})
 }
 

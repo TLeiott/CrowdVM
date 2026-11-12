@@ -49,6 +49,16 @@ func warmMatch(shape *proto.VMSpec, spec proto.VMSpec) bool {
 
 // noteWarmShapeLocked (n.mu held) remembers a plain create's shape.
 func (n *Node) noteWarmShapeLocked(spec proto.VMSpec) {
+	if spec.Guest.Channel != nil {
+		// A channel sandbox never takes a pool VM (its config must not pass
+		// through this node): while the server sends those, keep no pool
+		// (bugs-r14-opus 7).
+		if n.warmShape != nil {
+			n.warmShape = nil
+			_ = os.Remove(n.warmShapePath())
+		}
+		return
+	}
 	if spec.ParentID != "" || spec.Net != nil || spec.GPU || spec.ImageID == "" || warmMatch(n.warmShape, spec) {
 		return
 	}

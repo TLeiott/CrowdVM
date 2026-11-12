@@ -163,6 +163,9 @@ func (a *Agent) handlePrepareStop(w http.ResponseWriter, r *http.Request) {
 	if len(paths) > 200 {
 		res["removedPaths"] = paths[:200]
 	}
+	if opsCaller(r) {
+		delete(res, "removedPaths") // the node learns counts, not file names (bugs-r14-opus 6)
+	}
 	res["frozen"] = false
 	if req.Freeze && !a.unpriv {
 		mounts, err := a.frz.freeze(a, req.FreezeTimeoutSeconds)

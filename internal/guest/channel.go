@@ -11,6 +11,7 @@ package guest
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
@@ -51,7 +52,10 @@ type Channel struct {
 	mu      sync.Mutex
 	session string
 	sess    *yamux.Session
-	dataKey []byte // from the welcome of a ticket redemption
+	dataKey []byte          // from the welcome of a ticket redemption
+	nonce   string          // sent with the ticket; a retry with it survives a lost welcome (bugs-r14-sonnet 3)
+	dnsSess *yamux.Session  // the session dnsTr dials on
+	dnsTr   *http.Transport // DNS forwards (bugs-r14-opus 3)
 }
 
 type channelState struct {
@@ -130,6 +134,18 @@ func fetchTicket(ctx context.Context, stub *proto.GuestConfig) error {
 	}
 }
 
+// helloNonce is this process's random redemption nonce (RAM only).
+func (c *Channel) helloNonce() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.nonce == "" {
+		b := make([]byte, 24)
+		_, _ = rand.Read(b)
+		c.nonce = hex.EncodeToString(b)
+	}
+	return c.nonce
+}
+
 // connect dials, authenticates and installs the yamux session.
 func (c *Channel) connect(ctx context.Context) (proto.GuestConfig, error) {
 	conn, br, err := c.dial(ctx)
@@ -147,7 +163,7 @@ func (c *Channel) connect(ctx context.Context) (proto.GuestConfig, error) {
 			conn.Close()
 			return proto.GuestConfig{}, err
 		}
-		hello.Ticket, hello.Disk = c.stub.Channel.Ticket, c.disk
+		hello.Ticket, hello.Disk, hello.Nonce = c.stub.Channel.Ticket, c.disk, c.helloNonce()
 	}
 	w, err := exchange(conn, br, hello)
 	if err == nil && w.Error == "session_invalid" && session != "" {
@@ -160,7 +176,7 @@ func (c *Channel) connect(ctx context.Context) (proto.GuestConfig, error) {
 		if conn, br, err = c.dial(ctx); err != nil {
 			return proto.GuestConfig{}, err
 		}
-		hello.Session, hello.Ticket, hello.Disk = "", c.stub.Channel.Ticket, c.disk
+		hello.Session, hello.Ticket, hello.Disk, hello.Nonce = "", c.stub.Channel.Ticket, c.disk, c.helloNonce()
 		w, err = exchange(conn, br, hello)
 	}
 	if err != nil {

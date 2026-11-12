@@ -213,6 +213,9 @@ func ParseEgressAllow(list []string) ([]string, error) {
 // guestStreams serves what a guest opens on its channel.
 func (s *Server) guestStreams(g *GuestConn, egress bool) http.Handler {
 	var flows atomic.Int64
+	// DNS queries in flight per channel: a flood is answered 503 at once
+	// instead of piling up goroutines and streams (bugs-r14-opus 3).
+	dnsSlots := make(chan struct{}, maxEgressDNS)
 	m := http.NewServeMux()
 	m.HandleFunc("GET /v1/egress", func(w http.ResponseWriter, r *http.Request) {
 		if !egress {
@@ -259,6 +262,13 @@ func (s *Server) guestStreams(g *GuestConn, egress bool) http.Handler {
 			http.Error(w, "egress through the server is off for this sandbox", 403)
 			return
 		}
+		select {
+		case dnsSlots <- struct{}{}:
+			defer func() { <-dnsSlots }()
+		default:
+			http.Error(w, "too many dns queries in flight", 503)
+			return
+		}
 		q, err := io.ReadAll(io.LimitReader(r.Body, 64<<10))
 		if err != nil || len(q) < 12 {
 			http.Error(w, "bad query", 400)
@@ -274,6 +284,13 @@ func (s *Server) guestStreams(g *GuestConn, egress bool) http.Handler {
 	})
 	return m
 }
+
+// maxGuestStreams caps the streams a guest channel has served at once: TCP
+// flows (maxEgressFlows), DNS and its calls, with room to spare.
+const maxGuestStreams = 2 * maxEgressFlows
+
+// maxEgressDNS caps a channel's DNS queries in flight (bugs-r14-opus 3).
+const maxEgressDNS = 64
 
 var resolvers struct {
 	once sync.Once

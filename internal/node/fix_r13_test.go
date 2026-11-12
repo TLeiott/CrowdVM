@@ -1,11 +1,14 @@
 package node
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -23,13 +26,34 @@ type signedTransport struct {
 func (s signedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	r = r.Clone(r.Context())
 	nonce, key, _ := strings.Cut(s.sess, ".")
-	ms := strconv.FormatInt(s.at().UnixMilli(), 10)
-	sig := uiReqSig(key, r.Method, r.URL.RequestURI(), ms)
+	ms := strconv.FormatInt(uniqueMs(s.at()), 10)
+	var body []byte
+	if r.Body != nil {
+		body, _ = io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+	}
+	sig := uiReqSig(key, r.Method, r.URL.RequestURI(), ms, body)
 	if s.mut != nil {
 		sig = s.mut(sig)
 	}
 	r.Header.Set(UISessionHeader, nonce+"."+ms+"."+sig)
 	return http.DefaultTransport.RoundTrip(r)
+}
+
+// uniqueMs is t in ms, but never the same twice: like the page, the tests
+// never repeat a signature (a signature works once).
+var lastMs atomic.Int64
+
+func uniqueMs(t time.Time) int64 {
+	for {
+		last, ms := lastMs.Load(), t.UnixMilli()
+		if ms <= last && last-ms < 1000 { // a deliberately old or future time stays as it is
+			ms = last + 1
+		}
+		if lastMs.CompareAndSwap(last, ms) {
+			return ms
+		}
+	}
 }
 
 func TestUIPageSignsRequests(t *testing.T) {
@@ -76,7 +100,7 @@ func TestUIPageSignsRequests(t *testing.T) {
 	req, _ := http.NewRequest("GET", srv.URL+"/api/status", nil)
 	nonce, key, _ := strings.Cut(sess, ".")
 	ms := strconv.FormatInt(time.Now().UnixMilli(), 10)
-	req.Header.Set(UISessionHeader, nonce+"."+ms+"."+uiReqSig(key, "GET", "/api/other", ms))
+	req.Header.Set(UISessionHeader, nonce+"."+ms+"."+uiReqSig(key, "GET", "/api/other", ms, nil))
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)

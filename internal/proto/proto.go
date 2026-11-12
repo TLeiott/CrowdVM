@@ -95,6 +95,10 @@ type GuestHello struct {
 	// writes on the encrypted data partition, "plain" when it cannot
 	// (an older disk), "" from agents that do not know.
 	Disk string `json:"disk,omitempty"`
+	// Nonce (with a ticket): random per boot, kept in RAM. A retry with the
+	// same nonce after a lost welcome gets a new session instead of a
+	// "ticket used" refusal; the node never sees it (inside TLS).
+	Nonce string `json:"nonce,omitempty"`
 }
 
 // GuestWelcome is the server's answer: the session for reconnects and the
