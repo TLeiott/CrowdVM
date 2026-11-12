@@ -79,6 +79,11 @@ func localNets() []netip.Prefix {
 
 // egressBlocked says why a sandbox may not connect to ap ("" = allowed).
 func (s *Server) egressBlocked(ap netip.AddrPort) string {
+	if ap.Addr().Zone() != "" {
+		// Prefix.Contains is false for a zoned address while the kernel
+		// ignores the zone of a global one (red team round 5).
+		return "an address with a zone"
+	}
 	a := ap.Addr().Unmap()
 	if s.isOwnAPI(ap) {
 		return ""

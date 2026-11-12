@@ -179,9 +179,9 @@ internet looks like it came from your network.
 
 ### What your machine keeps of a sandbox
 
-- **Not stored:** the sandbox's configuration and secrets, and a token for its API. The
-  config drive holds a boot stub with a one-time ticket that is useless once the VM
-  booted.
+- **Not stored:** the sandbox's configuration and secrets, its boot ticket (it stays in
+  the node process's memory), and any token that opens its API. The node keeps an
+  operations token that only checks the VM's health and pauses or stops it.
 - **Stored:** the VM's disk and snapshot layers, which hold the public base image and
   the sandbox's writes as ciphertext (images v4 and later; older images write in the
   clear), and the last 256 KiB of its serial console. CrowdVM's processes write no core dumps, so a crashed VM
