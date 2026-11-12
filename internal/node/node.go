@@ -264,6 +264,7 @@ func (n *Node) Info() proto.NodeInfo {
 		// pinned channel; this node never sees their secrets. Not for the
 		// process driver: its "guests" are host processes (tests only).
 		GuestChannel: n.guestChannel(),
+		DiskRekey:    n.guestChannel(), // this node's guest re-keys copies
 		GPUs:         gpus, VirGL: vg != nil && vg.VirGL(),
 		Paused: ps.Paused, PauseReason: ps.Reason,
 	}

@@ -69,6 +69,7 @@ type schedReq struct {
 	Exclude   string
 	Owners    []string // users whose nodes are "own" (placement.trust)
 	Encrypted bool     // the sandbox's disk is encrypted: guest-channel nodes only
+	Rekey     bool     // a copy whose disk still has to get its own key: DiskRekey nodes only
 }
 
 // encrypted: the request needs a node that can give the guest its disk key.
@@ -232,6 +233,10 @@ func (s *Server) pickNode(req schedReq) (*Node, error) {
 			reasons = append(reasons, n.Name+": cannot unlock an encrypted disk (crowdvm-node too old)")
 			continue
 		}
+		if req.Rekey && !n.Info.DiskRekey {
+			reasons = append(reasons, n.Name+": cannot give a copy its own disk key (crowdvm-node too old)")
+			continue
+		}
 		matching++
 		if req.Placement.GPU && s.gpusInUse(id) >= len(n.Info.GPUs) {
 			reasons = append(reasons, n.Name+": all GPUs in use")
@@ -302,6 +307,8 @@ func (s *Server) ownersFor(owner, org string) []string {
 func (s *Server) placeSandbox(sbID, state string, req schedReq) (*Node, error) {
 	s.schedMu.Lock()
 	defer s.schedMu.Unlock()
+	// A copy made with newDiskKey, until its disk has its own key.
+	_ = s.DB.QueryRow(`SELECT rekey_from!='' OR (COALESCE(json_extract(extra,'$.newDiskKey'),0)=1 AND COALESCE(data_key,'')='') FROM sandboxes WHERE id=?`, sbID).Scan(&req.Rekey)
 	n, err := s.pickNode(req)
 	if err != nil {
 		return nil, err

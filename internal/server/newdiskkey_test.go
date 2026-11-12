@@ -184,3 +184,38 @@ func TestNewDiskKeyIgnoredForPlainDisks(t *testing.T) {
 		t.Fatalf("plain copy: error %q, old key sent %v", w.Error, w.OldDataKey != "")
 	}
 }
+
+// A copy waiting for its own key goes only to nodes whose guests can
+// re-encrypt it: an older guest-channel node would power it off on every
+// boot. An unflagged copy may still use the older node.
+func TestNewDiskKeyCopyAvoidsOlderNodes(t *testing.T) {
+	env := servertest.New(t)
+	key := env.AdminKey
+	cur := env.StartNode(servertest.NodeOptions{Name: "cur", GuestChannel: true})
+	src := createSandbox(t, env, key, map[string]any{"type": "small"})
+	env.WaitState(key, src, "ready")
+	spec, _ := cur.Spec(src)
+	rawChannel(t, env, src, spec.Guest.Channel.Ticket) // the guest reports an encrypted disk
+	if r := env.Do(key, "POST", "/api/v1/saved-snapshots", map[string]any{"sandboxId": src, "name": "tpl2"}); r.Status != 202 {
+		t.Fatalf("save: %s", r)
+	}
+	env.WaitFor(key, "/api/v1/saved-snapshots/tpl2", "snapshot.status", 5*time.Second, "ready")
+	old := env.StartNode(servertest.NodeOptions{Name: "old", GuestChannel: true, NoDiskRekey: true})
+	// The current node is full for the copies' size: only "old" has room.
+	env.Do(key, "PATCH", "/api/v1/nodes/"+cur.ID, map[string]any{"disabled": true})
+	cp := createSandbox(t, env, key, map[string]any{"from": "tpl2", "newDiskKey": true})
+	time.Sleep(300 * time.Millisecond)
+	if sb, _ := env.S.SandboxByID(cp); sb.NodeID == old.ID {
+		t.Fatalf("a copy waiting for its own key was placed on a node that cannot re-key it")
+	}
+	plain := createSandbox(t, env, key, map[string]any{"from": "tpl2"})
+	env.WaitState(key, plain, "ready")
+	if sb, _ := env.S.SandboxByID(plain); sb.NodeID != old.ID {
+		t.Fatalf("an unflagged copy did not use the older node: %s", sb.NodeID)
+	}
+	env.Do(key, "PATCH", "/api/v1/nodes/"+cur.ID, map[string]any{"disabled": false})
+	env.WaitState(key, cp, "ready")
+	if sb, _ := env.S.SandboxByID(cp); sb.NodeID != cur.ID {
+		t.Fatalf("the copy went to %s, want the current node", sb.NodeID)
+	}
+}

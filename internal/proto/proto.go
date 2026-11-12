@@ -283,6 +283,10 @@ type NodeInfo struct {
 	// server over the pinned guest channel (GuestConfig.Channel) and do not
 	// follow guest events or push guest firewall rules for them.
 	GuestChannel bool `json:"guestChannel,omitempty"`
+	// DiskRekey: the node's guests can re-encrypt a copy's data partition to
+	// a key of its own (GuestWelcome.OldDataKey). Older guests cannot open
+	// such a disk, so a copy waiting for it goes only to these nodes.
+	DiskRekey bool `json:"diskRekey,omitempty"`
 	// GPUs: the GPUs this node passes through to sandboxes (VFIO; node
 	// config gpu.passthrough, validated when the node starts). Only these
 	// make a node eligible for placement gpu, and only while one is free
