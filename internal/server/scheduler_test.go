@@ -132,3 +132,37 @@ func TestSchedulerLocality(t *testing.T) {
 		t.Fatal("parent not on b")
 	}
 }
+
+func TestSchedulerLiveLoad(t *testing.T) {
+	env := servertest.New(t)
+	key := env.AdminKey
+	cpcty := proto.Capacity{VCPU: 16, MemoryMiB: 65536, DiskGiB: 1000, MaxSandboxes: 20}
+	busy := env.StartNode(servertest.NodeOptions{Name: "busy", Capacity: cpcty})
+	calm := env.StartNode(servertest.NodeOptions{Name: "calm", Capacity: cpcty})
+	idle := func(cpu float64, availMiB int) *proto.HostLoad {
+		return &proto.HostLoad{CPUBusy: cpu, MemTotalMiB: 65536, MemAvailMiB: availMiB}
+	}
+	// The owner of "busy" runs a build: new sandboxes go to "calm".
+	busy.SetLoad(idle(0.97, 60000))
+	calm.SetLoad(idle(0.10, 60000))
+	for i := 0; i < 2; i++ {
+		r := env.Do(key, "POST", "/api/v1/sandboxes", map[string]any{"type": "small"})
+		if r.Status != 202 || r.Str("sandbox.nodeId") != calm.ID {
+			t.Fatalf("placed on a hot host: %s", r)
+		}
+	}
+	if r := env.Do(key, "GET", "/api/v1/nodes/"+busy.ID, nil); r.Get("node.load.hot") != true || r.Get("node.load.cpuBusy") == nil {
+		t.Fatalf("node load: %s", r)
+	}
+	// "calm" is now short of memory: a hot host beats one that cannot take it.
+	calm.SetLoad(idle(0.10, 600))
+	r := env.Do(key, "POST", "/api/v1/sandboxes", map[string]any{"type": "small"})
+	if r.Status != 202 || r.Str("sandbox.nodeId") != busy.ID {
+		t.Fatalf("hot host as the last resort: %s", r)
+	}
+	// Both short of memory: the request waits for room.
+	busy.SetLoad(idle(0.97, 600))
+	if r := env.Do(key, "POST", "/api/v1/sandboxes", map[string]any{"type": "small", "failFast": true}); r.Status != 503 {
+		t.Fatalf("no host with memory: %s", r)
+	}
+}

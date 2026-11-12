@@ -589,6 +589,22 @@ type Heartbeat struct {
 	Usage Usage      `json:"usage"`
 	VMs   []VMStatus `json:"vms"`
 	Info  *NodeInfo  `json:"info,omitempty"` // sent when changed (e.g. new benchmark)
+	// Load: the host's live load; nil from older nodes or where it cannot
+	// be measured (the scheduler then goes by reservations only).
+	Load *HostLoad `json:"load,omitempty"`
+}
+
+// HostLoad is the live load of the whole node machine: its sandboxes and
+// everything else its owner runs. The scheduler places new sandboxes away
+// from busy hosts and skips hosts that are short of memory.
+type HostLoad struct {
+	CPUBusy     float64 `json:"cpuBusy"`     // 0..1, host CPU busy since the previous heartbeat
+	MemTotalMiB int     `json:"memTotalMiB"` // host memory
+	MemAvailMiB int     `json:"memAvailMiB"` // available without swapping (Linux MemAvailable)
+	// CPUPressure and MemPressure: Linux PSI "some avg10" in percent (the
+	// share of time tasks waited for CPU or memory); nil when unavailable.
+	CPUPressure *float64 `json:"cpuPressure,omitempty"`
+	MemPressure *float64 `json:"memPressure,omitempty"`
 }
 
 // HeartbeatResponse is the optional JSON body of the heartbeat reply: settings

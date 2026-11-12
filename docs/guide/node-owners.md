@@ -78,6 +78,11 @@ sandboxes keep running through the restart; the node picks them up again when it
 back. (A node installed before this behavior: `crowdvm-node update` brings its unit up
 to date.)
 
+These limits are what you lend. Within them the scheduler also watches your machine's
+real load: while your own programs keep the CPU busy or use the memory, new sandboxes
+go to other nodes first, and none start here while memory is short. Running sandboxes
+are not moved.
+
 Disks are thin: a sandbox only uses the space it wrote. The node therefore accepts
 sandbox disk sizes that add up to `disk × disk-overcommit` (default 4). It still
 refuses new VMs, and stops downloading snapshots, before it eats into `disk-reserve`

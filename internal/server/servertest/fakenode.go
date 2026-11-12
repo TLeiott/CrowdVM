@@ -103,7 +103,8 @@ type FakeNode struct {
 	// FailNext makes the next call whose "METHOD path" has this prefix fail with 500.
 	failNext []string
 	refuse   []refusal
-	dieNext  []string // DieOnNext
+	dieNext  []string        // DieOnNext
+	load     *proto.HostLoad // SetLoad: host load sent with heartbeats
 }
 
 type refusal struct {
@@ -190,6 +191,15 @@ func StartFakeNode(serverURL string, o NodeOptions) (*FakeNode, error) {
 
 // SetGen changes the generation the node reports from its next Connect
 // (an update: Disconnect, SetGen, Connect).
+// SetLoad sets the host load the node reports, and sends a heartbeat with
+// it right away (nil: no load, like an older node).
+func (n *FakeNode) SetLoad(l *proto.HostLoad) {
+	n.mu.Lock()
+	n.load = l
+	n.mu.Unlock()
+	n.heartbeat()
+}
+
 func (n *FakeNode) SetGen(g int) {
 	n.mu.Lock()
 	n.info.Gen = g
@@ -563,7 +573,7 @@ func (n *FakeNode) sendEvent(ev proto.Event) {
 
 func (n *FakeNode) heartbeat() {
 	n.mu.Lock()
-	hb := proto.Heartbeat{}
+	hb := proto.Heartbeat{Load: n.load}
 	for _, v := range n.vms {
 		hb.VMs = append(hb.VMs, v.status)
 		if v.status.State == proto.VMRunning || v.status.State == proto.VMStarting {

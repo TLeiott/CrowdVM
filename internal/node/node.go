@@ -100,8 +100,9 @@ type Node struct {
 	diskMu    sync.Mutex // Disk() cache (disk.go)
 	disk      DiskState
 	diskAt    time.Time
-	lastCap   proto.Capacity // capacity last sent to the server
-	lastPause PauseState     // effective pause last sent to the server
+	lastCap   proto.Capacity    // capacity last sent to the server
+	lastPause PauseState        // effective pause last sent to the server
+	load      bench.LoadSampler // host load for the heartbeat
 
 	// From the heartbeat response (guarded by mu): what this node earned,
 	// and a running evacuation.
@@ -552,7 +553,7 @@ func (n *Node) heartbeatLoop(ctx context.Context) {
 
 // Heartbeat payload for the current state.
 func (n *Node) heartbeatPayload(withInfo bool) proto.Heartbeat {
-	hb := proto.Heartbeat{Usage: n.Usage(), VMs: n.Statuses()}
+	hb := proto.Heartbeat{Usage: n.Usage(), VMs: n.Statuses(), Load: n.load.Sample()}
 	cp, _ := n.capacity()
 	ps := n.config().EffectivePause(time.Now())
 	ps.Until = time.Time{}
