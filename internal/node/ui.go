@@ -86,6 +86,7 @@ type Status struct {
 	// supports (upgrade the server first).
 	Update              *proto.NodeUpdate        `json:"update,omitempty"`
 	ServerOutdated      bool                     `json:"serverOutdated,omitempty"`
+	AutoUpdate          *AutoUpdateStatus        `json:"autoUpdate,omitempty"` // nil when the daemon is not running
 	EarnedCredits       float64                  `json:"earnedCredits"`
 	Earned24h           float64                  `json:"earned24h"`
 	Benchmark           proto.Benchmark          `json:"benchmark"`
@@ -148,6 +149,12 @@ func (n *Node) Status() Status {
 		CanRestart: canRestart, RestartPending: pending,
 		Host: HostInfo{CPUs: runtime.NumCPU(), MemoryMiB: int(total >> 20)},
 	}
+	var latest string
+	if upd != nil {
+		latest = upd.Latest
+	}
+	au := n.autoUpdateStatus(latest)
+	st.AutoUpdate = &au
 	if h := c.ScheduleHold; h != nil && time.Now().Before(h.Until) {
 		st.ScheduleHold = h
 	}
@@ -384,7 +391,7 @@ location.replace("/");
 		api.WriteJSON(w, 202, map[string]bool{"ok": true})
 		go func() { time.Sleep(300 * time.Millisecond); fn() }() // let the reply go out
 	})
-	n.updateRoutes(m, ctl)
+	n.updateRoutes(m, ctl, func(r *http.Request) bool { return access(r) != accessNone })
 	ctl.HandleFunc("POST /api/bench", func(w http.ResponseWriter, r *http.Request) {
 		quick := r.URL.Query().Get("quick") != ""
 		if r.URL.Query().Get("wait") == "" {

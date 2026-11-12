@@ -33,8 +33,12 @@ func Unit(o Options) string {
 	return renderUnit(strings.Join(q, " "), o.FDStore)
 }
 
+// managedLine marks a unit this code wrote: Refresh replaces it.
+const managedLine = "# Managed by crowdvm-node: an update replaces edits. Put local changes in a drop-in (systemctl --user edit crowdvm-node)."
+
 func renderUnit(execStart string, fdStore bool) string {
-	return fmt.Sprintf(`[Unit]
+	return fmt.Sprintf(`%s
+[Unit]
 Description=CrowdVM node (lends this machine's compute to a CrowdVM pool)
 After=network-online.target
 Wants=network-online.target
@@ -52,13 +56,20 @@ TimeoutStopSec=60
 %s
 [Install]
 WantedBy=default.target
-`, execStart, fdStoreUnit(fdStore))
+`, managedLine, execStart, fdStoreUnit(fdStore))
 }
 
 // Refresh rewrites an installed unit from this build's template, keeping
 // its ExecStart (binary, data dir), and reloads systemd when that changed
 // anything, so an update brings unit changes without a new install-service.
+// The daemon calls it as it starts, so the unit comes from the new build.
 // changed is false when the unit is current or none is installed.
+//
+// Only a unit this code wrote is replaced: one with managedLine, or one
+// that is exactly what older releases wrote (they lacked the line; each
+// wrote this template without it, with or without the fd store lines).
+// Any other unit was edited by its owner: it stays as is, and the error
+// says so.
 func Refresh(out io.Writer) (changed bool, err error) {
 	p := UnitPath()
 	b, err := os.ReadFile(p)
@@ -77,6 +88,10 @@ func Refresh(out io.Writer) (changed bool, err error) {
 	}
 	if execStart == "" {
 		return false, fmt.Errorf("%s has no ExecStart; run crowdvm-node install-service", p)
+	}
+	legacy := func(fd bool) string { return strings.Replace(renderUnit(execStart, fd), managedLine+"\n", "", 1) }
+	if !strings.Contains(old, managedLine) && old != legacy(false) && old != legacy(true) {
+		return false, fmt.Errorf("%s was edited (it lacks the line %q), so it stays as is; `crowdvm-node install-service` writes the current unit", p, managedLine)
 	}
 	unit := renderUnit(execStart, systemdVersion() >= 254 || strings.Contains(old, "FileDescriptorStorePreserve=yes"))
 	if unit == old {
@@ -190,11 +205,30 @@ var systemctl = func(out io.Writer, args ...string) error {
 func RunService(func(context.Context) error) (bool, error) { return false, nil }
 
 // RestartsOnExit reports whether this process runs as the crowdvm-node
-// systemd unit, whose Restart=always starts it again after any exit.
+// systemd unit and the unit starts it again after a failed exit
+// (Restart=always or on-failure; ErrRestart exits with status 1).
 func RestartsOnExit() bool {
 	if os.Getenv("INVOCATION_ID") == "" {
 		return false
 	}
 	b, err := os.ReadFile("/proc/self/cgroup")
-	return err == nil && strings.Contains(string(b), "/"+Name+".service")
+	return err == nil && restartsOnExit(string(b))
+}
+
+func restartsOnExit(cgroup string) bool {
+	if !strings.Contains(cgroup, "/"+Name+".service") {
+		return false
+	}
+	p := restartPolicy(strings.Contains(cgroup, "/user@")) // a user unit, or a system one
+	return p == "always" || p == "on-failure"
+}
+
+// restartPolicy is the unit's Restart= setting (a variable for tests).
+var restartPolicy = func(user bool) string {
+	args := []string{"show", "-p", "Restart", "--value", Name + ".service"}
+	if user {
+		args = append([]string{"--user"}, args...)
+	}
+	out, _ := exec.Command("systemctl", args...).Output()
+	return strings.TrimSpace(string(out))
 }

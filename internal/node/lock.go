@@ -1,6 +1,7 @@
 package node
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +9,19 @@ import (
 )
 
 func lockPath(dir string) string { return filepath.Join(dir, "node.lock") }
+
+var errLocked = errors.New("locked by another process")
+
+// lockDataDir takes an exclusive lock on dir/node.lock for the life of the
+// process: two daemons on one data dir took each other's VMs and server
+// session (bugs-r12-opus 3).
+func lockDataDir(dir string) (*os.File, error) {
+	f, err := lockFile(lockPath(dir))
+	if errors.Is(err, errLocked) {
+		return nil, errDataDirLocked(dir)
+	}
+	return f, err
+}
 
 func errDataDirLocked(dir string) error {
 	return fmt.Errorf("another crowdvm-node daemon is running on %s (stop it first, e.g. systemctl --user stop crowdvm-node)", dir)
