@@ -110,6 +110,11 @@ type GuestWelcome struct {
 	// DataKey (base64, 64 bytes) unlocks the sandbox's encrypted data
 	// partition. Sent only on ticket redemption, never on reconnects.
 	DataKey string `json:"dataKey,omitempty"`
+	// OldDataKey (with DataKey): the volume still opens with this key. The
+	// guest re-encrypts it to DataKey, then confirms with POST /v1/rekeyed
+	// ({"keyHash": hex SHA-256 of the raw DataKey}); until then every
+	// ticket redemption carries both.
+	OldDataKey string `json:"oldDataKey,omitempty"`
 }
 
 type GuestConfig struct {

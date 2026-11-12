@@ -758,6 +758,9 @@ type CreateSandboxRequest struct {
 	From        string            `json:"from"`
 	Nested      bool              `json:"nested"`
 	Placement   Placement         `json:"placement"`
+	// NewDiskKey (with from): the copy re-encrypts its disk to a key of its
+	// own on its first start (encrypted chains only; bugs-r14-opus 1).
+	NewDiskKey bool `json:"newDiskKey"`
 }
 
 func (s *Server) handleCreateSandbox(c *Ctx) error {
@@ -985,6 +988,9 @@ func (s *Server) handleCreateSandbox(c *Ctx) error {
 		if err := s.insertSandbox(sb); err != nil {
 			s.rollbackCreated(created)
 			return fail(err)
+		}
+		if src != nil && req.NewDiskKey {
+			_ = s.SetSandboxExtra(sb.ID, "newDiskKey", true) // see ensureDiskKey
 		}
 		if src != nil && src.Foreign {
 			s.addPendingScrub(sb.ID, s.foreignDeployScrub(src.OwnerID, src.SourceSandboxID))

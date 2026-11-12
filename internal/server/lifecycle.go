@@ -1710,6 +1710,7 @@ func (s *Server) handleFork(c *Ctx) error {
 		TTLSeconds  OptInt             `json:"ttlSeconds"`
 		Name        string             `json:"name"`
 		Placement   *Placement         `json:"placement"`
+		NewDiskKey  bool               `json:"newDiskKey"` // see CreateSandboxRequest
 	}
 	if len(strings.TrimSpace(string(raw))) > 0 {
 		if err := json.Unmarshal(raw, &req); err != nil {
@@ -1855,6 +1856,9 @@ func (s *Server) handleFork(c *Ctx) error {
 	}
 	if err := s.insertSandbox(fk); err != nil {
 		return fail(err)
+	}
+	if req.NewDiskKey {
+		_ = s.SetSandboxExtra(fk.ID, "newDiskKey", true) // see ensureDiskKey
 	}
 	chain := s.snapshotChain(src.HeadSnapshotID)
 	sreq := schedReq{Size: spec, Placement: placement, Chain: chain, ImageID: src.ImageID, Owners: s.ownersFor(fk.OwnerID, fk.OrgID), Encrypted: src.Disk == "luks"}

@@ -292,8 +292,14 @@ modes.
 **Keys.** `dataKey` is generated per sandbox at create, stored in `sandboxes`
 sealed with the existing `env-secrets.key` AEAD (`feat_env_crypto.go`), copied to a
 fork (shared ciphertext layers need the same key), given to a BootInspect VM with its
-ticket. Rotation = none in v1 (a fork is the way to re-key: new sandbox, copy over
-the channel).
+ticket. A copy made with `newDiskKey` (deploy of a saved/shared snapshot, fork;
+bugs-r14-opus 1) gets a new key at its first boot; the parent's key stays sealed in
+`sandboxes.rekey_from` (copied into `guest_channels` and snapshot rows) and every
+ticket redemption sends both (`GuestWelcome.OldDataKey`). Preinit re-encrypts offline
+(`cryptsetup reencrypt`, resumed with `repair` + `--resume-only` after a cut-off),
+replaces the passphrase (`luksChangeKey`), `fstrim`s, and confirms over the channel
+(`POST /v1/rekeyed` with the new key's SHA-256); the server then clears `rekey_from`.
+Without the flag a copy keeps the parent's key. The source's own key never rotates.
 
 **Snapshots, chains, forks, lazy fetch, compaction**: unchanged in mechanism; the
 driver's "disk" is now `data.qcow2`. `blockdev-snapshot-sync`, `block-stream`,

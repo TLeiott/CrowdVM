@@ -12,6 +12,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -277,6 +278,16 @@ func (s *Server) guestStreams(g *GuestConn, egress bool) http.Handler {
 	})
 	m.HandleFunc("POST /v1/rebooting", func(w http.ResponseWriter, r *http.Request) {
 		s.guests.expectReboot(g.SandboxID) // see handleGuestReboot
+		w.WriteHeader(http.StatusNoContent)
+	})
+	m.HandleFunc("POST /v1/rekeyed", func(w http.ResponseWriter, r *http.Request) {
+		var v struct {
+			KeyHash string `json:"keyHash"`
+		}
+		if json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&v) != nil || !s.diskRekeyed(g.SandboxID, v.KeyHash) {
+			http.Error(w, "no re-encryption to this key is pending", 409)
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 	m.HandleFunc("POST /v1/egress/dns", func(w http.ResponseWriter, r *http.Request) {

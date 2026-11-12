@@ -55,6 +55,38 @@ while it is stopped (`crowdvm snapshot tree` and `crowdvm snapshot pull` answer
   credentials"), so the provider key never enters the VM. The sandbox gets a
   placeholder that only works through the proxy.
 
+### Copies share the disk key unless you ask for a new one
+
+A deploy of a saved or shared snapshot (`crowdvm new --from`) and a fork start from the
+source sandbox's disk, so by default they open it with the source's disk key. Whoever
+gets the copy is root in it and can read that key there, for example by changing the
+boot script on the image partition and rebooting. If they also run a node that later
+hosts the source sandbox, they can decrypt everything the source writes from then on,
+its environment file and home directory included. It works the other way round too:
+the source's owner can read the copy's later writes on a node they run. So sharing or
+forking an encrypted sandbox gives the recipient the key to the source's future disk.
+
+`--new-key` gives the copy a key of its own (`crowdvm new --from NAME --new-key`,
+`crowdvm fork ID --new-key`, `newDiskKey: true` in the API). On its first start the
+copy re-encrypts its data partition to a new volume key with `cryptsetup reencrypt`,
+replaces the passphrase and tells the server, which then forgets the source's key for
+this copy. After that neither the source's key nor the source's volume key opens the
+copy's disk. The cost:
+
+- The first start reads and writes the whole data partition, about the disk size
+  (49 GiB for `small`). That took 2 to 3 minutes on an NVMe node and takes longer on
+  slower disks. A start that is cut off resumes where it stopped on the next start.
+- The node needs that much free disk space during the first start. The copy gives it
+  back at the end (`fstrim`), but from then on it shares no disk layers with its
+  source, so its first snapshot holds all of its data.
+
+What `--new-key` does not change: the copy's first start still gets the source's key,
+so a recipient who runs that start on their own node and reads the VM's memory as root
+still gets it (the last row of the table above). The source's own key never changes.
+To lock out someone who already holds it, fork the source with `--new-key` on a node
+you trust, work in the fork and delete the source. Unencrypted disks (images before
+v4) ignore the flag.
+
 ### The sandbox's network
 
 A sandbox reaches the internet through the server, not through the node that hosts it:

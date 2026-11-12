@@ -1800,6 +1800,7 @@ Flags:
       --min-tier string          placement: minimum node tier: bronze, silver, gold or platinum
       --name string              display name of the fork
       --nested                   placement: run on a node with nested virtualization (KVM inside the sandbox)
+      --new-key                  give the copy a disk key of its own instead of the source's (see the security guide): its first start re-encrypts the whole disk, which takes a while. Encrypted disks only; ignored for others
       --no-auto-stop             never stop automatically
       --no-env                   give the sandbox none of your secrets
       --no-monitoring            keep no command output, process list or metrics
@@ -2130,6 +2131,7 @@ Flags:
       --min-tier string          placement: minimum node tier: bronze, silver, gold or platinum
       --name string              display name
       --nested                   placement: run on a node with nested virtualization (KVM inside the sandbox)
+      --new-key                  give the copy a disk key of its own instead of the source's (see the security guide): its first start re-encrypts the whole disk, which takes a while. Encrypted disks only; ignored for others
       --no-auto-stop             never stop automatically
       --no-env                   give the sandbox none of your secrets
       --no-monitoring            keep no command output, process list or metrics

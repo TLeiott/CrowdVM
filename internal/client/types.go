@@ -157,6 +157,9 @@ type CreateSandboxRequest struct {
 	From        string            `json:"from,omitempty"`
 	// Placement is the CrowdVM extension: hard requirements on the node.
 	Placement *Placement `json:"placement,omitempty"`
+	// NewDiskKey (CrowdVM, with From): the copy re-encrypts its encrypted
+	// disk to a key of its own on its first start.
+	NewDiskKey bool `json:"newDiskKey,omitempty"`
 }
 
 // Placement (CrowdVM extension of create, resume and fork) pins a sandbox to
@@ -201,6 +204,7 @@ type ForkRequest struct {
 	NoEnv       bool              `json:"noEnv,omitempty"`
 	Name        string            `json:"name,omitempty"`
 	Placement   *Placement        `json:"placement,omitempty"`
+	NewDiskKey  bool              `json:"newDiskKey,omitempty"` // see CreateSandboxRequest
 }
 
 type UpdateSandboxRequest struct {
