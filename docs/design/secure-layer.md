@@ -5,10 +5,32 @@ from the sandboxes. Written against the code as of 2026-11-11 (commit f2ef8d4).
 
 **Status (branch `feat/secure-layer`):** implemented: phase 0 (blob scoping, no core
 dumps, console trim), phases 1a + 1b (boot ticket, pinned channel, API and events over
-it, ops subset on the node side), and phase 4 v1 as **egress over the guest channel**
+it, ops subset on the node side), phase 4 v1 as **egress over the guest channel**
 (transparent TCP proxy + DNS in the guest agent, server dials out; not WireGuard, see
-the critique below §5.6). Not yet: phase 2 (encrypted data disk), phase 3 beyond core
-dumps (QMP/NIC fd passing, Landlock, tiers), the CLI as exit.
+the critique below §5.6), and phase 2 in a **one-disk variant** (§5.4a). Not yet:
+phase 3 beyond core dumps (QMP/NIC fd passing, Landlock, tiers), the CLI as exit.
+
+**§5.4a, as built (red team round 2).** No second drive: image v4 boots
+`init=/usr/local/lib/crowdvm/preinit`, which runs `crowdvm-guest preinit` from the
+config drive as PID 1. It redeems the ticket (static `10.0.2.15`, dialing the node's
+`10.0.2.2:<server port>` alias, so no DNS), creates on first boot a GPT partition
+`crowdvm-data` behind the image's partitions (the node already grew the disk), LUKS2
+(pbkdf2, 1000 iterations: the key is 64 random bytes) and ext4 without eager zeroing
+(`lazy_itable_init,lazy_journal_init`, mount `noinit_itable`: zeros become ciphertext
+and filled a fresh sandbox's first layer with ~1 GiB), then mounts an overlay root
+(image partition read-only below) with `/home` and `/var/lib/docker` bound to the
+ext4, drops `/` from fstab and pivots to systemd. Chains, forks, lazy reads and
+compaction need no node change. The key lives sealed in `sandboxes.data_key`, is copied
+into every snapshot row (`snapshots.data_key`, with `disk`), so a boot from a snapshot
+takes the key of the disk content; it is sent only on ticket redemption
+(`GuestWelcome.DataKey`). Encrypted chains are placed only on channel nodes; the
+snapshot file inspector refuses them (409). Two holes found in round 2 and closed: the
+channel session lived on the plaintext disk (a node user replayed it and got the env,
+now `/run` only), and after that a node could kill its VM and ask for a new ticket
+(reboots now get one only when the guest announced them on its channel, or for a
+server-side recover; otherwise the sandbox stops and the owner is told). QEMU runs
+channel guests with `-action reboot=shutdown`, and the node relaunches with the new
+ticket.
 
 ## 1. Summary
 

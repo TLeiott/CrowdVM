@@ -351,6 +351,15 @@ Design and threat model: `docs/design/secure-layer.md`.
   API). `VMSpec.Net = {deny: [0.0.0.0/0], noDns: true}` is the node-side kill switch.
 * Node blob downloads are scoped (`mayFetch`): granted chains (boots, inspectors),
   layers the node holds, chains of sandboxes placed on it.
+* The session lives in `/run/crowdvm/channel.json` only. Channel guests run with
+  `-action reboot=shutdown`; the node relaunches them with a ticket from `POST
+  /node/v1/sandboxes/{id}/reboot`, which the server gives only for a reboot the guest
+  announced (`POST /v1/rebooting` on its channel) or a recover it started.
+* Encrypted data partition (image v4): `crowdvm-guest preinit` (PID 1) redeems the
+  ticket, receives `GuestWelcome.DataKey`, opens LUKS2 `crowdvm-data` behind the image
+  partitions and pivots to an overlay root. Keys: `sandboxes.data_key`, copied into
+  `snapshots.data_key` (with `disk`); `ensureDiskKey` takes the parent snapshot's.
+  The node writes `GuestChannel.Addr = 10.0.2.2:<server port>` so the guest needs no DNS.
 
 ### Networking (LAN / Tailscale)
 

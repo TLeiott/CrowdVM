@@ -24,14 +24,26 @@ as software on ordinary PCs can:
 | runs commands in the sandbox, reads or writes its files, opens tunnels to it | **no.** The sandbox's API is served only on its channel to the server; the node may only check its health and pause or stop it |
 | sees what the sandbox does on the network | **no.** TCP and DNS go through the channel and leave from the server. The node sees one encrypted connection, its timing and volume |
 | reads the sandbox's memory | not with normal tools: no core dumps, no debugger access (Linux `ptrace` restrictions), the VM's control socket is held by the node. **Yes as root** |
-| reads the sandbox's disk and snapshots | **yes**: they are stored unencrypted on the node and the server (disk encryption comes next) |
+| reads the sandbox's disk and snapshots | **no** (images from v4 on): everything the sandbox writes lands on an encrypted partition (LUKS2, AES-XTS). Its key comes from the server over the channel at boot and never passes through the node. The node and the server's snapshot store hold only ciphertext and the public base image |
 | changes CrowdVM or the VM image to get in | **yes**: whoever has root on a machine controls the VMs on it |
 
-The last two rows are the limit. A node owner who wants in has to read the disk files
-or modify their CrowdVM installation, which is a deliberate act, not a `cat`. Only
-confidential-computing hardware (AMD SEV-SNP, Intel TDX) closes it; CrowdVM does not
-use it yet. When a node presents a sandbox's one-time boot ticket a second time, the
-sandbox's owner gets a notice ("Possible tampering on a node").
+The last row is the limit. A node owner who wants in has to modify their CrowdVM
+installation or read the running VM's memory as root, which is a deliberate act, not a
+`cat`. Only confidential-computing hardware (AMD SEV-SNP, Intel TDX) closes it;
+CrowdVM does not use it yet. What CrowdVM does is make the attempts visible:
+
+- Every boot of a sandbox has a one-time ticket, which the node passes to the VM. When
+  a ticket is presented a second time, the sandbox's owner gets a notice ("Possible
+  tampering on a node").
+- When a sandbox reboots, it tells the server first, and its node gets a new ticket. A
+  sandbox that goes down without that (a kernel panic, `sysrq`, or a node that kills it
+  to get a ticket of its own) stays down, and its owner gets a notice ("Stopped after an
+  unexpected restart"). `crowdvm resume` or `crowdvm recover` starts it again.
+
+Sandboxes from images before v4 (`ubuntu-24.04-crowdvm-v3` and older) keep an
+unencrypted disk. A snapshot of an encrypted sandbox can be resumed or forked only on
+nodes recent enough to fetch its key, and the server cannot list or download its files
+while it is stopped (`crowdvm files` on a stopped encrypted sandbox: resume it first).
 
 - Only put secrets into a sandbox when you trust the owners of the nodes it can land on.
 - Pin sensitive work to nodes you trust: `crowdvm new --node <name>` or
@@ -170,8 +182,9 @@ internet looks like it came from your network.
 - **Not stored:** the sandbox's configuration and secrets, and a token for its API. The
   config drive holds a boot stub with a one-time ticket that is useless once the VM
   booted.
-- **Stored:** the VM's disk and snapshot layers (not encrypted yet) and the last 256
-  KiB of its serial console. CrowdVM's processes write no core dumps, so a crashed VM
+- **Stored:** the VM's disk and snapshot layers, which hold the public base image and
+  the sandbox's writes as ciphertext (images v4 and later; older images write in the
+  clear), and the last 256 KiB of its serial console. CrowdVM's processes write no core dumps, so a crashed VM
   leaves none of its memory on your disk. Swap and hibernation can still write VM
   memory to disk; use encrypted swap if that matters to you.
 

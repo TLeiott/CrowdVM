@@ -35,7 +35,18 @@ rootfs/<profile>/            files copied verbatim into /
 
 ## Profiles
 
-**minimal** (`ubuntu-24.04-crowdvm-minimal-v3`, used for tests; same content as v2)
+**minimal** (`ubuntu-24.04-crowdvm-minimal-v4`, used for tests)
+
+* **Encrypted data partition (v4).** grub starts `init=/usr/local/lib/crowdvm/preinit`
+  as PID 1. The script mounts the config drive and runs `crowdvm-guest preinit` from
+  it. For a sandbox on a node with the guest channel, that fetches the disk key from
+  the server, creates (first boot) or opens a LUKS2 partition `crowdvm-data` behind the
+  image's partitions, and starts systemd on an overlay root: the image's partition
+  read-only below, the encrypted partition above, `/home` and `/var/lib/docker` on its
+  ext4 directly. Without a guest channel it is a plain boot, unless the disk is
+  already encrypted (then it powers off). Added for this: `cryptsetup-bin` and `fdisk`.
+  The kernel packages are held (`apt-mark hold`): preinit runs from the image layer,
+  so a kernel installed inside a sandbox could not load `dm_crypt` at the next boot.
 
 * User `user` with uid 1000, home `/home/user` and passwordless sudo, in the
   groups `adm sudo kvm systemd-journal`. The cloud image's `ubuntu` user is removed.
@@ -84,14 +95,16 @@ rootfs/<profile>/            files copied verbatim into /
   1.6 s. virtio-blk, virtio-scsi and ext4 are built into the kernel. If a
   boot without the initramfs fails (for example a root disk on AHCI or NVMe),
   Ubuntu's grub uses `panic=-1` and boots with the initramfs on the next try.
-  This was tested with an AHCI root disk. **A VM driver must not run qemu with
-  `-no-reboot`, or the fallback can't happen.** The qemu driver uses
-  virtio-blk and allows reboots.
+  This was tested with an AHCI root disk. A VM driver must let the guest boot again
+  after such a panic: the qemu driver runs channel guests with
+  `-action reboot=shutdown` and relaunches them on a guest reset (grub's fallback
+  state lives in `/boot/grub/grubenv`, so it survives the relaunch); other guests
+  reboot inside qemu.
 * Also installed: `growpart`/`resize2fs` (cloud-guest-utils, e2fsprogs),
   curl, gnupg, vim-tiny, nano, ufw.
 * apt lists are kept, so `sudo apt-get install -y X` works at once.
 
-**full** (`ubuntu-24.04-crowdvm-v3`): minimal plus `apt-get upgrade` and
+**full** (`ubuntu-24.04-crowdvm-v4`): minimal plus `apt-get upgrade` and
 Boat's toolset (docs: machines/tools). Everything is system-wide in
 `/usr/local` and `/opt`, as on Boat. The exceptions are Rust (rustup for
 `user`, as specified), plus nvm and Ruby, which `user` owns so that
