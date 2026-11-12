@@ -542,7 +542,7 @@ Flags:
 
 ```text
 Print a short rule for coding agents (Claude Code, Codex, Cursor, ...): when
-to use a sandbox instead of this computer, and the core commands. Append it to
+to add sandboxes to the compute of this computer, and the core commands. Append it to
 your project's AGENTS.md or CLAUDE.md:
 
   crowdvm agent-instructions >> AGENTS.md

@@ -1,6 +1,6 @@
 ---
 name: crowdvm
-description: Run work on a CrowdVM sandbox, a remote persistent Ubuntu VM with root, Docker and a desktop on the team's own machines, instead of on this computer. Use when a task needs isolation or a clean machine, Docker, more CPU or RAM than is free locally, a heavy build or test suite, a long-running job or server, untrusted or AI-generated code, several agents or variants in parallel, a browser or GUI, or a URL other people can open. Also use whenever the user mentions CrowdVM, the `crowdvm` CLI or a sandbox id (`bx_...`), and when you are running inside a CrowdVM sandbox (`CROWDVM_SANDBOX_ID` is set) and need to host a port, keep work across a stop, snapshot or stop the sandbox, or use its desktop. Not needed for quick edits and short commands that run fine locally.
+description: Add compute to this computer with CrowdVM sandboxes, remote persistent Ubuntu VMs with root, Docker and a desktop on the team's own machines. Use them in addition to local compute, not instead of it, unless the user says otherwise - keep running work here and put extra or parallel work on sandboxes (test shards, a second build, variants, other agents), and move work there entirely only when it needs Docker, root or a clean machine, runs untrusted or AI-generated code, must keep running after this session, or needs a browser, GUI or a URL other people can open. Use when local CPU or RAM is busy or short, a build or test suite can be split, or work can run in parallel. Also use whenever the user mentions CrowdVM, the `crowdvm` CLI or a sandbox id (`bx_...`), and when you are running inside a CrowdVM sandbox (`CROWDVM_SANDBOX_ID` is set) and need to host a port, keep work across a stop, snapshot or stop the sandbox, or use its desktop.
 ---
 
 # CrowdVM
@@ -15,18 +15,26 @@ If `echo "$CROWDVM_SANDBOX_ID"` prints an id, you are inside a sandbox. Go to
 
 ## When to use a sandbox
 
-Use one when the task:
+Sandboxes add compute to this machine; they do not replace it. By default keep running
+work locally as usual and use sandboxes on top, unless the user says to use only
+sandboxes or only this machine.
 
-- runs a heavy build or test suite, or needs more CPU or RAM than this machine has
-  free (sizes go up to 16 vCPU / 32 GB);
+Add sandboxes for extra capacity:
+
+- run independent work in parallel while this machine is busy: test shards, a second
+  build, variants, other agents (one sandbox each);
+- take on a heavy build or test suite when local CPU or RAM is short (sizes go up to
+  16 vCPU / 32 GB), while you keep working here.
+
+Move work to a sandbox entirely only when it:
+
 - needs Docker, root, system packages or a clean machine;
 - runs untrusted, generated or destructive code;
-- runs for a long time, or must keep running when this session ends;
-- splits into parallel pieces: one sandbox per agent, variant or test shard;
+- must keep running when this session ends;
 - needs a browser or desktop, or a URL that other people can open.
 
-Stay local for quick edits and short commands, and for work that needs files, devices
-or services only this machine or its LAN has. A sandbox reaches the internet, not your
+Keep quick edits and short commands local, and work that needs files, devices or
+services only this machine or its LAN has. A sandbox reaches the internet, not your
 LAN or localhost (`crowdvm forward --reverse` lends it one local port).
 
 ## Sign in

@@ -11,10 +11,12 @@ import (
 // for the rest. Keep it short; details belong in the skill.
 const agentGuide = `## Remote sandboxes (CrowdVM)
 
-Use a CrowdVM sandbox (a remote Ubuntu VM with root and Docker, up to 16 vCPU / 32 GB)
-instead of this computer when work needs Docker, root or a clean machine, runs untrusted
-or generated code, takes more than a few minutes or more CPU/RAM than is free here, or
-should run in parallel or keep running after this session. Keep quick edits and short
+Use CrowdVM sandboxes (remote Ubuntu VMs with root and Docker, up to 16 vCPU / 32 GB)
+in addition to this computer, not instead of it, unless the user says otherwise. Keep
+working locally as usual and add sandboxes for extra capacity: run independent work
+(test shards, builds, variants, other agents) on them in parallel while this machine
+is busy. Move work there entirely only when it needs Docker, root or a clean machine,
+runs untrusted or generated code, or must keep running after this session. Keep short
 commands local. Details: the ` + "`" + `crowdvm` + "`" + ` skill (` + "`" + `crowdvm skill install` + "`" + `) or
 ` + "`" + `crowdvm <command> --help` + "`" + `. Limits and credits: ` + "`" + `crowdvm limits` + "`" + `, never from memory.
 
@@ -35,7 +37,7 @@ func (a *App) agentInstructionsCmd() *cobra.Command {
 		Aliases: []string{"agents-md"},
 		Short:   "Print the AGENTS.md rule that tells a coding agent when and how to use crowdvm",
 		Long: `Print a short rule for coding agents (Claude Code, Codex, Cursor, ...): when
-to use a sandbox instead of this computer, and the core commands. Append it to
+to add sandboxes to the compute of this computer, and the core commands. Append it to
 your project's AGENTS.md or CLAUDE.md:
 
   crowdvm agent-instructions >> AGENTS.md
