@@ -106,6 +106,9 @@ func Preinit() error {
 // redeem fetches the config over the channel (retrying until it works) and
 // returns the disk key. The session stays in /run/crowdvm for the agent.
 func redeem(stub proto.GuestConfig, mode string, logger *log.Logger) ([]byte, error) {
+	if err := fetchTicket(context.Background(), &stub); err != nil {
+		return nil, err
+	}
 	c := &Channel{stub: stub, statePath: filepath.Join(runState, "channel.json"), log: logger, disk: mode}
 	backoff := 500 * time.Millisecond
 	for {

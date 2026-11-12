@@ -70,6 +70,9 @@ func ConnectChannel(ctx context.Context, stub proto.GuestConfig, stateDir string
 	if logger == nil {
 		logger = log.New(os.Stderr, "crowdvm-guest: ", log.LstdFlags)
 	}
+	if err := fetchTicket(ctx, &stub); err != nil {
+		return proto.GuestConfig{}, nil, err
+	}
 	c := &Channel{stub: stub, statePath: filepath.Join(stateDir, "channel.json"), log: logger}
 	if b, err := os.ReadFile(c.statePath); err == nil {
 		var st channelState
@@ -91,6 +94,40 @@ func ConnectChannel(ctx context.Context, stub proto.GuestConfig, stateDir string
 		case <-time.After(backoff):
 		}
 		backoff = min(backoff*2, 10*time.Second)
+	}
+}
+
+// fetchTicket reads the boot ticket from the node's network service when the
+// config drive does not carry it (GuestChannel.TicketFrom), retrying until
+// ctx ends.
+func fetchTicket(ctx context.Context, stub *proto.GuestConfig) error {
+	if stub.Channel == nil || stub.Channel.Ticket != "" || stub.Channel.TicketFrom == "" {
+		return nil
+	}
+	ch := *stub.Channel
+	for {
+		c, err := (&net.Dialer{Timeout: 3 * time.Second, Control: markChannel}).DialContext(ctx, "tcp", ch.TicketFrom)
+		if err == nil {
+			_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+			var v struct {
+				Ticket string `json:"ticket"`
+			}
+			err = json.NewDecoder(c).Decode(&v)
+			c.Close()
+			if err == nil && v.Ticket != "" {
+				ch.Ticket = v.Ticket
+				stub.Channel = &ch
+				return nil
+			}
+			if err == nil {
+				err = errors.New("the node holds no ticket for this boot")
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("boot ticket from %s: %v", ch.TicketFrom, err)
+		case <-time.After(time.Second):
+		}
 	}
 }
 

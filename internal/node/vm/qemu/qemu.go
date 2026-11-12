@@ -159,6 +159,7 @@ type machine struct {
 	// started (-1 = unknown), for DiskChanged.
 	snapWr int64
 	resets []time.Time // guest reboots of a channel guest, for the loop breaker
+	ticket string      // the current boot's ticket: in RAM only, served on the VM's network
 }
 
 // run is one qemu process incarnation.
@@ -352,6 +353,7 @@ func (d *Driver) create(m *machine, spec proto.VMSpec) error {
 	rel := "disks/" + m.id + "-" + randHex(4) + ".qcow2"
 	d.mu.Lock()
 	m.rec = vmRecord{Spec: spec, ImageID: base.imageID, Disk: rel, Parent: spec.ParentID}
+	m.rec.Spec.Guest = spec.Guest.WithoutTicket() // the ticket stays in RAM (launch)
 	d.mu.Unlock()
 	if err := d.store.run("create", "-q", "-f", "qcow2", "-u", "-b", base.path, "-F", base.format,
 		d.store.abs(rel), strconv.FormatInt(size, 10)); err != nil {
@@ -845,6 +847,7 @@ func (d *Driver) Rename(ctx context.Context, fromID string, spec proto.VMSpec) e
 	m.id = to
 	m.st.SandboxID = to
 	m.rec.Spec = spec
+	m.rec.Spec.Guest = spec.Guest.WithoutTicket()
 	m.rec.QMPAddr, m.rec.NetSock = move(m.rec.QMPAddr), move(m.rec.NetSock)
 	state, msg := m.st.State, m.st.Error
 	d.mu.Unlock()
@@ -994,6 +997,17 @@ func (d *Driver) launch(m *machine, cfg proto.GuestConfig) error {
 			ch.Addr = net.JoinHostPort(netstack.Gateway.String(), port)
 			cfg.Channel = &ch
 		}
+	}
+	if cfg.Channel != nil && cfg.Channel.Ticket != "" && d.opt.Net == NetNetstack {
+		// The ticket stays in this process: the guest reads it from its
+		// network (TicketPort), never from a file the node's user can read.
+		d.mu.Lock()
+		m.ticket = cfg.Channel.Ticket
+		d.mu.Unlock()
+		cfg = cfg.WithoutTicket()
+		ch := *cfg.Channel
+		ch.TicketFrom = net.JoinHostPort(netstack.Gateway.String(), strconv.Itoa(proto.TicketPort))
+		cfg.Channel = &ch
 	}
 	cfgJSON, err := json.Marshal(cfg)
 	if err != nil {
@@ -1177,7 +1191,18 @@ func (d *Driver) attachNet(ctx context.Context, id string, pol *proto.NetPolicy,
 			fwd[uint16(p)] = d.opt.ServerAddr // 10.0.2.2:<server port> -> server
 		}
 	}
-	n, err := netstack.New(netstack.Config{Rules: d.rules, Sandbox: sb, GatewayForwards: fwd,
+	svc := map[uint16]func(net.Conn){proto.TicketPort: func(c net.Conn) {
+		d.mu.Lock()
+		var t string
+		if m := d.vms[id]; m != nil {
+			t = m.ticket
+		}
+		d.mu.Unlock()
+		b, _ := json.Marshal(map[string]string{"ticket": t})
+		_ = c.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		_, _ = c.Write(append(b, '\n'))
+	}}
+	n, err := netstack.New(netstack.Config{Rules: d.rules, Sandbox: sb, GatewayForwards: fwd, GatewayServices: svc,
 		Logf: func(f string, a ...any) { d.opt.Logf("qemu: "+id+": "+f, a...) }})
 	if err != nil {
 		return nil, err
@@ -1443,7 +1468,7 @@ func (d *Driver) reticket(ctx context.Context, m *machine, cfg *proto.GuestConfi
 	}
 	cfg.Channel = ch
 	d.mu.Lock()
-	m.rec.Spec.Guest.Channel = ch
+	m.rec.Spec.Guest = cfg.WithoutTicket()
 	d.mu.Unlock()
 	d.saveRec(m)
 	return nil

@@ -49,6 +49,7 @@ type Sandbox struct {
 	LastSnapshotStatus                           string
 	LastRecoverAt, LastRebootAt                  *time.Time
 	LastRebootReason, StopID, Subdomain          string
+	Disk                                         string // "luks" | "plain" | "" (guest's report at boot)
 	Direct                                       map[string]string
 	Extra                                        map[string]any // feature data (JSON column "extra")
 	DeletedAt                                    *time.Time
@@ -80,7 +81,7 @@ COALESCE(setup_status,''),COALESCE(setup_error,''),COALESCE(visibility,''),priva
 snapshots_enabled,monitoring,COALESCE(environment,''),COALESCE(environment_id,''),environment_version,COALESCE(created_by_key,''),guest_token,
 source_kind,source_id,boot_kind,agent_state,health,COALESCE(health_reason,''),degraded_since,hydrated,hydrated_at,
 last_snapshot_at,snapshot_completed_at,COALESCE(last_snapshot_status,''),last_recover_at,last_reboot_at,COALESCE(last_reboot_reason,''),
-COALESCE(stop_id,''),COALESCE(subdomain,''),direct,extra,deleted_at`
+COALESCE(stop_id,''),COALESCE(subdomain,''),direct,extra,deleted_at,disk`
 
 func scanSandbox(sc interface{ Scan(...any) error }) (*Sandbox, error) {
 	sb := &Sandbox{}
@@ -94,7 +95,7 @@ func scanSandbox(sc interface{ Scan(...any) error }) (*Sandbox, error) {
 		&sb.SnapshotsEnabled, &sb.Monitoring, &sb.Environment, &sb.EnvironmentID, &envVer, &sb.CreatedByKey, &sb.GuestToken,
 		&sb.SourceKind, &sb.SourceID, &sb.BootKind, &sb.AgentState, &sb.Health, &sb.HealthReason, &degraded, &sb.Hydrated, &hydratedAt,
 		&lastSnap, &snapDone, &sb.LastSnapshotStatus, &lastRec, &lastBoot, &sb.LastRebootReason,
-		&sb.StopID, &sb.Subdomain, &direct, &extra, &deleted)
+		&sb.StopID, &sb.Subdomain, &direct, &extra, &deleted, &sb.Disk)
 	if err != nil {
 		return nil, err
 	}
@@ -340,7 +341,7 @@ func (s *Server) SandboxJSON(sb *Sandbox, p *Principal) map[string]any {
 		"environment": nz(sb.Environment), "environmentVersion": envVer, "stop": stop,
 		// CrowdVM extensions
 		"nodeId": nz(sb.NodeID), "node": nz(sb.NodeID), "imageId": nz(sb.ImageID), "placement": sb.Placement, "agentState": nz(sb.AgentState),
-		"noEnv": sb.NoEnv, "nested": sb.Nested, "storage": map[string]any{"diskGB": spec.DiskGiB},
+		"noEnv": sb.NoEnv, "nested": sb.Nested, "storage": map[string]any{"diskGB": spec.DiskGiB, "encrypted": sb.Disk == "luks"},
 	}
 	if v, ok := sb.Extra["snapshotDataExpiredAt"].(float64); ok && v > 0 {
 		m["dataExpiredAt"] = tsMs(int64(v))

@@ -29,7 +29,53 @@ import (
 // maxEgressFlows caps one sandbox's open egress connections.
 const maxEgressFlows = 1024
 
-var cgnat = netip.MustParsePrefix("100.64.0.0/10")
+var (
+	cgnat      = netip.MustParsePrefix("100.64.0.0/10")
+	teredo     = netip.MustParsePrefix("2001::/32")
+	nat64      = netip.MustParsePrefix("64:ff9b::/96")
+	nat64Local = netip.MustParsePrefix("64:ff9b:1::/48")
+	sixToFour  = netip.MustParsePrefix("2002::/16")
+	v4compat   = netip.MustParsePrefix("::/96")
+)
+
+// embeddedIPv4: the IPv4 address an IPv6 address stands for.
+func embeddedIPv4(a netip.Addr) (netip.Addr, bool) {
+	b := a.As16()
+	switch {
+	case nat64.Contains(a), v4compat.Contains(a):
+		return netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]}), true
+	case sixToFour.Contains(a):
+		return netip.AddrFrom4([4]byte{b[2], b[3], b[4], b[5]}), true
+	}
+	return netip.Addr{}, false
+}
+
+var localNetCache struct {
+	sync.Mutex
+	at   time.Time
+	nets []netip.Prefix
+}
+
+// localNets: the networks on the server's interfaces (refreshed each minute).
+func localNets() []netip.Prefix {
+	c := &localNetCache
+	c.Lock()
+	defer c.Unlock()
+	if time.Since(c.at) < time.Minute {
+		return c.nets
+	}
+	c.at, c.nets = time.Now(), nil
+	addrs, _ := net.InterfaceAddrs()
+	for _, ad := range addrs {
+		if n, ok := ad.(*net.IPNet); ok {
+			if a, ok := netip.AddrFromSlice(n.IP); ok {
+				ones, _ := n.Mask.Size()
+				c.nets = append(c.nets, netip.PrefixFrom(a.Unmap(), ones).Masked())
+			}
+		}
+	}
+	return c.nets
+}
 
 // egressBlocked says why a sandbox may not connect to ap ("" = allowed).
 func (s *Server) egressBlocked(ap netip.AddrPort) string {
@@ -48,6 +94,24 @@ func (s *Server) egressBlocked(ap netip.AddrPort) string {
 		}
 		if p, err := netip.ParsePrefix(e); err == nil && p.Contains(a) {
 			return ""
+		}
+	}
+	if a.Is6() {
+		if embedded, ok := embeddedIPv4(a); ok {
+			// NAT64, 6to4 or IPv4-compatible: judge the IPv4 inside.
+			if why := s.egressBlocked(netip.AddrPortFrom(embedded, ap.Port())); why != "" {
+				return why + " (inside an IPv6 address)"
+			}
+		}
+		if teredo.Contains(a) || nat64Local.Contains(a) {
+			return "a tunnelled IPv4 address"
+		}
+	}
+	for _, p := range localNets() {
+		if p.Contains(a) {
+			// The server's own networks: its LAN's global IPv6 /64 and its
+			// own addresses are as private as 192.168.x.
+			return "a network of the server (" + p.String() + ")"
 		}
 	}
 	if ip := net.IP(a.AsSlice()); blockedTarget(ip) != "" {

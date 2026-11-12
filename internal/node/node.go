@@ -323,7 +323,9 @@ func (n *Node) saveSpecsLocked() {
 	m := make(map[string]proto.VMSpec, len(n.vms))
 	for id, r := range n.vms {
 		if r.spec.SandboxID != "" {
-			m[id] = r.spec
+			sp := r.spec
+			sp.Guest = sp.Guest.WithoutTicket() // the boot ticket never goes to disk
+			m[id] = sp
 		}
 	}
 	b, _ := json.Marshal(m)

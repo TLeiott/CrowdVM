@@ -64,6 +64,25 @@ type GuestChannel struct {
 	// gateway alias of the server (10.0.2.2:<port>): no DNS before the
 	// channel is up. "" = the URL's host. TLS and Host still use the URL.
 	Addr string `json:"addr,omitempty"`
+	// TicketFrom: the ticket is not on the config drive; the guest reads it
+	// from this address, a service of its node's network that keeps it in
+	// RAM (a file would let the node's user redeem it first).
+	TicketFrom string `json:"ticketFrom,omitempty"`
+}
+
+// TicketPort is the gateway port (10.0.2.2) where a node serves its VM's
+// boot ticket.
+const TicketPort = 7072
+
+// WithoutTicket returns g with the boot ticket removed (for anything written
+// to the node's disk).
+func (g GuestConfig) WithoutTicket() GuestConfig {
+	if g.Channel != nil && g.Channel.Ticket != "" {
+		ch := *g.Channel
+		ch.Ticket = ""
+		g.Channel = &ch
+	}
+	return g
 }
 
 // GuestHello is the guest's first line on the channel (inside TLS).
