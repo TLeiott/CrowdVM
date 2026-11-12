@@ -212,6 +212,10 @@ func (s *Server) pickNode(req schedReq) (*Node, error) {
 			reasons = append(reasons, n.Name+": "+why)
 			continue
 		}
+		if nodeOutdated(n) { // like a pause: it can come back once updated
+			reasons = append(reasons, n.Name+": crowdvm-node misses a required update")
+			continue
+		}
 		if encrypted && !n.Info.GuestChannel {
 			reasons = append(reasons, n.Name+": cannot unlock an encrypted disk (crowdvm-node too old)")
 			continue

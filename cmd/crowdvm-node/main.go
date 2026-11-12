@@ -26,6 +26,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/crowdvm/crowdvm/internal/compat"
 	"github.com/crowdvm/crowdvm/internal/node"
 	"github.com/crowdvm/crowdvm/internal/node/bench"
 	"github.com/crowdvm/crowdvm/internal/node/service"
@@ -508,6 +509,9 @@ func printStatus(w io.Writer, s node.Status, running bool, ui string) {
 	if running {
 		fmt.Fprintf(w, "UI        %s\n", ui)
 	}
+	if l := updateLine(s); l != "" {
+		fmt.Fprintf(w, "Update    %s\n", l)
+	}
 	fmt.Fprintf(w, "Accepting %s\n", acceptLine(s))
 	if s.Schedule != "" {
 		fmt.Fprintf(w, "Schedule  %s\n", s.Schedule)
@@ -541,10 +545,28 @@ func printStatus(w io.Writer, s node.Status, running bool, ui string) {
 	}
 }
 
+// updateLine says whether this build is current ("" when it is, or the
+// server has not said yet).
+func updateLine(s node.Status) string {
+	if s.ServerOutdated {
+		return "the server is older than this node supports: ask its operator to upgrade it"
+	}
+	u := s.Update
+	if u == nil || u.State == compat.StateCurrent {
+		return ""
+	}
+	if u.State == compat.StateAvailable {
+		return fmt.Sprintf("%s is available (run %s)", u.Latest, u.Command)
+	}
+	return strings.ToUpper(u.State) + ": " + u.Message
+}
+
 // acceptLine says whether the node takes new sandboxes, and why not.
 func acceptLine(s node.Status) string {
 	clock := func(t time.Time) string { return t.Local().Format("Mon 15:04") }
 	switch {
+	case s.Update != nil && s.Update.State == compat.StateOutdated:
+		return "NO: crowdvm-node misses a required update (see Update)"
 	case s.Evacuation != nil:
 		return fmt.Sprintf("EVACUATING: sandboxes still here at %s are stopped and resumed on other nodes", clock(s.Evacuation.Deadline))
 	case s.Drained:

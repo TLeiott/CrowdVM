@@ -54,14 +54,29 @@ func Accept(w http.ResponseWriter, r *http.Request) (*yamux.Session, error) {
 // Dial dials the websocket URL (ws:// or wss://) with headers and returns the
 // yamux client session (node side).
 func Dial(ctx context.Context, url string, header http.Header) (*yamux.Session, error) {
-	c, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: header})
+	c, resp, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: header})
 	if err != nil {
+		if resp != nil && resp.StatusCode != http.StatusSwitchingProtocols && resp.Body != nil {
+			b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024)) // all the library keeps
+			return nil, &RefusedError{Status: resp.StatusCode, Body: b, err: err}
+		}
 		return nil, err
 	}
 	c.SetReadLimit(-1)
 	nc := websocket.NetConn(context.Background(), c, websocket.MessageBinary)
 	return yamux.Client(nc, Config())
 }
+
+// RefusedError: the server answered the upgrade with Status (e.g. 426 for
+// a node too old for it) and Body (the first 1 KiB).
+type RefusedError struct {
+	Status int
+	Body   []byte
+	err    error
+}
+
+func (e *RefusedError) Error() string { return e.err.Error() }
+func (e *RefusedError) Unwrap() error { return e.err }
 
 // Serve serves h on every stream the peer opens, until the session closes.
 func Serve(s *yamux.Session, h http.Handler) error { return ServeLimit(s, h, 0) }

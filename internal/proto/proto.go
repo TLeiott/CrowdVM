@@ -241,9 +241,12 @@ type RegisterResponse struct {
 }
 
 type NodeInfo struct {
-	NodeID   string            `json:"nodeId,omitempty"`
-	Name     string            `json:"name"`
-	Version  string            `json:"version"`
+	NodeID  string `json:"nodeId,omitempty"`
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	// Gen: the node's compatibility generation (internal/compat.NodeGen);
+	// 0 from nodes older than generations.
+	Gen      int               `json:"gen,omitempty"`
 	OS       string            `json:"os"`     // runtime.GOOS
 	Arch     string            `json:"arch"`   // runtime.GOARCH
 	Driver   string            `json:"driver"` // "qemu" | "process" (tests only)
@@ -607,6 +610,25 @@ type HeartbeatResponse struct {
 	// GuestChannel: the server boots this node's sandboxes with the guest
 	// channel, which never takes a warm pool VM (bugs-r15-opus 5).
 	GuestChannel bool `json:"guestChannel,omitempty"`
+	// Update: whether this node build is current, see NodeUpdate.
+	Update *NodeUpdate `json:"update,omitempty"`
+	// ServerGen: the server's generation (internal/compat.ServerGen); 0 from
+	// servers older than generations.
+	ServerGen int `json:"serverGen,omitempty"`
+}
+
+// NodeUpdate tells a node (and the dashboard) whether its build is current.
+// State is one of internal/compat's State* values.
+type NodeUpdate struct {
+	State string `json:"state"`
+	// Version and Latest: the node's release and the newest the server
+	// offers ("" when it offers no downloads).
+	Version string `json:"version,omitempty"`
+	Latest  string `json:"latest,omitempty"`
+	// Deadline (outdated): when sandboxes still on the node move elsewhere.
+	Deadline *time.Time `json:"deadline,omitempty"`
+	Command  string     `json:"command,omitempty"` // how to update
+	Message  string     `json:"message,omitempty"`
 }
 
 // Evacuation of a node: sandboxes still on it at Deadline are stopped (their

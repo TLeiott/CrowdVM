@@ -23,6 +23,7 @@ import (
 	"github.com/hashicorp/yamux"
 
 	"github.com/crowdvm/crowdvm/internal/api"
+	"github.com/crowdvm/crowdvm/internal/compat"
 	"github.com/crowdvm/crowdvm/internal/mux"
 	"github.com/crowdvm/crowdvm/internal/proto"
 	"github.com/crowdvm/crowdvm/internal/server/store"
@@ -487,6 +488,9 @@ func (s *Server) handleNodeConnect(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, err.(*api.Error))
 		return
 	}
+	if s.refuseIncompatibleNode(w, r, n) {
+		return
+	}
 	// A drained (disabled) node still connects: its running sandboxes keep
 	// running, only new ones go elsewhere (bugs-r7-sonnet 6). Removing a
 	// node is how an administrator shuts it out.
@@ -615,6 +619,7 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		name := s.reportedNodeName(c.ID, info.Name)
 		_, _ = s.DB.Exec(`UPDATE nodes SET usage=?, info=?, name=CASE WHEN ?<>'' THEN ? ELSE name END, last_seen_at=? WHERE id=?`, mustJSON(hb.Usage), mustJSON(info), name, name, now, c.ID)
 		nodeNameMu.Unlock()
+		s.syncOutdated(c.ID)
 	} else {
 		_, _ = s.DB.Exec(`UPDATE nodes SET usage=?, last_seen_at=? WHERE id=?`, mustJSON(hb.Usage), now, c.ID)
 	}
@@ -625,8 +630,10 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	_ = s.DB.QueryRow(`SELECT disabled FROM nodes WHERE id=?`, c.ID).Scan(&resp.Drained)
 	resp.EarnedCredits, resp.Earned24h = s.nodeEarned(c.ID)
 	resp.Evacuation = s.evacuation(c.ID)
+	resp.ServerGen = compat.ServerGen
 	if n, err := s.NodeByID(c.ID); err == nil {
 		resp.GuestChannel = s.channelNode(n)
+		resp.Update = s.nodeUpdate(n)
 	}
 	switch {
 	case s.Cfg.SnapshotInterval < 0:
@@ -938,6 +945,7 @@ func (s *Server) afterNodeConnect(ctx context.Context, c *NodeConn) {
 		name := s.reportedNodeName(c.ID, info.Name)
 		_, _ = s.DB.Exec(`UPDATE nodes SET info=?, name=CASE WHEN ?<>'' THEN ? ELSE name END WHERE id=?`, mustJSON(info), name, name, c.ID)
 		nodeNameMu.Unlock()
+		s.syncOutdated(c.ID)
 	}
 	cancel()
 	s.reconcileNodeSnapshots(ctx, c)                             // copies of deleted data it kept
@@ -1042,12 +1050,13 @@ func (s *Server) nodeJSON(n *Node, detail bool) map[string]any {
 		"directHost": nz(n.Info.DirectHost), "images": n.Info.Images,
 		"createdAt": ts(n.CreatedAt), "lastSeenAt": nil, "connectedAt": nil, "sandboxes": reserved.VMs,
 		"info": n.Info, "owner": nil, "paused": n.Info.Paused, "pauseReason": nil, "evacuation": nil,
+		"gen": n.Info.Gen, "update": s.nodeUpdate(n),
 	}
 	if n.Info.Paused {
 		m["pauseReason"] = nz(n.Info.PauseReason)
 	}
 	if ev := s.evacuation(n.ID); ev != nil {
-		m["evacuation"] = map[string]any{"startedAt": ts(ev.StartedAt), "deadline": ts(ev.Deadline)}
+		m["evacuation"] = map[string]any{"startedAt": ts(ev.StartedAt), "deadline": ts(ev.Deadline), "reason": s.evacuationReason(n.ID)}
 	}
 	if n.OwnerID != "" {
 		if u, err := s.UserByID(n.OwnerID); err == nil {

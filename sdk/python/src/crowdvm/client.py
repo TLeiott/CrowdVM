@@ -11,6 +11,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import warnings
 from typing import Any, Dict, Iterator, Mapping, Optional, Union
 
 from ._transport import opener
@@ -22,6 +23,21 @@ from .errors import APIConnectionError, ApiError, make_api_error
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8420/api/v1"
 VERSION = "0.1.0"
+# API generation this SDK speaks (internal/compat.APIGen on the server; a test keeps them equal).
+API_GEN = 1
+_warned_outdated = False
+
+
+def _note_client_status(headers: Any) -> None:
+    """Warn once per process when the server marks this SDK outdated (X-Crowdvm-Client-Status)."""
+    global _warned_outdated
+    st = headers.get("X-Crowdvm-Client-Status") if headers is not None else None
+    if not st or _warned_outdated:
+        return
+    _warned_outdated = True
+    latest = next((p.strip()[7:] for p in st.split(";") if p.strip().startswith("latest=")), "")
+    warnings.warn(f"crowdvm SDK {VERSION} misses an update the server requires"
+                  + (f" (latest: {latest})" if latest else "") + "; upgrade the crowdvm package.", stacklevel=3)
 _NO_RETRY_429 = {"limit_reached", "member_limit_reached", "trial_compute_limit_reached"}
 
 
@@ -108,7 +124,7 @@ class CrowdVM(_Operations):
         qs = _enc_query(query or {})
         if qs:
             url += "?" + qs
-        h = {"Accept": "application/json", "User-Agent": self.user_agent}
+        h = {"Accept": "application/json", "User-Agent": self.user_agent, "X-Crowdvm-Gen": str(API_GEN)}
         if self.api_key:
             h["Authorization"] = f"Bearer {self.api_key}"
         h.update(self.headers)
@@ -124,7 +140,9 @@ class CrowdVM(_Operations):
     def _open(self, req: urllib.request.Request, timeout: Optional[float]) -> Any:
         """Send once.  Raises ApiError for non-2xx and APIConnectionError for network failures."""
         try:
-            return opener.open(req, timeout=timeout)
+            resp = opener.open(req, timeout=timeout)
+            _note_client_status(resp.headers)
+            return resp
         except urllib.error.HTTPError as e:
             raw = e.read().decode("utf-8", "replace")
             try:

@@ -137,6 +137,9 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 	}
+	if strings.HasPrefix(req.URL.Path, "/api/") && r.s.clientGate(sw, req) {
+		return
+	}
 	if limited(req.URL.Path) {
 		// bugs-r11-opus 9: a request that authenticates counts against its
 		// user, not its IP (all guests of a node share the node's IP). One

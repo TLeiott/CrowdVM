@@ -30,7 +30,9 @@ CREATE TABLE node_evacuations (
   started_at INTEGER NOT NULL,
   deadline INTEGER NOT NULL
 );`}, store.Migration{Version: 2, SQL: `
-CREATE INDEX IF NOT EXISTS credit_ledger_node ON credit_ledger(node_id, kind, created_at);`})
+CREATE INDEX IF NOT EXISTS credit_ledger_node ON credit_ledger(node_id, kind, created_at);`},
+		// reason: 'owner' (its owner or an admin) or 'outdated' (compat.go).
+		store.Migration{Version: 3, SQL: `ALTER TABLE node_evacuations ADD COLUMN reason TEXT NOT NULL DEFAULT 'owner';`})
 }
 
 // MaxEvacuationGrace caps the grace period of an evacuation.
@@ -105,7 +107,7 @@ func (s *Server) handleEvacuateNode(c *Ctx) error {
 	prev := s.evacuation(n.ID)
 	_, _ = s.DB.Exec(`UPDATE nodes SET disabled=1 WHERE id=?`, n.ID)
 	if _, err := s.DB.Exec(`INSERT INTO node_evacuations(node_id,started_at,deadline) VALUES(?,?,?)
-		ON CONFLICT(node_id) DO UPDATE SET deadline=excluded.deadline`, n.ID, now, deadline); err != nil {
+		ON CONFLICT(node_id) DO UPDATE SET deadline=excluded.deadline, reason='owner'`, n.ID, now, deadline); err != nil {
 		return err
 	}
 	at := clockUTC(store.Time(deadline))
@@ -142,6 +144,9 @@ func (s *Server) handleCancelEvacuation(c *Ctx) error {
 	ev := s.evacuation(n.ID)
 	if ev == nil {
 		return Err(404, "not_evacuating", "This node is not being evacuated.")
+	}
+	if s.evacuationReason(n.ID) == "outdated" {
+		return Err(409, "node_outdated", "This node misses a required update; the evacuation ends by itself once it is updated (`"+NodeUpdateCommand+"` on the machine).")
 	}
 	res, _ := s.DB.Exec(`DELETE FROM node_evacuations WHERE node_id=? AND deadline>?`, n.ID, store.Now())
 	if k, _ := res.RowsAffected(); k == 0 {
@@ -235,7 +240,9 @@ func (s *Server) evacuateStep(nodeID string) {
 		for _, sb := range s.failedEvacMoves(nodeID) {
 			s.evacuationResume(sb, nodeID)
 		}
-		_, _ = s.DB.Exec(`DELETE FROM node_evacuations WHERE node_id=?`, nodeID)
+		// An outdated node's evacuation lasts until it is updated
+		// (syncOutdated ends it): it keeps the deadline for what lands there.
+		_, _ = s.DB.Exec(`DELETE FROM node_evacuations WHERE node_id=? AND reason<>'outdated'`, nodeID)
 		return
 	}
 	if time.Now().Before(ev.Deadline) {

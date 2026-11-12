@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,6 +26,7 @@ import (
 
 	"github.com/hashicorp/yamux"
 
+	"github.com/crowdvm/crowdvm/internal/compat"
 	"github.com/crowdvm/crowdvm/internal/mux"
 	"github.com/crowdvm/crowdvm/internal/node/bench"
 	"github.com/crowdvm/crowdvm/internal/node/vm"
@@ -105,6 +107,8 @@ type Node struct {
 	// and a running evacuation.
 	earned, earned24h float64
 	evacuation        *proto.Evacuation
+	update            *proto.NodeUpdate // from the server: is this build current
+	serverGen         int
 
 	// Local control (ui.go): settings saved but only applied on restart,
 	// and how to restart the daemon (nil: nothing would bring it back).
@@ -248,7 +252,7 @@ func (n *Node) Info() proto.NodeInfo {
 	vg, _ := n.drv.(interface{ VirGL() bool })
 	ps := c.EffectivePause(time.Now())
 	return proto.NodeInfo{
-		NodeID: c.NodeID, Name: c.NodeName(), Version: Version,
+		NodeID: c.NodeID, Name: c.NodeName(), Version: Version, Gen: compat.NodeGen,
 		OS: runtime.GOOS, Arch: runtime.GOARCH, Driver: n.drv.Name(),
 		Labels: c.Labels, Bench: b, Capacity: cp,
 		DirectHost: c.DirectHost, Images: imgs,
@@ -385,6 +389,13 @@ func (n *Node) connectLoop(ctx context.Context) {
 		n.connState.Attempts++
 		n.mu.Unlock()
 		if err != nil {
+			if u := refusedUpdate(err); u != nil { // too old for this server
+				n.mu.Lock()
+				n.update = u
+				n.mu.Unlock()
+				err = errors.New(u.Message)
+				backoff = ReconnectMax
+			}
 			n.setConnErr(err)
 			n.log.Warn("connect failed", "server", c.Server, "err", err, "retry", backoff)
 			if !sleepCtx(ctx, jitter(backoff)) {
@@ -412,9 +423,32 @@ func (n *Node) dial(ctx context.Context) (*yamux.Session, error) {
 	hdr := http.Header{}
 	hdr.Set("Authorization", "Bearer "+c.NodeToken)
 	hdr.Set("X-Crowdvm-Node-Version", Version)
+	hdr.Set(compat.Header, strconv.Itoa(compat.NodeGen))
 	dctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	return mux.Dial(dctx, connectURL(c.Server), hdr)
+}
+
+// refusedUpdate turns the server's 426 node_outdated answer to the
+// connection into an incompatible NodeUpdate (nil for other errors).
+func refusedUpdate(err error) *proto.NodeUpdate {
+	var re *mux.RefusedError
+	if !errors.As(err, &re) || re.Status != http.StatusUpgradeRequired {
+		return nil
+	}
+	var body struct {
+		Error struct {
+			Message string `json:"message"`
+			Details struct {
+				Latest  string `json:"latest"`
+				Command string `json:"command"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(re.Body, &body)
+	return &proto.NodeUpdate{State: compat.StateIncompatible, Version: Version, Latest: body.Error.Details.Latest,
+		Command: firstNonEmpty(body.Error.Details.Command, "crowdvm-node update"),
+		Message: firstNonEmpty(body.Error.Message, "This crowdvm-node is too old for its server. Run `crowdvm-node update`.")}
 }
 
 // ErrNotJoined is returned when the config has no server/node token.
@@ -561,6 +595,7 @@ func (n *Node) applyServerSettings(hr proto.HeartbeatResponse) {
 	if hr.GuestChannel {
 		n.clearWarmShapeLocked() // bugs-r15-opus 5: a saved shape from before would boot a VM no create takes
 	}
+	n.update, n.serverGen = hr.Update, hr.ServerGen
 	n.mu.Unlock()
 	switch {
 	case hr.SnapshotIntervalSec > 0:
@@ -823,4 +858,13 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 
 func jitter(d time.Duration) time.Duration {
 	return d/2 + time.Duration(rand.Int64N(int64(d/2)+1))
+}
+
+func firstNonEmpty(v ...string) string {
+	for _, s := range v {
+		if s != "" {
+			return s
+		}
+	}
+	return ""
 }
