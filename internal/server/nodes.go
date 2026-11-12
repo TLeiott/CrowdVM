@@ -496,6 +496,7 @@ func (s *Server) buildNodeMux() http.Handler {
 	m.HandleFunc("PUT /node/v1/blobs/{kind}/{id}", s.handleBlobPut)
 	m.HandleFunc("GET /node/v1/snapshots/{id}", s.handleSnapshotMeta)
 	m.HandleFunc("POST /node/v1/snapshots", s.handleSnapshotTaken)
+	m.HandleFunc("POST /node/v1/sandboxes/{id}/reboot", s.handleGuestReboot)
 	m.HandleFunc("GET /node/v1/images", s.handleNodeImages)
 	m.HandleFunc("GET /node/v1/bench/download", s.handleBenchDownload)
 	m.HandleFunc("POST /node/v1/bench/upload", s.handleBenchUpload)

@@ -149,10 +149,40 @@ func New(cfg *Config, drv vm.Driver, log *slog.Logger) *Node {
 			}
 		}()
 	}
+	if rt, ok := drv.(vm.Reticketer); ok {
+		rt.SetReticket(n.reticket)
+	}
 	if b, err := LoadBenchmark(cfg.DataDir); err == nil {
 		n.bench = b
 	}
 	return n
+}
+
+// reticket asks the server for a new boot ticket for a channel guest that
+// rebooted. The server answers 409 until the old boot's channel has closed.
+func (n *Node) reticket(ctx context.Context, id string) (*proto.GuestChannel, error) {
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	for {
+		resp, err := n.serverDo(ctx, "POST", "/node/v1/sandboxes/"+id+"/reboot", nil, nil)
+		if err == nil {
+			var ch proto.GuestChannel
+			err = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&ch)
+			resp.Body.Close()
+			if err == nil && ch.Ticket != "" {
+				return &ch, nil
+			}
+			return nil, fmt.Errorf("server: bad ticket answer: %v", err)
+		}
+		if !isStatus(err, 409) {
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("the previous boot's channel did not close: %w", err)
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
 }
 
 // LoadBenchmark reads <dataDir>/benchmark.json.

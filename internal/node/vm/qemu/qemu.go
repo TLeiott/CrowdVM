@@ -25,6 +25,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -107,6 +108,7 @@ type Driver struct {
 	vms     map[string]*machine
 	changed chan struct{} // closed and replaced on every state change
 	notify  func(proto.VMStatus)
+	ticket  func(ctx context.Context, id string) (*proto.GuestChannel, error)
 }
 
 var (
@@ -118,6 +120,7 @@ var (
 	_ vm.NICDialer     = (*Driver)(nil)
 	_ vm.LazyStarter   = (*Driver)(nil)
 	_ vm.Renamer       = (*Driver)(nil)
+	_ vm.Reticketer    = (*Driver)(nil)
 )
 
 // vmRecord is persisted as vms/<id>/vm.json (0600: holds the guest token).
@@ -154,6 +157,7 @@ type machine struct {
 	// snapWr: guest disk write+discard ops counted when the current overlay
 	// started (-1 = unknown), for DiskChanged.
 	snapWr int64
+	resets []time.Time // guest reboots of a channel guest, for the loop breaker
 }
 
 // run is one qemu process incarnation.
@@ -163,6 +167,7 @@ type run struct {
 	exited   chan struct{}
 	intended atomic.Bool // we asked it to exit: not an error
 	poweroff atomic.Bool // guest powered itself off
+	reset    atomic.Bool // channel guest rebooted (qemu exits instead): relaunch
 	launched time.Time
 	log      string
 	net      *netstack.Network // nil with slirp
@@ -259,6 +264,11 @@ func (d *Driver) Accel() string { return d.accel }
 func (d *Driver) Name() string                      { return "qemu" }
 func (d *Driver) Store() vm.Store                   { return d.store }
 func (d *Driver) SetNotify(fn func(proto.VMStatus)) { d.mu.Lock(); d.notify = fn; d.mu.Unlock() }
+func (d *Driver) SetReticket(fn func(context.Context, string) (*proto.GuestChannel, error)) {
+	d.mu.Lock()
+	d.ticket = fn
+	d.mu.Unlock()
+}
 
 // Close releases QMP connections. VMs keep running; a new Driver adopts them.
 func (d *Driver) Close() error {
@@ -722,6 +732,10 @@ func (d *Driver) Restart(ctx context.Context, id string) error {
 	if r != nil {
 		d.kill(r)
 	}
+	if err := d.reticket(ctx, m, &cfg); err != nil {
+		d.setState(m, proto.VMError, err.Error())
+		return err
+	}
 	cfg.Boot, cfg.FirstBoot = proto.BootRecover, false
 	if err := d.launch(m, cfg); err != nil {
 		d.setState(m, proto.VMError, err.Error())
@@ -1163,6 +1177,10 @@ func (d *Driver) args(rec vmRecord, dir string, port int, netSock, qmpArg string
 	if cpu == "" {
 		cpu = "max"
 	}
+	if rec.Spec.Guest.Channel != nil {
+		// A channel guest's reboot is a new boot with a new ticket (relaunch).
+		a = append(a, "-action", "reboot=shutdown")
+	}
 	if d.seccomp {
 		a = append(a, "-sandbox", "on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny")
 	}
@@ -1223,9 +1241,14 @@ func (d *Driver) watch(m *machine, r *run) {
 	cancel := r.q.subscribe(func(e qmpEvent) {
 		switch e.Name {
 		case "SHUTDOWN":
-			var data struct{ Guest bool }
+			var data struct {
+				Guest  bool
+				Reason string
+			}
 			json.Unmarshal(e.Data, &data)
-			if data.Guest {
+			if data.Reason == "guest-reset" {
+				r.reset.Store(true)
+			} else if data.Guest {
 				r.poweroff.Store(true)
 			}
 		case "RESET": // guest reboot: the agent restarts too
@@ -1250,6 +1273,10 @@ func (d *Driver) watch(m *machine, r *run) {
 		if r.intended.Load() || d.closed.Load() {
 			return
 		}
+		if r.reset.Load() {
+			d.relaunch(m, r)
+			return
+		}
 		msg := "qemu exited unexpectedly"
 		if r.poweroff.Load() {
 			msg = "guest powered off"
@@ -1265,6 +1292,65 @@ func (d *Driver) watch(m *machine, r *run) {
 		}
 	}()
 	go d.waitBoot(m, r)
+}
+
+// relaunch starts a channel guest again after it rebooted (qemu runs with
+// -action reboot=shutdown). Its channel session lived in RAM, so the new boot
+// gets a new ticket. A third reboot within 2 minutes is a boot loop: error.
+func (d *Driver) relaunch(m *machine, r *run) {
+	if _, err := d.lock(m.id); err != nil {
+		return
+	}
+	defer m.op.Unlock()
+	now := time.Now()
+	d.mu.Lock()
+	cur := m.run == r
+	cfg := m.rec.Spec.Guest
+	m.resets = append(slices.DeleteFunc(m.resets, func(t time.Time) bool { return now.Sub(t) > 2*time.Minute }), now)
+	loop := len(m.resets) > 2
+	d.mu.Unlock()
+	if !cur || d.closed.Load() {
+		return
+	}
+	if loop {
+		d.opt.Logf("qemu: %s: reboot loop; serial console tail:\n%s", m.id, consoleTail(filepath.Join(d.vmDir(m.id), "console.log"), 4000))
+		d.setState(m, proto.VMError, "the machine rebooted 3 times within 2 minutes")
+		return
+	}
+	d.opt.Logf("qemu: %s: guest rebooted, relaunching", m.id)
+	d.setState(m, proto.VMStarting, "")
+	if err := d.reticket(d.ctx, m, &cfg); err != nil {
+		d.setState(m, proto.VMError, err.Error())
+		return
+	}
+	cfg.Boot, cfg.FirstBoot = proto.BootRecover, false
+	if err := d.launch(m, cfg); err != nil {
+		d.setState(m, proto.VMError, err.Error())
+	}
+}
+
+// reticket gives a channel guest's next boot a new ticket (its session was
+// in the RAM of the previous boot). Legacy guests keep their config.
+func (d *Driver) reticket(ctx context.Context, m *machine, cfg *proto.GuestConfig) error {
+	if cfg.Channel == nil {
+		return nil
+	}
+	d.mu.Lock()
+	fn := d.ticket
+	d.mu.Unlock()
+	if fn == nil {
+		return errors.New("qemu: no way to get a new boot ticket")
+	}
+	ch, err := fn(ctx, m.id)
+	if err != nil {
+		return fmt.Errorf("new boot ticket: %w", err)
+	}
+	cfg.Channel = ch
+	d.mu.Lock()
+	m.rec.Spec.Guest.Channel = ch
+	d.mu.Unlock()
+	d.saveRec(m)
+	return nil
 }
 
 func (d *Driver) waitBoot(m *machine, r *run) {

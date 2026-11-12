@@ -20,9 +20,13 @@ import (
 // channelGuest runs a real (unprivileged) guest agent for a stub the fake
 // node received, connected over the guest channel.
 func channelGuest(t *testing.T, env *servertest.Env, stub proto.GuestConfig) (*guest.Agent, string) {
+	return channelGuestCtx(t, context.Background(), env, stub)
+}
+
+func channelGuestCtx(t *testing.T, parent context.Context, env *servertest.Env, stub proto.GuestConfig) (*guest.Agent, string) {
 	t.Helper()
 	stub.Channel.URL = env.URL // the agent runs on this host, not behind the node's 10.0.2.2
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(parent)
 	t.Cleanup(cancel)
 	home := t.TempDir()
 	quiet := log.New(io.Discard, "", 0)
@@ -65,7 +69,8 @@ func TestGuestChannelKeepsSecretsFromTheNode(t *testing.T) {
 	if stub.Channel == nil || stub.Channel.Ticket == "" || stub.Channel.Pin == "" || len(stub.Env) != 0 || strings.Contains(string(raw), "hunter2") {
 		t.Fatalf("the node got more than a boot stub: %s", raw)
 	}
-	_, local := channelGuest(t, env, stub)
+	ctx0, stopGuest := context.WithCancel(context.Background())
+	_, local := channelGuestCtx(t, ctx0, env, stub)
 
 	// The API reaches the guest over the channel.
 	r := env.Do(key, "POST", "/api/v1/sandboxes/"+id+"/commands", map[string]any{"command": "printf %s \"$MY_SECRET\""})
@@ -112,5 +117,46 @@ func TestGuestChannelKeepsSecretsFromTheNode(t *testing.T) {
 	bad.Channel = &proto.GuestChannel{URL: env.URL, Pin: "AAAA", Ticket: "x"}
 	if _, _, err := guest.ConnectChannel(ctx2, bad, t.TempDir(), log.New(io.Discard, "", 0)); err == nil {
 		t.Fatal("connected with a wrong pin")
+	}
+
+	// A reboot: the guest's session was in RAM, its node asks for a new
+	// ticket. Refused while the guest is connected, and for other nodes.
+	reboot := func(token string) (int, proto.GuestChannel) {
+		req, _ := http.NewRequest("POST", env.URL+"/node/v1/sandboxes/"+id+"/reboot", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var ch proto.GuestChannel
+		_ = json.NewDecoder(resp.Body).Decode(&ch)
+		return resp.StatusCode, ch
+	}
+	if code, _ := reboot(node.Token); code != http.StatusConflict {
+		t.Fatalf("re-ticket while the guest is connected: %d", code)
+	}
+	other := env.StartNode(servertest.NodeOptions{GuestChannel: true})
+	stopGuest()
+	env.Eventually("channel closed", func() bool {
+		code, _ := reboot(other.Token)
+		return code == http.StatusNotFound
+	})
+	var ch proto.GuestChannel
+	env.Eventually("new ticket", func() bool {
+		var code int
+		code, ch = reboot(node.Token)
+		return code == 200
+	})
+	if ch.Ticket == "" || ch.Ticket == stub.Channel.Ticket || ch.Pin != stub.Channel.Pin {
+		t.Fatalf("new ticket: %+v", ch)
+	}
+	next := stub
+	next.Channel = &proto.GuestChannel{URL: env.URL, Pin: ch.Pin, Ticket: ch.Ticket}
+	ctx3, cancel3 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel3()
+	cfg, _, err := guest.ConnectChannel(ctx3, next, t.TempDir(), log.New(io.Discard, "", 0))
+	if err != nil || cfg.Boot != proto.BootRecover || cfg.FirstBoot || cfg.Env["MY_SECRET"] != "hunter2-very-secret" {
+		t.Fatalf("redeem after reboot: %v boot=%s first=%v", err, cfg.Boot, cfg.FirstBoot)
 	}
 }

@@ -61,7 +61,7 @@ func ticketHash(t string) string { h := sha256.Sum256([]byte(t)); return hex.Enc
 // ConnectChannel fetches the guest config for the boot stub over the channel,
 // retrying until it succeeds or ctx ends. The returned config keeps the
 // stub's ops token and channel. stateDir keeps the session for reconnects
-// and reboots (root-only).
+// after agent restarts; it must be in RAM (/run): the node can read the disk.
 func ConnectChannel(ctx context.Context, stub proto.GuestConfig, stateDir string, logger *log.Logger) (proto.GuestConfig, *Channel, error) {
 	if logger == nil {
 		logger = log.New(os.Stderr, "crowdvm-guest: ", log.LstdFlags)

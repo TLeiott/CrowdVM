@@ -84,8 +84,27 @@ type GuestConn struct {
 func (g *GuestConn) closed() bool { return g.sess.IsClosed() }
 
 type guestRegistry struct {
-	mu sync.Mutex
-	m  map[string]*GuestConn
+	mu      sync.Mutex
+	m       map[string]*GuestConn
+	reboots map[string][]time.Time // re-tickets per sandbox, last 10 minutes
+}
+
+// rebooted records a re-ticket and returns how many happened in the last
+// 10 minutes.
+func (r *guestRegistry) rebooted(id string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.reboots == nil {
+		r.reboots = map[string][]time.Time{}
+	}
+	var keep []time.Time
+	for _, t := range r.reboots[id] {
+		if time.Since(t) < 10*time.Minute {
+			keep = append(keep, t)
+		}
+	}
+	r.reboots[id] = append(keep, time.Now())
+	return len(r.reboots[id])
 }
 
 func (r *guestRegistry) get(id string) *GuestConn {
@@ -242,6 +261,53 @@ func (s *Server) dropGuestChannel(id string) {
 	if g := s.guests.get(id); g != nil {
 		_ = g.sess.Close()
 	}
+}
+
+// handleGuestReboot: POST /node/v1/sandboxes/{id}/reboot. A channel guest
+// keeps its session in RAM only (a session on the disk would let the node
+// read it and fetch the config), so after a reboot it needs a new one-time
+// ticket. Its node asks for one once the old boot's channel has closed; while
+// the guest is connected the answer is 409 and the node retries. A node can
+// fake reboots to get tickets of its own; every re-ticket is logged and
+// frequent ones are reported to the owner.
+func (s *Server) handleGuestReboot(w http.ResponseWriter, r *http.Request) {
+	n := nodeFrom(r)
+	sb, err := s.SandboxByID(r.PathValue("id"))
+	var node, sealed string
+	if err == nil {
+		err = s.DB.QueryRow(`SELECT node_id,config FROM guest_channels WHERE sandbox_id=?`, sb.ID).Scan(&node, &sealed)
+	}
+	if err != nil || n == nil || sb.DeletedAt != nil || sb.NodeID != n.ID || node != n.ID {
+		http.Error(w, "no channel sandbox of this node", 404)
+		return
+	}
+	if s.guests.get(sb.ID) != nil {
+		http.Error(w, "guest_connected", 409)
+		return
+	}
+	plain, err := s.openSecret(sealed)
+	var cfg proto.GuestConfig
+	if err == nil {
+		err = json.Unmarshal([]byte(plain), &cfg)
+	}
+	if err != nil {
+		http.Error(w, "config_unreadable", 500)
+		return
+	}
+	// The disk is the one that was running: nothing one-time runs again.
+	cfg.Boot, cfg.FirstBoot, cfg.Scrub, cfg.Files, cfg.SetupScript = proto.BootRecover, false, nil, nil, ""
+	stub, err := s.issueGuestChannel(sb, n.ID, cfg)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	count := s.guests.rebooted(sb.ID)
+	s.Log.Info("guest channel: new ticket for a reboot", "sandbox", sb.ID, "node", n.ID, "last10min", count)
+	if count > 3 {
+		s.notifySandbox(sb, "security_reboots", "warning", time.Hour, "Frequent reboots",
+			fmt.Sprintf("%s rebooted %d times in 10 minutes. Each reboot gives its node a new one-time boot ticket; if nobody in the sandbox rebooted it, the node may be trying to read the sandbox's configuration.", sb.Name, count))
+	}
+	writeRawJSON(w, 200, stub.Channel)
 }
 
 var errGuestChannelDown = errors.New("the sandbox's guest channel is not connected (the machine is starting, rebooting or lost its network)")

@@ -67,7 +67,10 @@ func main() {
 		if state == "" && *unpriv {
 			state = filepath.Join(*home, ".local/state/crowdvm-guest")
 		} else if state == "" {
-			state = "/var/lib/crowdvm"
+			// RAM only: a session on the disk would let the node read it
+			// and fetch the config. A reboot gets a new ticket instead.
+			state = "/run/crowdvm"
+			_ = os.Remove("/var/lib/crowdvm/channel.json") // written by earlier versions
 		}
 		if cfg, ch, err = guest.ConnectChannel(ctx, cfg, state, logger); err != nil {
 			logger.Fatal(err)
