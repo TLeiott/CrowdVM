@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strconv"
 	"time"
@@ -29,7 +30,9 @@ func (a *App) execCmd() *cobra.Command {
 line; more arguments run as argv. The default timeout is 30 seconds; above 600
 or with 0 (no limit) the command runs in the background and its output streams
 live, surviving network cuts. Exit code 124 means the timeout hit. ID may also
-be the sandbox's name; without one the current sandbox runs the command.`,
+be the sandbox's name; without one the current sandbox runs the command.
+Stdin is not passed to the command (the API has no stdin); to pipe data in,
+use 'crowdvm ssh ID -- CMD'.`,
 		Example: `  crowdvm exec bx_f7k2q9hd "npm test"
   crowdvm exec bx_f7k2q9hd --cwd my-repo --timeout 0 -- make -j16 test
   pid=$(crowdvm exec bx_f7k2q9hd --detach "npm run dev" | jq -r .processId)
@@ -70,6 +73,7 @@ be the sandbox's name; without one the current sandbox runs the command.`,
 			if len(rest) == 0 {
 				return usagef("no command given: crowdvm exec ID [--] COMMAND...")
 			}
+			a.warnStdin() // bugs-r16-opus 4
 			if !ef.detach {
 				a.rawOutput(cmd)
 			}
@@ -101,6 +105,22 @@ be the sandbox's name; without one the current sandbox runs the command.`,
 	f.IntVar(&ef.attach, "attach", 0, "follow a detached process's output until it ends")
 	f.StringVar(&ef.push, "push", "", "push this local directory first and run in it")
 	return cmd
+}
+
+// warnStdin tells the user that exec drops piped input: the API has no stdin
+// (bugs-r16-opus 4). A terminal, /dev/null and an empty file stay silent.
+func (a *App) warnStdin() {
+	f, ok := a.In.(*os.File)
+	if !ok {
+		return
+	}
+	st, err := f.Stat()
+	if err != nil {
+		return
+	}
+	if m := st.Mode(); m&os.ModeNamedPipe != 0 || (m.IsRegular() && st.Size() > 0) {
+		fmt.Fprintln(a.Err, "warning: crowdvm exec does not pass stdin to the command; use `crowdvm ssh ID -- CMD` to pipe data in")
+	}
 }
 
 func exitCode(code int) error {
@@ -163,6 +183,7 @@ func (a *App) runCommand(ctx context.Context, c *client.Client, id string, req c
 }
 
 func (a *App) runStream(ctx context.Context, c *client.Client, id string, req client.CommandRequest) (int, error) {
+	defer catchPipe()()
 	st, err := c.ExecStream(ctx, id, req)
 	if err != nil {
 		return 0, err
@@ -177,7 +198,9 @@ func (a *App) runStream(ctx context.Context, c *client.Client, id string, req cl
 			return 0, err
 		}
 		if a.jsonOut {
-			a.emit(f)
+			if err := a.emit(f); err != nil {
+				return 0, err // bugs-r16-sonnet 8
+			}
 		}
 		switch f.Type {
 		case "stdout":
@@ -252,6 +275,7 @@ func (a *App) runLong(ctx context.Context, c *client.Client, id string, req clie
 // attach follows a detached process from its start until it exits,
 // reconnecting with offsets when the stream ends.
 func (a *App) attach(ctx context.Context, c *client.Client, id string, pid int) (int, error) {
+	defer catchPipe()()
 	var outOff, errOff int64
 	failures := 0
 	for {
@@ -311,7 +335,9 @@ func (a *App) readAttach(st *client.Stream[client.AttachFrame], outOff, errOff *
 			return 0, false, false, err
 		}
 		if a.jsonOut && f.Type != "heartbeat" {
-			a.emit(f)
+			if err := a.emit(f); err != nil {
+				return 0, true, false, err // bugs-r16-sonnet 8: reader gone: stop like Ctrl-C
+			}
 		}
 		switch f.Type {
 		case "attached":
@@ -327,7 +353,9 @@ func (a *App) readAttach(st *client.Stream[client.AttachFrame], outOff, errOff *
 				w, off = a.Err, errOff
 			}
 			if !a.jsonOut {
-				io.WriteString(w, f.Data)
+				if _, err := io.WriteString(w, f.Data); err != nil {
+					return 0, true, false, err // bugs-r16-sonnet 8
+				}
 			}
 			if f.NextOffset > 0 {
 				*off = f.NextOffset
@@ -432,6 +460,7 @@ code of the command. Ctrl-C deletes the sandbox.`,
 				_, err := c.DeleteSandbox(dctx, id)
 				return err == nil
 			}
+			a.noDelHint = !keep // bugs-r16-opus 6
 			code, runErr := func() (int, error) {
 				sb, err := a.waitReady(ctx, c, id, res.Sandbox.State)
 				if err != nil {
@@ -455,7 +484,11 @@ code of the command. Ctrl-C deletes the sandbox.`,
 			usage, usageErr := c.SandboxUsage(context.Background(), id, "", "")
 			deleted := cleanup()
 			elapsed := time.Since(start)
-			summary := map[string]any{"event": "summary", "id": id, "exitCode": code, "elapsedSeconds": int(elapsed.Seconds()),
+			var exitVal any = code // bugs-r16-sonnet 7: no exit code when the run itself failed
+			if runErr != nil {
+				exitVal = nil
+			}
+			summary := map[string]any{"event": "summary", "id": id, "exitCode": exitVal, "elapsedSeconds": int(elapsed.Seconds()),
 				"sandboxType": firstNonEmpty(res.Sandbox.Type, sf.typ, "default"), "deleted": deleted}
 			if usageErr == nil && id != "" {
 				summary["credits"] = firstFloat(usage.Credits, usage.Dollars)
@@ -474,7 +507,11 @@ code of the command. Ctrl-C deletes the sandbox.`,
 				if v, ok := summary["credits"].(float64); ok {
 					cr = fmt.Sprintf(" · %.4f credits", v)
 				}
-				fmt.Fprintf(a.Err, "exit %d · %s · %s%s · %s %s\n", code, shortDur(elapsed), summary["sandboxType"], cr, id, tail)
+				exitText := fmt.Sprintf("exit %d", code)
+				if runErr != nil {
+					exitText = "failed"
+				}
+				fmt.Fprintf(a.Err, "%s · %s · %s%s · %s %s\n", exitText, shortDur(elapsed), summary["sandboxType"], cr, id, tail)
 			}
 			if runErr != nil {
 				return runErr

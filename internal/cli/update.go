@@ -28,8 +28,9 @@ const updateCheckEvery = 6 * time.Hour
 // v1.2.3-rc.1 or v1.2.3-4-gabc1234[-dirty] (4 commits after v1.2.3).
 type version struct {
 	core  [3]int
-	after int  // commits after the tag (describe suffix)
-	pre   bool // pre-release (-rc.1, -beta, ...)
+	after int    // commits after the tag (describe suffix)
+	pre   bool   // pre-release (-rc.1, -beta, ...)
+	preID string // the pre-release suffix, compared by its dot-separated identifiers
 }
 
 var (
@@ -52,7 +53,7 @@ func parseVersion(s string) (v version, ok bool) {
 	case describeRe.MatchString(m[4]):
 		v.after, _ = strconv.Atoi(describeRe.FindStringSubmatch(m[4])[1])
 	default:
-		v.pre = true
+		v.pre, v.preID = true, suf
 	}
 	return v, true
 }
@@ -76,7 +77,35 @@ func compareVersions(a, b string) (int, bool) {
 		}
 		return 1, true
 	}
+	if va.pre { // bugs-r16-sonnet 1: -nightly.20261112.3 > -nightly.20261111.9
+		return comparePre(va.preID, vb.preID), true
+	}
 	return sign(va.after - vb.after), true
+}
+
+// comparePre orders two pre-release suffixes identifier by identifier (split
+// at dots; numeric identifiers as numbers, below alphanumeric ones).
+func comparePre(a, b string) int {
+	as, bs := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(as) && i < len(bs); i++ {
+		na, ea := strconv.Atoi(as[i])
+		nb, eb := strconv.Atoi(bs[i])
+		var c int
+		switch {
+		case ea == nil && eb == nil:
+			c = sign(na - nb)
+		case ea == nil:
+			c = -1
+		case eb == nil:
+			c = 1
+		default:
+			c = strings.Compare(as[i], bs[i])
+		}
+		if c != 0 {
+			return c
+		}
+	}
+	return sign(len(as) - len(bs))
 }
 
 func sign(n int) int {

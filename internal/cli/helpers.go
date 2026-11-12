@@ -59,6 +59,9 @@ func (a *App) waitReady(ctx context.Context, c *client.Client, id, last string) 
 	for {
 		s, err := c.GetSandbox(ctx, id)
 		if err != nil {
+			if errors.Is(ctx.Err(), context.Canceled) {
+				a.stoppedWaiting(sb, id) // interrupted during a poll: same hint
+			}
 			if e, ok := client.AsError(err); !ok || !e.Retryable() {
 				if sb != nil && isNodeOffline(sb) && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 					return sb, offlineErr(sb)
@@ -112,8 +115,8 @@ func (a *App) waitReady(ctx context.Context, c *client.Client, id, last string) 
 			if sb != nil && isNodeOffline(sb) && errors.Is(err, context.DeadlineExceeded) {
 				return sb, offlineErr(sb)
 			}
-			if errors.Is(err, context.Canceled) && sb != nil && !isUp(sb.State) {
-				a.info("stopped waiting; %s is still %s. Remove it with: crowdvm delete %s --yes\n", id, displayState(sb.State), id)
+			if errors.Is(err, context.Canceled) {
+				a.stoppedWaiting(sb, id)
 			}
 			return nil, err
 		}
@@ -408,4 +411,12 @@ func nonNil[T any](s []T) []T {
 		return []T{}
 	}
 	return s
+}
+
+// stoppedWaiting tells how to remove a sandbox the user stopped waiting for
+// (not for `run`, which deletes it itself: bugs-r16-opus 6).
+func (a *App) stoppedWaiting(sb *client.Sandbox, id string) {
+	if sb != nil && !isUp(sb.State) && !a.noDelHint {
+		a.info("stopped waiting; %s is still %s. Remove it with: crowdvm delete %s --yes\n", id, displayState(sb.State), id)
+	}
 }

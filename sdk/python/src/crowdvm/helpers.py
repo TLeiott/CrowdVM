@@ -94,7 +94,9 @@ def wait_for_desktop(client: CrowdVM, sandbox_id: str, *, timeout: Optional[floa
         try:
             out = client.desktop(sandbox_id, **desktop_options)
         except ApiError as e:
-            if e.status in (400, 409, 503):  # machine_not_running / starting / browser_not_ready
+            # machine_not_running / starting / browser_not_ready. A 400 (bad
+            # theme or profile) never becomes a desktop (bugs-r16-sonnet 10).
+            if e.status in (409, 503):
                 return UNSET
             raise
         if out.get("provisioning") or not out.get("desktopUrl"):

@@ -183,12 +183,23 @@ export class CrowdVM extends GeneratedOperations {
       const onAbort = () => ctl.abort(user!.reason);
       user?.addEventListener("abort", onAbort, { once: true });
       let timedOut = false;
-      const timer = timeoutMs > 0 ? setTimeout(() => { timedOut = true; ctl.abort(); }, timeoutMs) : undefined;
+      const expire = () => { timedOut = true; ctl.abort(); };
+      let timer = timeoutMs > 0 ? setTimeout(expire, timeoutMs) : undefined;
       const cleanup = () => { if (timer) clearTimeout(timer); user?.removeEventListener("abort", onAbort); };
       let delay: number | undefined;
       try {
-        const res = await this.fetchFn(url, { method, headers, body, signal: ctl.signal });
-        if (stream && timer) clearTimeout(timer); // the timeout covers the headers only
+        let res = await this.fetchFn(url, { method, headers, body, signal: ctl.signal });
+        if (timer) clearTimeout(timer); // the timeout covers the headers ...
+        if (timer && !stream && res.body) {
+          // ... and then each silence of the body, not the whole body: a
+          // download that keeps arriving is not cut (bugs-r16-sonnet 11).
+          timer = setTimeout(expire, timeoutMs);
+          const rearm = new TransformStream<Uint8Array, Uint8Array>({
+            transform(chunk, c) { clearTimeout(timer); timer = setTimeout(expire, timeoutMs); c.enqueue(chunk); },
+            flush() { clearTimeout(timer); },
+          });
+          res = new Response(res.body.pipeThrough(rearm), { status: res.status, statusText: res.statusText, headers: res.headers });
+        }
         if (res.status === 304) { cleanup(); return null; }
         if (!res.ok) throw await apiErrorFrom(res);
         return { res, cleanup };

@@ -10,6 +10,7 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -219,6 +220,11 @@ func (s *Server) guestStreams(g *GuestConn, egress bool) http.Handler {
 	// DNS queries in flight per channel: a flood is answered 503 at once
 	// instead of piling up goroutines and streams (bugs-r14-opus 3).
 	dnsSlots := make(chan struct{}, maxEgressDNS)
+	// Flows end with their channel session: one blocked on a destination
+	// that never reads would otherwise outlive the sandbox, and each new
+	// session could park 256 more (bugs-r16-opus 2).
+	sessDone, endSess := context.WithCancel(context.Background())
+	go func() { <-g.sess.CloseChan(); endSess() }()
 	m := http.NewServeMux()
 	m.HandleFunc("GET /v1/egress", func(w http.ResponseWriter, r *http.Request) {
 		if !egress {
@@ -254,6 +260,13 @@ func (s *Server) guestStreams(g *GuestConn, egress bool) http.Handler {
 			out.Close()
 			return
 		}
+		defer context.AfterFunc(sessDone, func() {
+			if tc, ok := out.(*net.TCPConn); ok {
+				_ = tc.SetLinger(0) // reset: drop what the destination never read
+			}
+			out.Close()
+			conn.Close()
+		})()
 		mux.Join(&readerConn{Conn: conn, r: rw.Reader}, out)
 	})
 	m.HandleFunc("POST /v1/rebooting", func(w http.ResponseWriter, r *http.Request) {

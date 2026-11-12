@@ -1633,6 +1633,7 @@ func (d *Driver) adoptAll() {
 			}
 			m.st.State, m.st.Error = proto.VMError, "qemu not running after node restart"
 			d.opt.Logf("qemu: %s: %s (overlay kept)", m.id, m.st.Error)
+			d.forgetFDs(rec.PID) // its qemu is gone: the ticket memfd never hangs up (bugs-r16-sonnet 9)
 			continue
 		}
 		proc, _ := os.FindProcess(rec.PID)
@@ -1641,6 +1642,7 @@ func (d *Driver) adoptAll() {
 		if rec.Net == NetNetstack {
 			if err := d.adoptNet(m, r); err != nil {
 				d.kill(r)
+				d.forgetFDs(rec.PID) // bugs-r16-sonnet 9
 				m.st.State, m.st.Error = proto.VMError, "guest network not reattached after node restart: "+err.Error()
 				d.opt.Logf("qemu: %s: %s (overlay kept)", m.id, m.st.Error)
 				continue

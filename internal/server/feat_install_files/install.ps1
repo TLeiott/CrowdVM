@@ -15,12 +15,17 @@ function Fetch($name) {
   $dest = Join-Path $BinDir $name
   $tmp = "$dest.tmp"
   Invoke-WebRequest -UseBasicParsing "$Server/downloads/windows/$Arch/$name" -OutFile $tmp
-  if (Test-Path $dest) {
-    Remove-Item -Force "$dest.old" -ErrorAction SilentlyContinue
-    Move-Item -Force $dest "$dest.old"
+  # Old copies a running program still holds stay until a later run.
+  Get-ChildItem -Path "$dest.*old" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+  $old = "$dest.$([guid]::NewGuid().ToString('N').Substring(0, 8)).old"
+  if (Test-Path $dest) { Move-Item -Force $dest $old }
+  try {
+    Move-Item -Force $tmp $dest
+  } catch {
+    if (Test-Path $old) { Move-Item -Force $old $dest }  # put the old one back
+    throw
   }
-  Move-Item -Force $tmp $dest
-  Remove-Item -Force "$dest.old" -ErrorAction SilentlyContinue  # still running: removed next time
+  Remove-Item -Force $old -ErrorAction SilentlyContinue
 }
 Write-Host "Installing crowdvm from $Server into $BinDir"
 Fetch 'crowdvm.exe'

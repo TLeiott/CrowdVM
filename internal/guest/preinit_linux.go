@@ -192,6 +192,46 @@ type sfdiskTable struct {
 	} `json:"partitiontable"`
 }
 
+// growData grows the data partition to the end of a larger disk and keeps
+// its size a multiple of the LUKS sector (4 KiB): an unaligned partition
+// cannot be opened (bugs-r16-opus 1). Failures are logged; the partition
+// then keeps its size.
+func growData(disk, part string, logger *log.Logger) {
+	n := strings.TrimPrefix(strings.TrimPrefix(part, disk), "p")
+	if n == "" {
+		return
+	}
+	_ = run(nil, "sfdisk", "--no-reread", "--no-tell-kernel", "--relocate", "gpt-bak-std", disk)
+	if err := run(nil, "growpart", disk, n); err != nil && !strings.Contains(err.Error(), "NOCHANGE") {
+		logger.Printf("growing the data partition: %v", err) // bugs-r15-opus 2
+	}
+	if err := alignPartition(disk, part, n); err != nil {
+		logger.Printf("aligning the data partition: %v", err)
+	}
+	_ = run(nil, "partx", "-u", "-n", n, disk)
+}
+
+// alignPartition rounds partition n's (node part) size down to a multiple
+// of 8 sectors (4 KiB). It also repairs a partition an earlier grow left
+// unaligned.
+func alignPartition(disk, part, n string) error {
+	t, err := readTable(disk)
+	if err != nil {
+		return err
+	}
+	for _, p := range t.PartitionTable.Partitions {
+		if p.Node != part {
+			continue
+		}
+		if p.Size%8 == 0 {
+			return nil
+		}
+		in := []byte(fmt.Sprintf("%d,%d\n", p.Start, p.Size-p.Size%8))
+		return run(in, "sfdisk", "--no-reread", "--no-tell-kernel", "-N", n, disk)
+	}
+	return fmt.Errorf("%s not in the partition table of %s", part, disk)
+}
+
 func readTable(disk string) (sfdiskTable, error) {
 	var t sfdiskTable
 	out, err := exec.Command("sfdisk", "-J", disk).Output()
@@ -315,9 +355,15 @@ func openData(disk, part string, key []byte, logger *log.Logger) error {
 	default:
 		return fmt.Errorf("%s holds %q, not an encrypted data partition; refusing to touch it", part, t)
 	}
+	if !fresh {
+		// Before the open: the LUKS2 segment runs to the end of the
+		// partition, so a grown (and 4 KiB-aligned) partition is opened at
+		// its new size (bugs-r16-opus 1).
+		growData(disk, part, logger)
+	}
 	if err := run(key, "cryptsetup", "open", "--type", "luks2", "--key-file=-", "--allow-discards",
 		"--perf-no_read_workqueue", "--perf-no_write_workqueue", part, dataPartName); err != nil {
-		return fmt.Errorf("the disk key was refused: %w", err)
+		return fmt.Errorf("opening the encrypted data partition (wrong key, or a damaged partition): %w", err)
 	}
 	dev := "/dev/mapper/" + dataPartName
 	if fresh {
@@ -331,16 +377,6 @@ func openData(disk, part string, key []byte, logger *log.Logger) error {
 			return err
 		}
 	} else {
-		// A larger sandbox disk: grow partition, LUKS and ext4 (offline).
-		_ = run(nil, "sfdisk", "--no-reread", "--no-tell-kernel", "--relocate", "gpt-bak-std", disk)
-		if n := strings.TrimPrefix(strings.TrimPrefix(part, disk), "p"); n != "" {
-			if err := run(nil, "growpart", disk, n); err == nil {
-				_ = run(nil, "partx", "-u", "-n", n, disk)
-				_ = run(key, "cryptsetup", "resize", "--key-file=-", dataPartName)
-			} else if !strings.Contains(err.Error(), "NOCHANGE") {
-				logger.Printf("growing the data partition: %v", err) // bugs-r15-opus 2
-			}
-		}
 		if err := exec.Command("e2fsck", "-p", dev).Run(); err != nil {
 			if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() >= 4 {
 				return fmt.Errorf("e2fsck %s: %v", dev, err)

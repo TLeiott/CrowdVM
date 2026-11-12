@@ -45,18 +45,19 @@ type App struct {
 	// Poll is the interval for state polling.
 	Poll time.Duration
 
-	jsonOut  bool
-	jsonSet  bool
-	apiURL   string
-	org      string
-	profileF string
-	noUpdate bool
-	invite   string // login/onboard --invite
-	cfg      *Config
-	cfgBase  map[string]any // cfg as loaded or last saved: saves write only the difference
-	profile  string
-	cl       *client.Client
-	ctx      context.Context
+	jsonOut   bool
+	jsonSet   bool
+	apiURL    string
+	org       string
+	profileF  string
+	noUpdate  bool
+	noDelHint bool   // bugs-r16-opus 6: `run` deletes its sandbox itself; waitReady must not say "Remove it with"
+	invite    string // login/onboard --invite
+	cfg       *Config
+	cfgBase   map[string]any // cfg as loaded or last saved: saves write only the difference
+	profile   string
+	cl        *client.Client
+	ctx       context.Context
 }
 
 // exitError ends the process with a code and no message.
@@ -252,15 +253,26 @@ var hints = map[string]string{
 
 func hintFor(code string) string { return hints[code] }
 
+// catchPipe makes a write to a closed stdout (`| head`) fail with EPIPE
+// instead of killing the CLI, until the returned func runs: exec and run
+// then stop the remote command (bugs-r16-sonnet 8). Only around those
+// streams: elsewhere the default (exit) is what a pipeline expects.
+func catchPipe() func() {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGPIPE)
+	return func() { signal.Stop(ch) }
+}
+
 // --- output ---
 
-func (a *App) emit(v any) {
+func (a *App) emit(v any) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		fmt.Fprintln(a.Err, "error: encode json:", err)
-		return
+		return nil
 	}
-	fmt.Fprintln(a.Out, string(b))
+	_, err = fmt.Fprintln(a.Out, string(b)) // bugs-r16-sonnet 8: the caller may stop on a write error
+	return err
 }
 
 // result prints v as one JSON line in --json mode, else calls text.

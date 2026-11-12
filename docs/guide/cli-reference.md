@@ -258,7 +258,7 @@ Available Commands:
   info        Show one node: capacity, benchmark, sandboxes, earned credits
   join-token  Create a token for `crowdvm-node join` (admins)
   join-tokens List node join tokens (admins)
-  remove      Remove a node (--force evicts it while it runs sandboxes)
+  remove      Remove a node (--force evicts it while it runs sandboxes or holds snapshots not uploaded yet)
   undrain     Place sandboxes on a drained node again
   update      Rename a node or replace its labels
 
@@ -361,7 +361,7 @@ Flags:
 ### crowdvm admin nodes remove
 
 ```text
-Remove a node (--force evicts it while it runs sandboxes)
+Remove a node (--force evicts it while it runs sandboxes or holds snapshots not uploaded yet)
 
 Usage:
   crowdvm admin nodes remove NODE [flags]
@@ -370,7 +370,7 @@ Aliases:
   remove, evict, rm
 
 Flags:
-      --force   remove even while it runs sandboxes
+      --force   remove even while it runs sandboxes or holds the only copy of snapshots (they are lost)
   -h, --help    help for remove
   -y, --yes     do not ask for confirmation
 ```
@@ -1719,6 +1719,8 @@ line; more arguments run as argv. The default timeout is 30 seconds; above 600
 or with 0 (no limit) the command runs in the background and its output streams
 live, surviving network cuts. Exit code 124 means the timeout hit. ID may also
 be the sandbox's name; without one the current sandbox runs the command.
+Stdin is not passed to the command (the API has no stdin); to pipe data in,
+use 'crowdvm ssh ID -- CMD'.
 
 Usage:
   crowdvm exec [ID] [flags] [--] COMMAND...
@@ -2156,7 +2158,7 @@ Available Commands:
   info        Show one node: capacity, benchmark, sandboxes, earned credits
   join-token  Create a token for `crowdvm-node join` (admins)
   join-tokens List node join tokens (admins)
-  remove      Remove a node (--force evicts it while it runs sandboxes)
+  remove      Remove a node (--force evicts it while it runs sandboxes or holds snapshots not uploaded yet)
   undrain     Place sandboxes on a drained node again
   update      Rename a node or replace its labels
 
@@ -2259,7 +2261,7 @@ Flags:
 ### crowdvm nodes remove
 
 ```text
-Remove a node (--force evicts it while it runs sandboxes)
+Remove a node (--force evicts it while it runs sandboxes or holds snapshots not uploaded yet)
 
 Usage:
   crowdvm nodes remove NODE [flags]
@@ -2268,7 +2270,7 @@ Aliases:
   remove, evict, rm
 
 Flags:
-      --force   remove even while it runs sandboxes
+      --force   remove even while it runs sandboxes or holds the only copy of snapshots (they are lost)
   -h, --help    help for remove
   -y, --yes     do not ask for confirmation
 ```
@@ -3213,8 +3215,8 @@ Flags:
 
 ```text
 Authorize this computer's key on the sandbox and write
-~/.ssh/crowdvm/<id>.conf (Host <id>, ProxyCommand crowdvm tunnel, pinned host
-key). Add 'Include crowdvm/*.conf' at the top of ~/.ssh/config once; then
+~/.ssh/crowdvm/<id>.conf (Host <id>, ProxyCommand crowdvm tunnel --pin, which
+re-pins the host key after every resume). Add 'Include crowdvm/*.conf' at the top of ~/.ssh/config once; then
 'ssh <id>', 'scp file <id>:' and VS Code Remote-SSH work. --print only prints it.
 
 Usage:
@@ -3339,11 +3341,16 @@ ProxyCommand that 'crowdvm ssh' uses; you can use it in ~/.ssh/config:
 ('crowdvm ssh-config ID' writes such an entry for you.) The tunnel ends when
 the sandbox side closes; end of input on stdin is not passed on yet.
 
+With --pin the tunnel first authorizes the key and rewrites the sandbox's
+host key in the CLI's known_hosts (a sandbox gets a new key on every resume),
+printing nothing on stdout; 'crowdvm ssh-config' uses it.
+
 Usage:
   crowdvm tunnel ID PORT [flags]
 
 Flags:
   -h, --help   help for tunnel
+      --pin    refresh the sandbox's SSH host key in known_hosts before relaying
 ```
 
 ## crowdvm unshare

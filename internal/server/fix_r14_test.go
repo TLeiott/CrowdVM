@@ -1,9 +1,11 @@
 package server_test
 
 import (
+	"net"
 	"testing"
 	"time"
 
+	"github.com/crowdvm/crowdvm/internal/mux"
 	"github.com/crowdvm/crowdvm/internal/server"
 	"github.com/crowdvm/crowdvm/internal/server/servertest"
 )
@@ -94,4 +96,63 @@ func TestR14ResumeAfterFailureUsesNewerSnapshot(t *testing.T) {
 	}
 	a.ReleaseUploads()
 	env.WaitState(key, id, "ready")
+}
+
+// bugs-r16-opus 2: an egress flow to a destination that never reads stayed
+// open after its channel session ended (stop, delete, reboot); each new
+// session could park 256 more. Flows now end with their session.
+func TestR16EgressFlowEndsWithItsSession(t *testing.T) {
+	sink, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sink.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		if c, err := sink.Accept(); err == nil {
+			accepted <- c // never read
+		}
+	}()
+	env := servertest.New(t, func(c *server.Config) { c.EgressAllow = []string{sink.Addr().String()} })
+	node := env.StartNode(servertest.NodeOptions{GuestChannel: true})
+	id := createSandbox(t, env, env.AdminKey, nil)
+	env.WaitState(env.AdminKey, id, "ready")
+	spec, _ := node.Spec(id)
+	sess, _ := rawChannel(t, env, id, spec.Guest.Channel.Ticket)
+	st, err := sess.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	up, err := mux.DialUpgrade(st, "server", "/v1/egress?addr="+sink.Addr().String(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c net.Conn
+	select {
+	case c = <-accepted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the flow never reached the destination")
+	}
+	defer c.Close()
+	_ = c.(*net.TCPConn).SetReadBuffer(4096)
+	go func() { // fill the destination's buffers so the server's copy blocks
+		buf := make([]byte, 64<<10)
+		for {
+			if _, err := up.Write(buf); err != nil {
+				return
+			}
+		}
+	}()
+	time.Sleep(2 * time.Second)
+	_ = sess.Close() // the guest goes away
+	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	buf := make([]byte, 1<<20)
+	for {
+		if _, err := c.Read(buf); err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				t.Fatal("the server kept the egress flow open after its channel session ended")
+			}
+			return // EOF or reset: closed
+		}
+	}
 }
