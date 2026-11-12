@@ -271,7 +271,7 @@ func New(opt Options) (*Driver, error) {
 		}
 		if runtime.GOOS == "linux" && os.Getenv("INVOCATION_ID") != "" {
 			opt.Logf("qemu: WARNING: running under systemd without the fd store, so VM control sockets are files a local user can connect to; " +
-				"rerun `crowdvm-node install-service` to update the unit (systemd 254+)")
+				"run `crowdvm-node update` to update the unit (systemd 254+)")
 		}
 	}
 	d.adoptAll()

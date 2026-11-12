@@ -30,6 +30,10 @@ func Unit(o Options) string {
 	for _, a := range append([]string{o.Exe}, o.Args...) {
 		q = append(q, systemdQuote(a))
 	}
+	return renderUnit(strings.Join(q, " "), o.FDStore)
+}
+
+func renderUnit(execStart string, fdStore bool) string {
 	return fmt.Sprintf(`[Unit]
 Description=CrowdVM node (lends this machine's compute to a CrowdVM pool)
 After=network-online.target
@@ -48,7 +52,45 @@ TimeoutStopSec=60
 %s
 [Install]
 WantedBy=default.target
-`, strings.Join(q, " "), fdStoreUnit(o.FDStore))
+`, execStart, fdStoreUnit(fdStore))
+}
+
+// Refresh rewrites an installed unit from this build's template, keeping
+// its ExecStart (binary, data dir), and reloads systemd when that changed
+// anything, so an update brings unit changes without a new install-service.
+// changed is false when the unit is current or none is installed.
+func Refresh(out io.Writer) (changed bool, err error) {
+	p := UnitPath()
+	b, err := os.ReadFile(p)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	old, execStart := string(b), ""
+	for _, l := range strings.Split(old, "\n") {
+		if v, ok := strings.CutPrefix(l, "ExecStart="); ok {
+			execStart = v
+			break
+		}
+	}
+	if execStart == "" {
+		return false, fmt.Errorf("%s has no ExecStart; run crowdvm-node install-service", p)
+	}
+	unit := renderUnit(execStart, systemdVersion() >= 254 || strings.Contains(old, "FileDescriptorStorePreserve=yes"))
+	if unit == old {
+		return false, nil
+	}
+	tmp := p + ".tmp"
+	if err := os.WriteFile(tmp, []byte(unit), 0o644); err != nil {
+		return false, err
+	}
+	if err := os.Rename(tmp, p); err != nil {
+		return false, err
+	}
+	fmt.Fprintf(out, "updated %s\n", p)
+	return true, systemctl(out, "daemon-reload")
 }
 
 // fdStoreUnit: the VMs' QMP and NIC sockets live in systemd's fd store, not
@@ -134,7 +176,8 @@ func Uninstall(out io.Writer) error {
 	return systemctl(out, "daemon-reload")
 }
 
-func systemctl(out io.Writer, args ...string) error {
+// systemctl runs systemctl --user (a variable for tests).
+var systemctl = func(out io.Writer, args ...string) error {
 	cmd := exec.Command("systemctl", append([]string{"--user"}, args...)...)
 	cmd.Stdout, cmd.Stderr = out, out
 	if err := cmd.Run(); err != nil {

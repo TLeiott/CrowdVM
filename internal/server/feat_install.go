@@ -4,7 +4,8 @@ package server
 //
 //   GET /install, /install.sh   scripts/install.sh with the server URL baked in
 //   GET /install.ps1            scripts/install.ps1, likewise
-//   GET /downloads                              JSON list of the binaries present
+//   GET /downloads                              JSON list of the binaries present,
+//       with each one's sha256 and the release version (manifest.json)
 //   GET /downloads/{os}/{arch}/{name}           binaries from Config.DownloadsDir
 //       (crowdvm-linux-amd64 = the static in-sandbox CLI, the node's
 //       --cli-binary default; Windows nodes fetch it from windows/amd64)
@@ -13,10 +14,14 @@ package server
 //
 // The scripts are embedded copies of scripts/ (a test keeps them in sync).
 // `crowdvm-server downloads import <dist dir>` fills the downloads dir from
-// scripts/dist.sh output (ImportDownloads).
+// scripts/dist.sh output (ImportDownloads), including its manifest.json
+// ({"version": ..., "files": {"<os>/<arch>/<name>": {"sha256", "size"}}}).
 
 import (
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -26,6 +31,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/crowdvm/crowdvm/internal/api"
 )
@@ -100,9 +107,18 @@ func (s *Server) serveDownload(w http.ResponseWriter, r *http.Request) {
 	s.sendBinary(w, r, p, name)
 }
 
-// serveDownloadList lists the binaries this server can serve.
+// serveDownloadList lists the binaries this server can serve. version is
+// the imported release's (manifest.json; "" without one). sha256 is always
+// computed from the file, so a binary copied over by hand never carries a
+// stale checksum from the manifest.
 func (s *Server) serveDownloadList(w http.ResponseWriter, r *http.Request) {
 	base := strings.TrimRight(s.Cfg.PublicURL, "/")
+	var man struct {
+		Version string `json:"version"`
+	}
+	if b, err := os.ReadFile(filepath.Join(s.DownloadsDir(), manifestName)); err == nil {
+		_ = json.Unmarshal(b, &man)
+	}
 	out := []map[string]any{}
 	for _, goos := range installOS {
 		for _, arch := range installArch {
@@ -113,14 +129,52 @@ func (s *Server) serveDownloadList(w http.ResponseWriter, r *http.Request) {
 						continue
 					}
 					if st, err := os.Stat(p); err == nil && !st.IsDir() {
-						out = append(out, map[string]any{"os": goos, "arch": arch, "name": name, "size": st.Size(),
+						sum, err := fileSHA256(p, st)
+						if err != nil {
+							continue
+						}
+						out = append(out, map[string]any{"os": goos, "arch": arch, "name": name, "size": st.Size(), "sha256": sum,
 							"modifiedAt": ts(st.ModTime()), "url": base + "/downloads/" + goos + "/" + arch + "/" + name})
 					}
 				}
 			}
 		}
 	}
-	api.WriteOK(w, 200, "download.list", map[string]any{"downloads": out})
+	api.WriteOK(w, 200, "download.list", map[string]any{"version": man.Version, "downloads": out})
+}
+
+// shaCache keeps checksums by path, size and mtime: only the first list
+// after an import reads the binaries. One lock, so concurrent first lists
+// hash each file once.
+var shaCache = struct {
+	sync.Mutex
+	m map[string]shaEntry
+}{m: map[string]shaEntry{}}
+
+type shaEntry struct {
+	size int64
+	mod  time.Time
+	sum  string
+}
+
+func fileSHA256(p string, st os.FileInfo) (string, error) {
+	shaCache.Lock()
+	defer shaCache.Unlock()
+	if e, ok := shaCache.m[p]; ok && e.size == st.Size() && e.mod.Equal(st.ModTime()) {
+		return e.sum, nil
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	sum := hex.EncodeToString(h.Sum(nil))
+	shaCache.m[p] = shaEntry{st.Size(), st.ModTime(), sum}
+	return sum, nil
 }
 
 func (s *Server) sendBinary(w http.ResponseWriter, r *http.Request, p, name string) {
@@ -168,6 +222,10 @@ func (s *Server) serveCLIDownload(w http.ResponseWriter, r *http.Request) {
 
 var distDirRe = regexp.MustCompile(`_(linux|windows|darwin)_(amd64|arm64)$`)
 
+// manifestName is scripts/dist.sh's release manifest, kept next to the
+// <os>/<arch>/ tree.
+const manifestName = "manifest.json"
+
 // ImportDownloads copies binaries from a scripts/dist.sh output directory
 // (dist/crowdvm_<version>_<os>_<arch>/...) or from an <os>/<arch>/ tree into
 // dst. It returns the files written (relative to dst).
@@ -214,7 +272,19 @@ func ImportDownloads(distDir, dst string) ([]string, error) {
 	if len(done) == 0 {
 		return nil, errors.New("no binaries found (expected crowdvm_<version>_<os>_<arch>/ directories from scripts/dist.sh)")
 	}
-	return done, nil
+	// Last, so the version never names binaries not copied yet. A dist dir
+	// without one drops the old manifest: its version is no longer true.
+	man := filepath.Join(distDir, manifestName)
+	if _, err := os.Stat(man); err != nil {
+		if err := os.Remove(filepath.Join(dst, manifestName)); err != nil && !os.IsNotExist(err) {
+			return done, err
+		}
+		return done, nil
+	}
+	if err := copyFileAtomic(man, filepath.Join(dst, manifestName)); err != nil {
+		return done, err
+	}
+	return append(done, manifestName), nil
 }
 
 func copyFileAtomic(src, dst string) error {

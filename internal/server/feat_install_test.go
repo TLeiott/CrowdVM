@@ -1,13 +1,18 @@
 package server_test
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/crowdvm/crowdvm/internal/client"
 	"github.com/crowdvm/crowdvm/internal/server"
 	"github.com/crowdvm/crowdvm/internal/server/servertest"
 )
@@ -32,6 +37,48 @@ func instGet(t *testing.T, url string) (int, string, http.Header) {
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, string(b), resp.Header
+}
+
+// The list carries the imported manifest's version and every file's
+// sha256; an import without a manifest drops the old version.
+func TestDownloadsManifest(t *testing.T) {
+	env := servertest.New(t)
+	dist := t.TempDir()
+	p := filepath.Join(dist, "crowdvm_v2_linux_amd64", "crowdvm-node")
+	_ = os.MkdirAll(filepath.Dir(p), 0o755)
+	_ = os.WriteFile(p, []byte("node v2"), 0o755)
+	_ = os.WriteFile(filepath.Join(dist, "manifest.json"), []byte(`{"version": "v2", "files": {}}`), 0o644)
+	if files, err := server.ImportDownloads(dist, env.S.DownloadsDir()); err != nil || len(files) != 2 {
+		t.Fatalf("import: %v %v", files, err)
+	}
+	list := func() *client.DownloadList {
+		l, err := client.New(env.URL, "").Downloads(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return l
+	}
+	l := list()
+	f, ok := l.Find("linux", "amd64", "crowdvm-node")
+	sum := sha256.Sum256([]byte("node v2"))
+	if l.Version != "v2" || !ok || f.SHA256 != hex.EncodeToString(sum[:]) || f.Size != 7 {
+		t.Fatalf("list: %+v", l)
+	}
+	// A binary replaced by hand gets its own checksum.
+	dst := filepath.Join(env.S.DownloadsDir(), "linux", "amd64", "crowdvm-node")
+	_ = os.WriteFile(dst, []byte("node v2 patched"), 0o755)
+	_ = os.Chtimes(dst, time.Now().Add(time.Minute), time.Now().Add(time.Minute))
+	sum = sha256.Sum256([]byte("node v2 patched"))
+	if f, _ := list().Find("linux", "amd64", "crowdvm-node"); f.SHA256 != hex.EncodeToString(sum[:]) {
+		t.Fatalf("stale checksum: %+v", f)
+	}
+	_ = os.Remove(filepath.Join(dist, "manifest.json"))
+	if _, err := server.ImportDownloads(dist, env.S.DownloadsDir()); err != nil {
+		t.Fatal(err)
+	}
+	if v := list().Version; v != "" {
+		t.Fatalf("old manifest kept: %q", v)
+	}
 }
 
 func TestInstallAndDownloads(t *testing.T) {
