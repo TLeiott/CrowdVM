@@ -20,9 +20,29 @@ generation says whether an older build still works:
 
 A breaking change or a critical (security) fix raises the generation in the same
 commit. It is first only *Required*; a later release may raise *Min* to it. So
-upgrading the server never cuts off nodes or clients at once.
+upgrading the server never refuses nodes or clients at once. And while no online node
+is current, outdated nodes keep taking sandboxes and their grace period does not
+start: the pool keeps working until its first node is updated.
 
-Upgrade in this order: the server, then the nodes, then the CLIs.
+Upgrade in this order: the server (with its downloads, see
+[Server operators](#server-operators)), then the nodes, then the CLIs.
+
+### The first rollout: nodes from before generations
+
+Nodes built before generations existed send none, so the server counts them as
+generation 0 and outdated, even those that already have the secure layer. They have no
+`crowdvm-node update` and no auto-update: install them again, once, on each machine:
+
+```sh
+curl -fsSL http://<server>:8420/install | sh -s -- --node
+crowdvm-node install-service
+```
+
+Their running sandboxes survive this like any node restart. For this one rollout,
+reinstall the nodes before you upgrade the server: a new node works with the old
+server, and the pool never has an outdated phase. If the server goes first, nothing
+stops (see above), and the server, the dashboard and the owners' notices show the
+command. From then on, nodes update themselves.
 
 ## Nodes
 
@@ -52,7 +72,8 @@ crowdvm-node update --rollback # go back to the build before the last update
 ```
 
 The update downloads `crowdvm-node` and the guest agent from the server's
-`/downloads`, checks them against the release manifest (sha256), keeps the old files
+`/downloads`, checks each against the sha256 the server lists (this proves the
+download is complete, not who built it: the node trusts its server), keeps the old files
 as `*.old`, refreshes the systemd unit if the new build needs a different one, and
 restarts the service. Running sandboxes survive the restart. They get the new guest
 agent at their next stop and resume.
@@ -82,8 +103,13 @@ Other HTTP clients (curl, browsers) send no generation and are never refused.
 
 - `crowdvm-server downloads import <dist dir>` publishes a release to the nodes and
   CLIs, together with its `manifest.json`. The version in the manifest is what
-  "update available" compares against.
+  "update available" compares against. When a release raises a required generation,
+  import it and restart the server with its new binary in one step: nodes that are
+  told to update must find the new build in the downloads.
 - `--node-update-grace 72h` sets how long an outdated node keeps its sandboxes.
 - `GET /api/v1/server` reports the server's `gen`, the API generations it accepts
   (`apiGen`, `requiredApiGen`, `minApiGen`) and the `latest` release.
 - The dashboard's Nodes page marks nodes that need an update.
+- Going back to an older server after this one ran: the older binary would take the
+  outdated nodes' evacuations for ones their owners started, and run them. Remove them
+  first: `sqlite3 <data dir>/crowdvm.db "DELETE FROM node_evacuations WHERE reason='outdated'"`.
