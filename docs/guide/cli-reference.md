@@ -81,7 +81,7 @@ Integrated AI agents:
 
 Settings and administration:
   admin              Server administration: users, credits, invite codes, sandboxes, nodes
-  agent-instructions Print an AGENTS.md section that teaches a coding agent to use crowdvm
+  agent-instructions Print the AGENTS.md rule that tells a coding agent when and how to use crowdvm
   api-key            Create and manage API keys (cvm_...)
   ci                 GitHub Actions on CrowdVM: setup, problems, stats and last jobs
   completions        Print a shell completion script
@@ -541,10 +541,14 @@ Flags:
 ## crowdvm agent-instructions
 
 ```text
-Print a short guide for coding agents (Claude Code, Codex, Cursor, ...).
-Append it to your project's AGENTS.md or CLAUDE.md:
+Print a short rule for coding agents (Claude Code, Codex, Cursor, ...): when
+to use a sandbox instead of this computer, and the core commands. Append it to
+your project's AGENTS.md or CLAUDE.md:
 
   crowdvm agent-instructions >> AGENTS.md
+
+The rule points to the crowdvm skill for the details; install that with
+'crowdvm skill install'.
 
 Usage:
   crowdvm agent-instructions [flags]
