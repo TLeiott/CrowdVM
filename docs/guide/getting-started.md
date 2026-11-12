@@ -106,7 +106,11 @@ crowdvm ssh bx_...
 ```
 
 The installer saves the server URL, adds a `crowdvm` shell function (each terminal
-keeps its own current sandbox) and runs `crowdvm onboard`. Coding agents: see
+keeps its own current sandbox) and runs `crowdvm onboard`. Then it offers to set up
+the coding agents it finds (Claude Code, Codex, OpenCode, Cursor) to use CrowdVM:
+`crowdvm skill setup` installs the crowdvm skill and adds the CrowdVM rule to each
+agent's global instructions. Without a terminal it prints the command instead;
+`CROWDVM_AGENT_SETUP=1` (or `0`) answers for you. More in
 [The CLI for agents](cli-for-agents.md).
 
 ## Tailscale
