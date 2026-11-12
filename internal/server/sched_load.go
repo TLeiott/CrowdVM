@@ -11,10 +11,14 @@ package server
 //   - score = free share of the bottleneck resource (CPU or memory) after
 //     the new sandbox, plus the mean free share as a tie-breaker;
 //   - a host short of memory takes nothing new (hard skip);
-//   - a hot host (CPU busy, or tasks stalling on CPU or memory) is used only
-//     when no cool node fits;
+//   - a hot host (CPU busy, or tasks stalling on CPU or memory) loses
+//     hotPenalty points: it is used only when no cool node fits, unless it
+//     holds the sandbox's newest snapshot (a local resume beats moving the
+//     disk through the server);
 //   - host CPU is smoothed: it rises fast and falls slowly, so a busy host
-//     is avoided at once and trusted again only once it stays quiet.
+//     is avoided at once and trusted again only once it stays quiet;
+//   - a node that reports no load (older crowdvm-node) is placed by its
+//     reservations alone, which can favor it while a pool is half updated.
 //
 // Everything is in memory from the heartbeats: placement costs the server a
 // few comparisons per node, no extra queries.
@@ -29,11 +33,12 @@ import (
 const (
 	loadRise       = 0.6              // smoothing weight of a higher CPU reading
 	loadFall       = 0.2              // ... of a lower one
-	loadStale      = 35 * time.Second // older load is ignored (3 missed heartbeats)
+	loadStale      = 50 * time.Second // older load is ignored (past the 45 s node timeout)
 	hotCPU         = 0.90             // smoothed host CPU busy share: hot
 	hotCPUPressure = 25.0             // PSI cpu "some avg10" %: hot
 	hotMemPressure = 10.0             // PSI memory "some avg10" %: hot
 	memFloorMiB    = 512              // host memory kept free beyond a quarter of the new sandbox's
+	hotPenalty     = 600              // more than any load score (150), less than snapshot locality (1000)
 
 	heartbeatWriteEvery = time.Minute // nodes row refresh without changes
 )
@@ -114,7 +119,7 @@ func round2(f float64) float64 { return float64(int(f*100+0.5)) / 100 }
 // assess decides whether a node with shared capacity c, reservations used
 // and live load ll (nil: unknown) can take a sandbox of size sz. It returns
 // why not, or the node's load score (0..150, higher = more room) and
-// whether the host is hot.
+// whether the host is hot (the caller subtracts hotPenalty).
 func assess(c proto.Capacity, used proto.Usage, sz api.SizeSpec, ll *liveLoad) (score float64, hot bool, why string) {
 	if c.VCPU <= 0 || c.MemoryMiB <= 0 ||
 		used.VCPU+sz.VCPU > c.VCPU || used.MemoryMiB+sz.MemoryMiB > c.MemoryMiB ||
@@ -125,7 +130,7 @@ func assess(c proto.Capacity, used proto.Usage, sz api.SizeSpec, ll *liveLoad) (
 	cpu := float64(used.VCPU+sz.VCPU) / float64(c.VCPU)
 	mem := float64(used.MemoryMiB+sz.MemoryMiB) / float64(c.MemoryMiB)
 	if ll != nil {
-		if ll.MemTotalMiB > 0 {
+		if ll.MemTotalMiB > 0 && ll.MemAvailMiB > 0 { // 0: not measured (no MemAvailable)
 			if ll.MemAvailMiB < sz.MemoryMiB/4+memFloorMiB {
 				return 0, false, "host low on memory"
 			}

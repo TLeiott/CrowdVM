@@ -44,6 +44,12 @@ func TestAssess(t *testing.T) {
 	if _, _, why := assess(c, proto.Usage{}, sz, &short); why != "host low on memory" {
 		t.Fatalf("low memory: %q", why)
 	}
+	// No MemAvailable on the node (0): memory is not judged by it.
+	unknown := *idle
+	unknown.MemAvailMiB = 0
+	if s, _, why := assess(c, proto.Usage{}, sz, &unknown); why != "" || s != empty {
+		t.Fatalf("unmeasured memory: %v %q", s, why)
+	}
 	// Live memory use counts even with no bookings.
 	used := *idle
 	used.MemAvailMiB = 9000

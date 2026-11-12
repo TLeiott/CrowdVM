@@ -166,3 +166,25 @@ func TestSchedulerLiveLoad(t *testing.T) {
 		t.Fatalf("no host with memory: %s", r)
 	}
 }
+
+// A busy node that holds the sandbox's newest snapshot still gets its
+// resume: moving the disk through the server costs more.
+func TestSchedulerHotNodeKeepsLocality(t *testing.T) {
+	env := servertest.New(t)
+	key := env.AdminKey
+	a := env.StartNode(servertest.NodeOptions{Name: "a"})
+	id := createSandbox(t, env, key, nil)
+	env.WaitState(key, id, "ready")
+	env.Do(key, "POST", "/api/v1/sandboxes/"+id+"/stop", nil)
+	env.WaitState(key, id, "archived")
+	b := env.StartNode(servertest.NodeOptions{Name: "b"})
+	a.SetLoad(&proto.HostLoad{CPUBusy: 0.97, MemTotalMiB: 65536, MemAvailMiB: 60000})
+	b.SetLoad(&proto.HostLoad{CPUBusy: 0.05, MemTotalMiB: 65536, MemAvailMiB: 60000})
+	if r := env.Do(key, "POST", "/api/v1/sandboxes/"+id+"/resume", nil); r.Status != 202 || r.Str("sandbox.nodeId") != a.ID {
+		t.Fatalf("resume left its snapshot: %s", r)
+	}
+	// A new sandbox has no snapshot anywhere: the cool node gets it.
+	if r := env.Do(key, "POST", "/api/v1/sandboxes", map[string]any{"type": "small"}); r.Status != 202 || r.Str("sandbox.nodeId") != b.ID {
+		t.Fatalf("new sandbox on the hot node: %s", r)
+	}
+}

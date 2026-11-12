@@ -120,7 +120,7 @@ func (s *Server) reservations(nodeID string) map[string]proto.Usage {
 type candidate struct {
 	node  *Node
 	score float64
-	hot   bool // its host is busy: used only when no cool node fits
+	hot   bool // its host is busy (score includes -hotPenalty)
 }
 
 // matchReason returns "" when n satisfies the placement, else why not.
@@ -246,6 +246,9 @@ func (s *Server) pickNode(req schedReq) (*Node, error) {
 			continue
 		}
 		score := load + float64(n.Info.Bench.Score)/20
+		if hot {
+			score -= hotPenalty
+		}
 		if d, ok := located[id]; ok {
 			if d == 0 {
 				score += 1000
@@ -272,9 +275,6 @@ func (s *Server) pickNode(req schedReq) (*Node, error) {
 		return nil, ErrD(503, "out_of_capacity", msg, map[string]any{"retryAfterSeconds": s.Cfg.RetryAfter, "reason": reason, "nodes": reasons})
 	}
 	sort.Slice(cands, func(i, j int) bool {
-		if cands[i].hot != cands[j].hot {
-			return !cands[i].hot
-		}
 		if cands[i].score != cands[j].score {
 			return cands[i].score > cands[j].score
 		}
