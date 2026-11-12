@@ -72,7 +72,7 @@ A sandbox reaches the internet through the server, not through the node that hos
 - Direct ports (`direct-host` nodes) enter the sandbox through the node, which sees
   that traffic.
 
-The server operator can turn this off with `crowdvm-server serve --node-egress`; the
+The server operator can turn this off with `crowdvm-server serve --node-egress` (or `CROWDVM_NODE_EGRESS=1`; the Docker setup on a Pi turns it on by default, see [Running the server on a Raspberry Pi](server-on-a-pi.md)); the
 sandboxes then reach the internet through their nodes, as described in
 [For node owners](#network).
 

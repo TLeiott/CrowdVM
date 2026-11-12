@@ -1,0 +1,12 @@
+.git
+.ref
+bin
+dist
+data
+tmp
+node_modules
+**/node_modules
+**/__pycache__
+**/.venv
+*.qcow2
+*.img
