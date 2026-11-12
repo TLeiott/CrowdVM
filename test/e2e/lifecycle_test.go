@@ -5,11 +5,13 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -331,17 +333,37 @@ func testSnapshots(t *testing.T, c *cluster) {
 // asks, and a resume onto the other node comes up with the data.
 func (c *cluster) restartDuringUpload(t *testing.T) {
 	n1, n2 := c.nodes[0], c.nodes[1]
-	// No periodic layer may take the write first: the stop layer then holds
-	// all 4 GiB, so its upload still runs when the node restarts (a periodic
-	// layer left a 12 MB stop layer that uploaded before the SIGTERM landed).
+	// No periodic layer may take the write first: the stop's pre-flight save
+	// then holds all 4 GiB (a periodic layer left a 12 MB stop layer that
+	// uploaded before the SIGTERM landed). Node 1 reaches the server through
+	// a link the test slows down (from here on, also for racePeriodicUpload).
+	// Node 1's guests reach the server through a pinhole to the node's server
+	// address, so node 1 goes back to it after the group (groups of merged
+	// lanes may follow on this cluster); the group's guests on node 1 need
+	// no server API meanwhile.
+	link := c.nodeLink(t)
 	c.killNode(t, n1)
+	t.Cleanup(func() {
+		select {
+		case <-n1.proc.done: // a failed step left it stopped
+		default:
+			c.killNode(t, n1)
+		}
+		c.nodeCmd(t, n1, 30*time.Second, "config", "set", "server", c.url)
+		c.startNode(t, n1)
+	})
 	c.nodeCmd(t, n1, 30*time.Second, "config", "set", "snapshot-interval", "off")
+	c.nodeCmd(t, n1, 30*time.Second, "config", "set", "server", link.url())
 	c.startNode(t, n1)
 	src := c.newSandbox(t, "--name", "restart-src", "--node", n1.name)
 	const sumCmd = "sha256sum /home/user/big.bin | cut -c1-64"
 	r := c.execR(t, src, "head -c 4096M /dev/urandom > /home/user/big.bin && sync && "+sumCmd, "--timeout", "600")
 	expect(t, r.code == 0, "write: %v", r)
 	sum := strings.TrimSpace(r.out)
+	// The 4 GiB upload must still run when the node restarts, however long
+	// the guest takes to prepare the stop on a busy machine (38 s were seen,
+	// longer than the upload at full speed).
+	link.slow(t)
 	r2 := c.api(t, "POST", "/sandboxes/"+src+"/stop", map[string]any{})
 	expect(t, r2.status/100 == 2, "stop: %v", r2)
 	waitFor(t, 6*time.Minute, 50*time.Millisecond, "archived", func() (bool, string) { st := c.state(t, src); return st == "archived", st })
@@ -353,6 +375,7 @@ func (c *cluster) restartDuringUpload(t *testing.T) {
 	}
 	expect(t, len(unstored) > 0, "the upload ended before the restart; the restart was not exercised")
 	c.killNode(t, n1)
+	link.full()
 	// Its layers are only on the stopped node: a resume elsewhere fails at
 	// once with a retryable error instead of waiting for the boot timeout.
 	rr := c.api(t, "POST", "/sandboxes/"+src+"/resume", map[string]any{"placement": map[string]any{"node": n2.name}})
@@ -434,6 +457,10 @@ func (c *cluster) racePeriodicUpload(t *testing.T) {
 		}
 		return false, "none yet"
 	})
+	// It keeps uploading through the stop and the fork, however busy the
+	// machine is (restartDuringUpload put node 1 on the link).
+	link := c.nodeLink(t)
+	link.slow(t)
 	stored := func() bool {
 		for _, sn := range list(c.api(t, "GET", "/sandboxes/"+src+"/snapshots", nil).json(), "snapshots") {
 			if gets(sn, "id") == pending {
@@ -451,6 +478,7 @@ func (c *cluster) racePeriodicUpload(t *testing.T) {
 	expect(t, r.status == 202 && fork != "", "fork during the upload: %v", r)
 	c.cleanupSandbox(t, fork)
 	forkRaced := !stored()
+	link.full()
 	t.Logf("periodic layer %s still uploading after the stop: %v, at the fork: %v", pending, stopRaced, forkRaced)
 	expect(t, stopRaced && forkRaced, "the upload of %s ended before the stop or the fork; the race was not exercised", pending)
 	c.cliT(t, 10*time.Minute, "resume", src, "--node", n2.name).ok(t)
@@ -593,5 +621,65 @@ func testDeployAfterMerge(t *testing.T, c *cluster) {
 	expect(t, strings.TrimSpace(c.sh(t, e, "cat ~/base.txt ~/d.txt")) == "base\nsecond", "deploy of a snapshot saved from it lost data")
 	for _, id := range []string{e, b, a} {
 		c.deleteSandbox(t, id)
+	}
+}
+
+// nodeLink is a TCP proxy between a node and the server whose node→server
+// direction the test can slow down, so that an upload race does not depend
+// on how busy the machine's disk is. One per cluster, closed on teardown.
+type nodeLink struct {
+	l    net.Listener
+	rate atomic.Int64 // node→server bytes per second; 0: full speed
+}
+
+func (c *cluster) nodeLink(t testing.TB) *nodeLink {
+	t.Helper()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.link == nil {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		must(t, err)
+		c.link = &nodeLink{l: l}
+		go c.link.serve(fmt.Sprintf("127.0.0.1:%d", c.port))
+	}
+	return c.link
+}
+
+func (k *nodeLink) url() string { return "http://" + k.l.Addr().String() }
+
+// slow: 16 MB/s, a 4 GiB upload takes over 4 minutes.
+func (k *nodeLink) slow(t testing.TB) { k.rate.Store(16 << 20); t.Cleanup(k.full) }
+func (k *nodeLink) full()             { k.rate.Store(0) }
+
+func (k *nodeLink) serve(target string) {
+	for {
+		in, err := k.l.Accept()
+		if err != nil {
+			return
+		}
+		go func() {
+			defer in.Close()
+			out, err := net.Dial("tcp", target)
+			if err != nil {
+				return
+			}
+			defer out.Close()
+			go func() { _, _ = io.Copy(in, out); in.Close(); out.Close() }()
+			buf := make([]byte, 64<<10)
+			for {
+				n, err := in.Read(buf)
+				if n > 0 {
+					if _, werr := out.Write(buf[:n]); werr != nil {
+						return
+					}
+					if r := k.rate.Load(); r > 0 {
+						time.Sleep(time.Duration(int64(n) * int64(time.Second) / r))
+					}
+				}
+				if err != nil {
+					return
+				}
+			}
+		}()
 	}
 }

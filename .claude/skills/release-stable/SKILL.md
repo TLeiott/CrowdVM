@@ -32,7 +32,7 @@ git log --oneline origin/stable..origin/nightly   # all of origin/nightly on the
 
 Skip this step only when the user's own message said to ship stable or
 production ("release stable", "ship 0.2.0"): then run `make release-stable`
-right away (e2e included, about 25 minutes) and continue at step 4.
+right away (e2e included, about 15 minutes) and continue at step 4.
 
 Otherwise get the e2e result before anything irreversible happens:
 

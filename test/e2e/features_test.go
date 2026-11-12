@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -22,13 +21,10 @@ type account struct {
 	cfg string // CLI config dir
 }
 
-var bobOnce sync.Once
-var bobAcct *account
-
-// second creates (once) the account "bob" with its own CLI config.
+// second creates (once per cluster) the account "bob" with its own CLI config.
 func (c *cluster) second(t testing.TB) *account {
 	t.Helper()
-	bobOnce.Do(func() {
+	c.bobOnce.Do(func() {
 		a := &account{cfg: filepath.Join(c.root, "cli-bob")}
 		r := c.cliIn(t, "bob-pass-123456\n", "admin", "users", "create", "bob", "--password-stdin", "--credits", "100", "--email", "bob@e2e.test")
 		if r.code != 0 {
@@ -38,12 +34,12 @@ func (c *cluster) second(t testing.TB) *account {
 		if r.code != 0 {
 			t.Fatalf("bob login: %v", r)
 		}
-		bobAcct = a
+		c.bob = a
 	})
-	if bobAcct == nil {
+	if c.bob == nil {
 		t.Fatal("second account unavailable")
 	}
-	return bobAcct
+	return c.bob
 }
 
 // ---------- environments ----------
