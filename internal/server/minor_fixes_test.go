@@ -385,3 +385,28 @@ func TestResumeWaitsForRecentlyOfflineNode(t *testing.T) {
 		t.Fatalf("resume after the forced stop: %s", r)
 	}
 }
+
+// The reconnect sweep (asking the returned node for each node_offline
+// sandbox) met a boot timeout and wrote machine_error, while the failure
+// event reboots the sandbox: whichever came first won, so under load the
+// sandbox could stay in error for good.
+func TestReconnectSweepRebootsBootTimeout(t *testing.T) {
+	env := servertest.New(t)
+	node := env.StartNode(servertest.NodeOptions{})
+	key := env.AdminKey
+	id := createSandbox(t, env, key, nil)
+	env.WaitState(key, id, "ready")
+	stopUntilArchived(t, env, key, id)
+	env.Do(key, "POST", "/api/v1/sandboxes/"+id+"/resume", nil)
+	env.WaitState(key, id, "ready")
+	node.Disconnect()
+	env.WaitState(key, id, "error")
+	node.SetVMState(id, proto.VMError, false, "boot timeout: guest agent not healthy after 3m0s")
+	if err := node.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	r := env.WaitState(key, id, "ready")
+	if e := r.Str("sandbox.error"); e != "" {
+		t.Fatalf("after the returned node reported a boot timeout: %s", r)
+	}
+}

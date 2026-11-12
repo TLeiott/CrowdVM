@@ -772,10 +772,11 @@ func (s *Server) reconcileVM(nodeID string, st proto.VMStatus, fromEvent bool) {
 		// Its node came back but the machine failed after all, rather than
 		// staying node_offline for good (bugs-r8-opus 2). A boot that never
 		// came up (a lazy boot whose chain reads broke while the node was
-		// down) holds nothing newer: boot it again. Any other failure keeps
-		// its disk for recover: just say what happened.
+		// down) holds nothing newer: boot it again, whether an event or a
+		// heartbeat says so first (restartLostMachine acts once). Any other
+		// failure keeps its disk for recover: just say what happened.
 		if sb.State == api.StateError && sb.Error == "node_offline" && sb.NodeID == nodeID {
-			if fromEvent && strings.HasPrefix(st.Error, "boot timeout") {
+			if strings.HasPrefix(st.Error, "boot timeout") {
 				s.restartLostMachine(sb.ID, nodeID)
 			} else {
 				_, _ = s.DB.Exec(`UPDATE sandboxes SET error=?, health_reason='machine_error' WHERE id=? AND state='error' AND error='node_offline'`,

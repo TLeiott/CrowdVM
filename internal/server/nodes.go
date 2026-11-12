@@ -981,6 +981,11 @@ func (s *Server) afterNodeConnect(ctx context.Context, c *NodeConn) {
 		cancel()
 		var ne *NodeError
 		switch {
+		case err == nil && st.State == proto.VMError && strings.HasPrefix(st.Error, "boot timeout"):
+			// A boot that never came up holds nothing newer: boot it again,
+			// as the failure event does. Whichever of the two arrives first
+			// decides, so both must (bugs-r8-opus 2).
+			s.restartLostMachine(id, c.ID)
 		case err == nil && st.State == proto.VMError:
 			// The machine did not survive the node's restart: say so instead
 			// of node_offline (opus-22 m3); recover keeps its disk.
