@@ -501,7 +501,7 @@ func printStatus(w io.Writer, s node.Status, running bool, ui string) {
 	if id == "" {
 		id = "(not joined)"
 	}
-	fmt.Fprintf(w, "Node      %s  %s  v%s  %s/%s  driver %s\n", s.Name, id, s.Version, s.OS, s.Arch, s.Driver)
+	fmt.Fprintf(w, "Node      %s  %s  v%s  %s/%s  driver %s\n", s.Name, id, strings.TrimPrefix(s.Version, "v"), s.OS, s.Arch, s.Driver)
 	switch {
 	case !running:
 		fmt.Fprintf(w, "Daemon    not running\n")

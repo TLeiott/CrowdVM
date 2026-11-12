@@ -32,7 +32,10 @@ CREATE TABLE node_evacuations (
 );`}, store.Migration{Version: 2, SQL: `
 CREATE INDEX IF NOT EXISTS credit_ledger_node ON credit_ledger(node_id, kind, created_at);`},
 		// reason: 'owner' (its owner or an admin) or 'outdated' (compat.go).
-		store.Migration{Version: 3, SQL: `ALTER TABLE node_evacuations ADD COLUMN reason TEXT NOT NULL DEFAULT 'owner';`})
+		store.Migration{Version: 3, SQL: `ALTER TABLE node_evacuations ADD COLUMN reason TEXT NOT NULL DEFAULT 'owner';`},
+		// notified: the people concerned were told (outdated evacuations wait
+		// OutdatedNoticeDelay, as most nodes update themselves at once).
+		store.Migration{Version: 4, SQL: `ALTER TABLE node_evacuations ADD COLUMN notified INTEGER NOT NULL DEFAULT 0;`})
 }
 
 // MaxEvacuationGrace caps the grace period of an evacuation.
@@ -173,6 +176,7 @@ func (s *Server) reapEvacuations() {
 	for _, id := range list {
 		s.evacuateStep(id)
 	}
+	s.notifyOutdated()
 }
 
 // onlyCopiesOn returns the layers something still needs (snapshotsNeeded)

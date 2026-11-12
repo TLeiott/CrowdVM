@@ -37,10 +37,21 @@ func TestOutdatedNode(t *testing.T) {
 		r := env.Do(aliceKey, "GET", path, nil)
 		return r.Str("node.update.state") == compat.StateOutdated && r.Str("node.evacuation.reason") == "outdated" && r.Str("node.update.deadline") != ""
 	})
-	var notices int
-	_ = env.S.DB.QueryRow(`SELECT COUNT(*) FROM notices WHERE user_id=? AND kind='node_outdated'`, alice.ID).Scan(&notices)
-	if notices != 1 {
-		t.Fatalf("owner notices: %d", notices)
+	notices := func() (n int) {
+		_ = env.S.DB.QueryRow(`SELECT COUNT(*) FROM notices WHERE user_id=? AND kind='node_outdated'`, alice.ID).Scan(&n)
+		return n
+	}
+	// Told only when it stays outdated (most nodes update themselves at once).
+	time.Sleep(200 * time.Millisecond)
+	if n := notices(); n != 0 {
+		t.Fatalf("owner told at once: %d notices", n)
+	}
+	server.OutdatedNoticeDelay = 0
+	t.Cleanup(func() { server.OutdatedNoticeDelay = 10 * time.Minute })
+	env.Eventually("owner told once", func() bool { return notices() == 1 })
+	time.Sleep(200 * time.Millisecond)
+	if n := notices(); n != 1 {
+		t.Fatalf("owner notices: %d", n)
 	}
 	env.Eventually("heartbeat says outdated", func() bool {
 		u := node.LastHeartbeatResponse().Update

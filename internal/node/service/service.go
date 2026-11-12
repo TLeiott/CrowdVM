@@ -8,7 +8,7 @@ import "errors"
 
 // ErrRestart ends a daemon whose owner asked for a restart on the local
 // page; the service manager starts it again (RestartsOnExit, RunService).
-var ErrRestart = errors.New("restarting (requested on the local page)")
+var ErrRestart = errors.New("restarting (asked on the local page, or after an update)")
 
 // Options for Install.
 type Options struct {

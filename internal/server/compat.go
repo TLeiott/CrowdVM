@@ -120,12 +120,60 @@ func (s *Server) syncOutdated(nodeID string) {
 	if k, _ := res.RowsAffected(); k == 0 {
 		return // already evacuating (outdated, or by its owner)
 	}
-	at := store.Time(deadline).UTC().Format("Mon Jan 2 15:04 UTC")
-	s.Log.Warn("node outdated: no new sandboxes; running ones move at the deadline", "node", nodeID, "gen", n.Info.Gen, "requiredGen", compat.RequiredNodeGen, "deadline", at)
-	if n.OwnerID != "" {
-		s.walletNotify(n.OwnerID, n.OwnerID, "node_outdated", "Update your node "+n.Name,
-			fmt.Sprintf("Your node %s runs crowdvm-node %s, which misses a required update. It gets no new sandboxes until it is updated, and sandboxes still on it move to other nodes at %s. Update it on the machine with: %s",
-				n.Name, firstNonEmpty(n.Info.Version, "(unknown)"), at, NodeUpdateCommand))
+	s.Log.Warn("node outdated: no new sandboxes; running ones move at the deadline", "node", nodeID, "gen", n.Info.Gen, "requiredGen", compat.RequiredNodeGen,
+		"deadline", store.Time(deadline).UTC().Format(time.RFC3339))
+}
+
+// OutdatedNoticeDelay: an outdated node's owner and the owners of its
+// sandboxes are told only if it is still outdated this long after it was
+// first seen (a node with auto-update fixes itself within seconds).
+var OutdatedNoticeDelay = 10 * time.Minute
+
+// notifyOutdated (reaper) tells the people concerned about outdated nodes
+// that did not update themselves in time, once per outdated period.
+func (s *Server) notifyOutdated() {
+	rows, err := s.DB.Query(`SELECT node_id, deadline FROM node_evacuations WHERE reason='outdated' AND notified=0 AND started_at<=?`,
+		store.Now()-OutdatedNoticeDelay.Milliseconds())
+	if err != nil {
+		return
+	}
+	type due struct {
+		id       string
+		deadline int64
+	}
+	var list []due
+	for rows.Next() {
+		var d due
+		if rows.Scan(&d.id, &d.deadline) == nil {
+			list = append(list, d)
+		}
+	}
+	rows.Close()
+	for _, d := range list {
+		if res, err := s.DB.Exec(`UPDATE node_evacuations SET notified=1 WHERE node_id=? AND notified=0`, d.id); err != nil {
+			continue
+		} else if k, _ := res.RowsAffected(); k == 0 {
+			continue
+		}
+		n, err := s.NodeByID(d.id)
+		if err != nil {
+			continue
+		}
+		at := store.Time(d.deadline).UTC().Format("Mon Jan 2 15:04 UTC")
+		if n.OwnerID != "" {
+			s.walletNotify(n.OwnerID, n.OwnerID, "node_outdated", "Update your node "+n.Name,
+				fmt.Sprintf("Your node %s runs crowdvm-node %s, which misses a required update. It gets no new sandboxes until it is updated, and sandboxes still on it move to other nodes at %s. Update it on the machine with: %s",
+					n.Name, firstNonEmpty(n.Info.Version, "(unknown)"), at, NodeUpdateCommand))
+		}
+		for _, sb := range s.sandboxesOn(d.id, "") {
+			if sb.SnapshotsEnabled {
+				s.notifySandbox(sb, "node_evacuation", "warning", 0, "Sandbox may move to another node",
+					"The machine hosting "+sb.Name+" misses a required update. Unless its owner updates it, "+sb.Name+" is stopped at "+at+" and resumed on another node. Stop it before then to choose the moment.")
+			} else {
+				s.notifySandbox(sb, "node_evacuation", "warning", 0, "Sandbox may be erased",
+					"The machine hosting "+sb.Name+" misses a required update. Unless its owner updates it, "+sb.Name+" is erased at "+at+" (it has snapshots off, so it cannot move). Copy out anything you need before then.")
+			}
+		}
 	}
 }
 
