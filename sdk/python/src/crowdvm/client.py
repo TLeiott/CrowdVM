@@ -36,8 +36,11 @@ def _note_client_status(headers: Any) -> None:
         return
     _warned_outdated = True
     latest = next((p.strip()[7:] for p in st.split(";") if p.strip().startswith("latest=")), "")
-    warnings.warn(f"crowdvm SDK {VERSION} misses an update the server requires"
-                  + (f" (latest: {latest})" if latest else "") + "; upgrade the crowdvm package.", stacklevel=3)
+    try:  # under -W error a warning would turn a request that succeeded into an exception
+        warnings.warn(f"crowdvm SDK {VERSION} misses an update the server requires"
+                      + (f" (latest: {latest})" if latest else "") + "; upgrade the crowdvm package.", stacklevel=3)
+    except Warning:
+        pass
 _NO_RETRY_429 = {"limit_reached", "member_limit_reached", "trial_compute_limit_reached"}
 
 

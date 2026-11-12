@@ -35,6 +35,15 @@ import (
 // NodeUpdateCommand is what a node owner runs to update.
 const NodeUpdateCommand = "crowdvm-node update"
 
+// nodeUpdateCommand is how a node of generation gen updates: nodes from
+// before generations (0) have no update command and are installed again.
+func (s *Server) nodeUpdateCommand(gen int) string {
+	if gen == 0 {
+		return "curl -fsSL " + strings.TrimRight(s.Cfg.PublicURL, "/") + "/install | sh -s -- --node && crowdvm-node install-service"
+	}
+	return NodeUpdateCommand
+}
+
 // DefaultNodeUpdateGrace: how long an outdated node keeps its running
 // sandboxes (Config.NodeUpdateGrace).
 const DefaultNodeUpdateGrace = 72 * time.Hour
@@ -53,31 +62,38 @@ func (s *Server) refuseIncompatibleNode(w http.ResponseWriter, r *http.Request, 
 	if gen >= compat.MinNodeGen {
 		return false
 	}
-	latest := s.latestRelease()
-	s.Log.Warn("node refused: crowdvm-node too old", "node", n.ID, "gen", gen, "minGen", compat.MinNodeGen)
+	latest, cmd := s.latestRelease(), s.nodeUpdateCommand(gen)
+	if at, ok := refusedLogAt.Load(n.ID); !ok || time.Since(at.(time.Time)) > 10*time.Minute { // it retries every few seconds
+		refusedLogAt.Store(n.ID, time.Now())
+		s.Log.Warn("node refused: crowdvm-node too old", "node", n.ID, "gen", gen, "minGen", compat.MinNodeGen)
+	}
 	w.Header().Set(compat.Header, strconv.Itoa(compat.ServerGen))
 	api.WriteError(w, ErrD(426, "node_outdated",
-		"This crowdvm-node is too old for this server. Update it with `"+NodeUpdateCommand+"`"+
+		"This crowdvm-node is too old for this server. Update it with `"+cmd+"`"+
 			map[bool]string{true: " (latest: " + latest + ")", false: ""}[latest != ""]+", then start it again.",
-		map[string]any{"gen": gen, "minGen": compat.MinNodeGen, "latest": latest, "command": NodeUpdateCommand}))
+		map[string]any{"gen": gen, "minGen": compat.MinNodeGen, "latest": latest, "command": cmd}))
 	return true
 }
+
+var refusedLogAt sync.Map // node id -> last "node refused" log line
 
 // nodeUpdate is node n's update state. latest is the newest release the
 // server offers ("" = unknown: then only the generation counts).
 func (s *Server) nodeUpdate(n *Node) *proto.NodeUpdate {
-	u := &proto.NodeUpdate{State: compat.NodeState(n.Info.Gen), Version: n.Info.Version, Latest: s.latestRelease(), Command: NodeUpdateCommand}
+	u := &proto.NodeUpdate{State: compat.NodeState(n.Info.Gen), Version: n.Info.Version, Latest: s.latestRelease(), Command: s.nodeUpdateCommand(n.Info.Gen)}
 	switch u.State {
 	case compat.StateOutdated:
 		u.Message = "This crowdvm-node misses a required update: it gets no new sandboxes"
-		if ev := s.evacuation(n.ID); ev != nil && s.evacuationReason(n.ID) == "outdated" {
+		if !s.currentNodeOnline() {
+			u.Message = "This crowdvm-node misses a required update. It still takes sandboxes while no updated node is online"
+		} else if ev := s.evacuation(n.ID); ev != nil && ev.Reason == "outdated" {
 			d := ev.Deadline
 			u.Deadline = &d
 			u.Message += ", and sandboxes still on it move to other nodes at " + d.UTC().Format("Mon 15:04 UTC")
 		}
-		u.Message += ". Run `" + NodeUpdateCommand + "`."
+		u.Message += ". Run `" + u.Command + "`."
 	case compat.StateIncompatible:
-		u.Message = "This crowdvm-node is too old for this server. Run `" + NodeUpdateCommand + "`."
+		u.Message = "This crowdvm-node is too old for this server. Run `" + u.Command + "`."
 	case compat.StateCurrent:
 		if newerRelease(u.Latest, u.Version) {
 			u.State = compat.StateAvailable
@@ -85,13 +101,6 @@ func (s *Server) nodeUpdate(n *Node) *proto.NodeUpdate {
 		}
 	}
 	return u
-}
-
-// evacuationReason: 'owner', 'outdated' or "" (none).
-func (s *Server) evacuationReason(nodeID string) string {
-	var r string
-	_ = s.DB.QueryRow(`SELECT reason FROM node_evacuations WHERE node_id=?`, nodeID).Scan(&r)
-	return r
 }
 
 // syncOutdated starts or ends node id's 'outdated' evacuation to match its
@@ -102,12 +111,15 @@ func (s *Server) syncOutdated(nodeID string) {
 	if err != nil {
 		return
 	}
-	outdated := compat.NodeState(n.Info.Gen) != compat.StateCurrent
-	if !outdated {
-		if res, err := s.DB.Exec(`DELETE FROM node_evacuations WHERE node_id=? AND reason='outdated'`, nodeID); err == nil {
-			if k, _ := res.RowsAffected(); k > 0 {
-				s.Log.Info("node updated: outdated evacuation ended", "node", nodeID, "version", n.Info.Version)
+	if !nodeOutdated(n) {
+		if ev := s.evacuation(nodeID); ev != nil && ev.Reason == "outdated" {
+			// Moves that waited for a layer only this node held boot now
+			// (what the end of an evacuation does, evacuateStep).
+			for _, sb := range s.failedEvacMoves(nodeID) {
+				s.evacuationResume(sb, nodeID)
 			}
+			_, _ = s.DB.Exec(`DELETE FROM node_evacuations WHERE node_id=? AND reason='outdated'`, nodeID)
+			s.Log.Info("node updated: outdated evacuation ended", "node", nodeID, "version", n.Info.Version)
 		}
 		return
 	}
@@ -122,6 +134,57 @@ func (s *Server) syncOutdated(nodeID string) {
 	}
 	s.Log.Warn("node outdated: no new sandboxes; running ones move at the deadline", "node", nodeID, "gen", n.Info.Gen, "requiredGen", compat.RequiredNodeGen,
 		"deadline", store.Time(deadline).UTC().Format(time.RFC3339))
+	if !s.currentNodeOnline() {
+		s.Log.Warn("no online node is current: outdated nodes keep taking sandboxes, and their grace period starts once one is updated")
+	}
+}
+
+// currentNodeOnline: some online, enabled node runs a current generation.
+// While none does, outdated nodes keep taking sandboxes and their
+// evacuations wait: a server upgraded before its nodes must not stop the
+// whole pool (the first rollout of generations, or a required update the
+// nodes have not fetched yet).
+func (s *Server) currentNodeOnline() bool {
+	for id := range s.nodes.online() {
+		if n, err := s.NodeByID(id); err == nil && !n.Disabled && !nodeOutdated(n) {
+			return true
+		}
+	}
+	return false
+}
+
+// outdatedStepEvery: how often an outdated node's evacuation is looked at
+// after its deadline (an empty one stays until the node is updated).
+var outdatedStepEvery = 30 * time.Second
+
+// outdatedDue: the outdated evacuation ev of node id should act now.
+func (s *Server) outdatedDue(nodeID string, ev *proto.Evacuation) bool {
+	if time.Now().Before(ev.Deadline) || !s.currentNodeOnline() {
+		return false
+	}
+	s.earnMu.Lock()
+	defer s.earnMu.Unlock()
+	if s.outdatedSteps == nil {
+		s.outdatedSteps = map[string]time.Time{}
+	}
+	if time.Since(s.outdatedSteps[nodeID]) < outdatedStepEvery {
+		return false
+	}
+	s.outdatedSteps[nodeID] = time.Now()
+	return true
+}
+
+// slideOutdated (reaper): while no current node is online, outdated
+// deadlines stay a full grace period away, so the grace starts when a
+// node the sandboxes can move to exists.
+func (s *Server) slideOutdated() {
+	if s.currentNodeOnline() {
+		return
+	}
+	grace := s.Cfg.NodeUpdateGrace
+	slack := min(time.Minute, grace/2) // not a write every reaper pass
+	now := store.Now()
+	_, _ = s.DB.Exec(`UPDATE node_evacuations SET deadline=? WHERE reason='outdated' AND deadline<?`, now+grace.Milliseconds(), now+(grace-slack).Milliseconds())
 }
 
 // OutdatedNoticeDelay: an outdated node's owner and the owners of its
@@ -162,8 +225,8 @@ func (s *Server) notifyOutdated() {
 		at := store.Time(d.deadline).UTC().Format("Mon Jan 2 15:04 UTC")
 		if n.OwnerID != "" {
 			s.walletNotify(n.OwnerID, n.OwnerID, "node_outdated", "Update your node "+n.Name,
-				fmt.Sprintf("Your node %s runs crowdvm-node %s, which misses a required update. It gets no new sandboxes until it is updated, and sandboxes still on it move to other nodes at %s. Update it on the machine with: %s",
-					n.Name, firstNonEmpty(n.Info.Version, "(unknown)"), at, NodeUpdateCommand))
+				fmt.Sprintf("Your node %s runs crowdvm-node %s, which misses a required update. It gets no new sandboxes until it is updated, and sandboxes still on it move to other nodes from %s on. Update it on the machine with: %s",
+					n.Name, firstNonEmpty(n.Info.Version, "(unknown)"), at, s.nodeUpdateCommand(n.Info.Gen)))
 		}
 		for _, sb := range s.sandboxesOn(d.id, "") {
 			if sb.SnapshotsEnabled {

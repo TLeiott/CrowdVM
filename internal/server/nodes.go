@@ -1056,7 +1056,7 @@ func (s *Server) nodeJSON(n *Node, detail bool) map[string]any {
 		m["pauseReason"] = nz(n.Info.PauseReason)
 	}
 	if ev := s.evacuation(n.ID); ev != nil {
-		m["evacuation"] = map[string]any{"startedAt": ts(ev.StartedAt), "deadline": ts(ev.Deadline), "reason": s.evacuationReason(n.ID)}
+		m["evacuation"] = map[string]any{"startedAt": ts(ev.StartedAt), "deadline": ts(ev.Deadline), "reason": ev.Reason}
 	}
 	if n.OwnerID != "" {
 		if u, err := s.UserByID(n.OwnerID); err == nil {
@@ -1172,8 +1172,12 @@ func (s *Server) handleUpdateNode(c *Ctx) error {
 	if err := c.Bind(&req); err != nil {
 		return err
 	}
-	if req.Disabled != nil && !*req.Disabled && s.evacuation(n.ID) != nil {
-		return Err(409, "node_evacuating", "The node is being evacuated: cancel the evacuation first.")
+	if req.Disabled != nil && !*req.Disabled {
+		if ev := s.evacuation(n.ID); ev != nil && ev.Reason == "outdated" {
+			return Err(409, "node_outdated", "The node misses a required update: it takes new sandboxes again once it is updated (`"+NodeUpdateCommand+"` on the machine).")
+		} else if ev != nil {
+			return Err(409, "node_evacuating", "The node is being evacuated: cancel the evacuation first.")
+		}
 	}
 	if req.Trust != nil {
 		if !c.P.IsAdmin() {

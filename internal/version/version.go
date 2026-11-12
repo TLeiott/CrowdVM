@@ -32,7 +32,7 @@ func Parse(s string) (v V, ok bool) {
 	for i := 0; i < 3; i++ {
 		v.core[i], _ = strconv.Atoi(m[i+1])
 	}
-	suf := strings.TrimSuffix(m[4], "-dirty")
+	suf := strings.TrimSuffix(strings.TrimSuffix(m[4], "-dirty"), "dirty") // "v1.2.3-dirty": the group starts after the "-"
 	if d := describeRe.FindStringSubmatchIndex(suf); d != nil {
 		v.after, _ = strconv.Atoi(suf[d[2]:d[3]])
 		suf = suf[:d[0]]

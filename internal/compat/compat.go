@@ -25,7 +25,12 @@
 //
 //	node 1: secure layer (guest channel, encrypted disks, QMP and NIC
 //	        sockets in the systemd fd store). Older nodes let their owner
-//	        read the guest's memory: Required.
+//	        read the guest's memory: Required. Nodes built before
+//	        generations send none (0), even those that have the secure
+//	        layer: they also lack the update machinery, so they are
+//	        installed again (the server tells them how). While no node is
+//	        current, outdated ones keep serving (server/compat.go), so
+//	        upgrading the server first does not stop the pool.
 //	api  1: first declared generation.
 //	server 1: first declared generation.
 package compat

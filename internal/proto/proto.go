@@ -636,6 +636,9 @@ type NodeUpdate struct {
 type Evacuation struct {
 	StartedAt time.Time `json:"startedAt"`
 	Deadline  time.Time `json:"deadline"`
+	// Reason: "owner" (its owner or an admin) or "outdated" (the node
+	// misses a required update; it ends when the node is updated).
+	Reason string `json:"reason,omitempty"`
 }
 
 // GuestEvent is one line of the guest's GET /v1/internal/events/stream NDJSON.

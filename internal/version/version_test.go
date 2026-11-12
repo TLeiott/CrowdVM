@@ -32,3 +32,11 @@ func TestCompare(t *testing.T) {
 		}
 	}
 }
+
+func TestDirtyIsARelease(t *testing.T) {
+	for _, c := range [][2]string{{"v1.2.3-dirty", "v1.2.3"}, {"v1.2.3-4-gabc1234-dirty", "v1.2.3-4-gabc1234"}} {
+		if r, ok := Compare(c[0], c[1]); !ok || r != 0 {
+			t.Errorf("Compare(%s, %s) = %d, %v; want equal", c[0], c[1], r, ok)
+		}
+	}
+}

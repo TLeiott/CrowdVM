@@ -19,9 +19,9 @@ func setGen(t *testing.T, p *int, v int) {
 	t.Cleanup(func() { *p = old })
 }
 
-// A node below Required gets no new sandboxes, its owner is told, its
-// sandboxes get an evacuation deadline, and all of it ends when the node
-// comes back updated.
+// A node below Required gets no new sandboxes while a current node is
+// online, its owner is told, its sandboxes get an evacuation deadline, and
+// all of it ends when the node comes back updated.
 func TestOutdatedNode(t *testing.T) {
 	setGen(t, &compat.RequiredNodeGen, compat.NodeGen)
 	env := servertest.New(t)
@@ -30,8 +30,9 @@ func TestOutdatedNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := compat.NodeGen - 1
-	node := env.StartNode(servertest.NodeOptions{JoinToken: tok, Gen: &old})
+	old := 0 // from before generations
+	node := env.StartNode(servertest.NodeOptions{JoinToken: tok, Gen: &old, Name: "alice-node"})
+	env.StartNode(servertest.NodeOptions{Name: "current"})
 	path := "/api/v1/nodes/" + node.ID
 	env.Eventually("outdated with a deadline", func() bool {
 		r := env.Do(aliceKey, "GET", path, nil)
@@ -53,19 +54,36 @@ func TestOutdatedNode(t *testing.T) {
 	if n := notices(); n != 1 {
 		t.Fatalf("owner notices: %d", n)
 	}
+	var msg string
+	_ = env.S.DB.QueryRow(`SELECT message FROM notices WHERE user_id=? AND kind='node_outdated'`, alice.ID).Scan(&msg)
+	if !strings.Contains(msg, "/install | sh -s -- --node") { // no update command before generations
+		t.Fatalf("notice for a node from before generations: %s", msg)
+	}
 	env.Eventually("heartbeat says outdated", func() bool {
 		u := node.LastHeartbeatResponse().Update
-		return u != nil && u.State == compat.StateOutdated && u.Command == server.NodeUpdateCommand
+		return u != nil && u.State == compat.StateOutdated && strings.Contains(u.Command, "/install")
 	})
-	// No placement on the only node, which is outdated: a create waits.
-	waiting := createSandbox(t, env, env.AdminKey, nil)
+	// A create goes to the current node; one pinned to the outdated node waits.
+	free := createSandbox(t, env, env.AdminKey, nil)
+	env.WaitState(env.AdminKey, free, "ready")
+	if r := env.Do(env.AdminKey, "GET", "/api/v1/sandboxes/"+free, nil); r.Str("sandbox.nodeId") == node.ID {
+		t.Fatalf("placed on the outdated node: %s", r)
+	}
+	waiting := createSandbox(t, env, env.AdminKey, map[string]any{"placement": map[string]any{"node": "alice-node"}})
 	time.Sleep(300 * time.Millisecond)
 	if r := env.Do(env.AdminKey, "GET", "/api/v1/sandboxes/"+waiting, nil); r.Str("sandbox.waitingForCapacity") != "true" {
-		t.Fatalf("create on an outdated node: %s", r)
+		t.Fatalf("create pinned to an outdated node: %s", r)
 	}
-	// Its owner cannot cancel the evacuation; updating ends it.
+	// Its owner cannot end the evacuation: not by cancelling, not by
+	// evacuating it themselves first, not by undraining.
+	if r := env.Do(aliceKey, "POST", path+"/evacuate", map[string]any{"graceSec": 3600}); r.Status != 200 || r.Str("node.evacuation.reason") != "outdated" {
+		t.Fatalf("owner evacuation of an outdated node: %s", r)
+	}
 	if r := env.Do(aliceKey, "DELETE", path+"/evacuate", nil); r.Status != 409 || r.Code() != "node_outdated" {
 		t.Fatalf("cancel outdated evacuation: %s", r)
+	}
+	if r := env.Do(aliceKey, "PATCH", path, map[string]any{"disabled": false}); r.Status != 409 || r.Code() != "node_outdated" {
+		t.Fatalf("undrain an outdated node: %s", r)
 	}
 	node.Disconnect()
 	node.SetGen(compat.NodeGen)
@@ -74,36 +92,34 @@ func TestOutdatedNode(t *testing.T) {
 	}
 	env.Eventually("updated node is current", func() bool {
 		r := env.Do(aliceKey, "GET", path, nil)
-		return r.Str("node.update.state") == compat.StateCurrent && r.Get("node.evacuation") == nil && r.Str("node.disabled") == "false"
+		return r.Str("node.update.state") == compat.StateCurrent && r.Get("node.evacuation") == nil
 	})
-	env.WaitState(env.AdminKey, waiting, "ready") // the waiting create boots there now
+	// The owner drained it with their evacuation: it stays drained.
+	if r := env.Do(aliceKey, "PATCH", path, map[string]any{"disabled": false}); r.Status != 200 {
+		t.Fatalf("undrain after the update: %s", r)
+	}
+	env.WaitState(env.AdminKey, waiting, "ready") // the pinned create boots there now
 }
 
-// An owner's evacuation of an outdated node stays the owner's after the update.
-func TestOwnerEvacuationSurvivesUpdate(t *testing.T) {
+// While no current node is online (a server upgraded before its nodes),
+// outdated nodes keep serving and their grace period does not run out.
+func TestAllNodesOutdatedStillServe(t *testing.T) {
 	setGen(t, &compat.RequiredNodeGen, compat.NodeGen)
-	env := servertest.New(t)
-	node := env.StartNode(servertest.NodeOptions{})
-	env.WaitState(env.AdminKey, createSandbox(t, env, env.AdminKey, nil), "ready") // keeps the evacuation going
-	reconnect := func(gen int) {
-		node.Disconnect()
-		node.SetGen(gen)
-		if err := node.Connect(); err != nil {
-			t.Fatal(err)
-		}
+	env := servertest.New(t, func(c *server.Config) { c.NodeUpdateGrace = 300 * time.Millisecond })
+	old := 0
+	node := env.StartNode(servertest.NodeOptions{Gen: &old})
+	sb := createSandbox(t, env, env.AdminKey, nil)
+	env.WaitState(env.AdminKey, sb, "ready")
+	time.Sleep(time.Second) // three grace periods
+	r := env.Do(env.AdminKey, "GET", "/api/v1/nodes/"+node.ID, nil)
+	if r.Str("node.evacuation.reason") != "outdated" {
+		t.Fatalf("node: %s", r)
 	}
-	path := "/api/v1/nodes/" + node.ID
-	reconnect(compat.NodeGen - 1)
-	env.Eventually("outdated", func() bool { return env.Do(env.AdminKey, "GET", path, nil).Str("node.evacuation.reason") == "outdated" })
-	if r := env.Do(env.AdminKey, "POST", path+"/evacuate", map[string]any{"graceSec": 3600}); r.Status != 200 || r.Str("node.evacuation.reason") != "owner" {
-		t.Fatalf("evacuate: %s", r)
+	if d, _ := time.Parse(time.RFC3339Nano, r.Str("node.evacuation.deadline")); !d.After(time.Now()) {
+		t.Fatalf("deadline ran out without a current node: %s", r)
 	}
-	reconnect(compat.NodeGen)
-	env.Eventually("current", func() bool {
-		return env.Do(env.AdminKey, "GET", path, nil).Str("node.update.state") == compat.StateCurrent
-	})
-	if r := env.Do(env.AdminKey, "GET", path, nil); r.Str("node.evacuation.reason") != "owner" {
-		t.Fatalf("owner evacuation after update: %s", r)
+	if r := env.Do(env.AdminKey, "GET", "/api/v1/sandboxes/"+sb, nil); r.Str("sandbox.state") != "ready" {
+		t.Fatalf("sandbox stopped without a current node: %s", r)
 	}
 }
 

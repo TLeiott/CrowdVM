@@ -51,10 +51,11 @@ const offlineOnNode = `(state='error' AND error='node_offline')`
 // evacuation returns node id's active evacuation (nil: none).
 func (s *Server) evacuation(nodeID string) *proto.Evacuation {
 	var started, deadline int64
-	if s.DB.QueryRow(`SELECT started_at, deadline FROM node_evacuations WHERE node_id=?`, nodeID).Scan(&started, &deadline) != nil {
+	var reason string
+	if s.DB.QueryRow(`SELECT started_at, deadline, reason FROM node_evacuations WHERE node_id=?`, nodeID).Scan(&started, &deadline, &reason) != nil {
 		return nil
 	}
-	return &proto.Evacuation{StartedAt: store.Time(started), Deadline: store.Time(deadline)}
+	return &proto.Evacuation{StartedAt: store.Time(started), Deadline: store.Time(deadline), Reason: reason}
 }
 
 // sandboxesOn lists the sandboxes that still occupy node id (cond narrows it).
@@ -110,7 +111,7 @@ func (s *Server) handleEvacuateNode(c *Ctx) error {
 	prev := s.evacuation(n.ID)
 	_, _ = s.DB.Exec(`UPDATE nodes SET disabled=1 WHERE id=?`, n.ID)
 	if _, err := s.DB.Exec(`INSERT INTO node_evacuations(node_id,started_at,deadline) VALUES(?,?,?)
-		ON CONFLICT(node_id) DO UPDATE SET deadline=excluded.deadline, reason='owner'`, n.ID, now, deadline); err != nil {
+		ON CONFLICT(node_id) DO UPDATE SET deadline=CASE WHEN node_evacuations.reason='outdated' THEN MIN(node_evacuations.deadline, excluded.deadline) ELSE excluded.deadline END`, n.ID, now, deadline); err != nil {
 		return err
 	}
 	at := clockUTC(store.Time(deadline))
@@ -148,10 +149,10 @@ func (s *Server) handleCancelEvacuation(c *Ctx) error {
 	if ev == nil {
 		return Err(404, "not_evacuating", "This node is not being evacuated.")
 	}
-	if s.evacuationReason(n.ID) == "outdated" {
+	if ev.Reason == "outdated" {
 		return Err(409, "node_outdated", "This node misses a required update; the evacuation ends by itself once it is updated (`"+NodeUpdateCommand+"` on the machine).")
 	}
-	res, _ := s.DB.Exec(`DELETE FROM node_evacuations WHERE node_id=? AND deadline>?`, n.ID, store.Now())
+	res, _ := s.DB.Exec(`DELETE FROM node_evacuations WHERE node_id=? AND deadline>? AND reason<>'outdated'`, n.ID, store.Now())
 	if k, _ := res.RowsAffected(); k == 0 {
 		return Err(409, "evacuation_started", "The grace period is over: the sandboxes are already being moved.")
 	}
@@ -176,6 +177,7 @@ func (s *Server) reapEvacuations() {
 	for _, id := range list {
 		s.evacuateStep(id)
 	}
+	s.slideOutdated()
 	s.notifyOutdated()
 }
 
@@ -223,6 +225,12 @@ func (s *Server) onlyCopiesOn(nodeID string) []string {
 func (s *Server) evacuateStep(nodeID string) {
 	ev := s.evacuation(nodeID) // re-read: a cancel just before the deadline wins
 	if ev == nil {
+		return
+	}
+	// An outdated node's evacuation does nothing before its deadline, nor
+	// while no current node could take its sandboxes (outdatedDue); after
+	// it, an empty node is looked at every half minute (cheap reaper).
+	if ev.Reason == "outdated" && !s.outdatedDue(nodeID, ev) {
 		return
 	}
 	var offline int

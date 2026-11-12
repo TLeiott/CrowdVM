@@ -33,6 +33,12 @@ func (a *App) serverVersion(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// The release its downloads offer, when it has one: the server binary's
+	// own version may be a local build a few commits past it (git describe),
+	// which no CLI release can ever reach.
+	if v, _ := info["latest"].(string); v != "" {
+		return v, nil
+	}
 	v, _ := info["version"].(string)
 	return v, nil
 }
