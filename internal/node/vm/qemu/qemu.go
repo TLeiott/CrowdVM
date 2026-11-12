@@ -984,6 +984,15 @@ func (d *Driver) setState(m *machine, state, msg string) {
 func (d *Driver) launch(m *machine, cfg proto.GuestConfig) error {
 	dir := d.vmDir(m.id)
 	cfg.ListenAddr = fmt.Sprintf(":%d", proto.GuestPort)
+	if cfg.Channel != nil && d.opt.Net == NetNetstack && d.opt.ServerAddr != "" {
+		// The guest dials the server through the gateway alias: no DNS
+		// before its channel (which carries its DNS) is up.
+		if _, port, err := net.SplitHostPort(d.opt.ServerAddr); err == nil {
+			ch := *cfg.Channel
+			ch.Addr = net.JoinHostPort(netstack.Gateway.String(), port)
+			cfg.Channel = &ch
+		}
+	}
 	cfgJSON, err := json.Marshal(cfg)
 	if err != nil {
 		return err

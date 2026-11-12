@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log"
@@ -20,10 +21,11 @@ import (
 // channelGuest runs a real (unprivileged) guest agent for a stub the fake
 // node received, connected over the guest channel.
 func channelGuest(t *testing.T, env *servertest.Env, stub proto.GuestConfig) (*guest.Agent, string) {
-	return channelGuestCtx(t, context.Background(), env, stub)
+	a, addr, _ := channelGuestCtx(t, context.Background(), env, stub)
+	return a, addr
 }
 
-func channelGuestCtx(t *testing.T, parent context.Context, env *servertest.Env, stub proto.GuestConfig) (*guest.Agent, string) {
+func channelGuestCtx(t *testing.T, parent context.Context, env *servertest.Env, stub proto.GuestConfig) (*guest.Agent, string, *guest.Channel) {
 	t.Helper()
 	stub.Channel.URL = env.URL // the agent runs on this host, not behind the node's 10.0.2.2
 	ctx, cancel := context.WithCancel(parent)
@@ -48,7 +50,7 @@ func channelGuestCtx(t *testing.T, parent context.Context, env *servertest.Env, 
 	done := make(chan struct{})
 	go func() { _ = a.Run(ctx); close(done) }()
 	t.Cleanup(func() { cancel(); <-done })
-	return a, addr
+	return a, addr, ch
 }
 
 // Secure layer: the node gets a boot stub without secrets; the guest fetches
@@ -70,7 +72,12 @@ func TestGuestChannelKeepsSecretsFromTheNode(t *testing.T) {
 		t.Fatalf("the node got more than a boot stub: %s", raw)
 	}
 	ctx0, stopGuest := context.WithCancel(context.Background())
-	_, local := channelGuestCtx(t, ctx0, env, stub)
+	_, local, ch0 := channelGuestCtx(t, ctx0, env, stub)
+	// The disk key comes with the ticket redemption (and only then).
+	diskKey := ch0.TakeDataKey()
+	if len(diskKey) != 64 || strings.Contains(string(raw), base64.StdEncoding.EncodeToString(diskKey)) {
+		t.Fatalf("disk key: %d bytes", len(diskKey))
+	}
 
 	// The API reaches the guest over the channel.
 	r := env.Do(key, "POST", "/api/v1/sandboxes/"+id+"/commands", map[string]any{"command": "printf %s \"$MY_SECRET\""})
@@ -155,8 +162,11 @@ func TestGuestChannelKeepsSecretsFromTheNode(t *testing.T) {
 	next.Channel = &proto.GuestChannel{URL: env.URL, Pin: ch.Pin, Ticket: ch.Ticket}
 	ctx3, cancel3 := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel3()
-	cfg, _, err := guest.ConnectChannel(ctx3, next, t.TempDir(), log.New(io.Discard, "", 0))
+	cfg, ch3, err := guest.ConnectChannel(ctx3, next, t.TempDir(), log.New(io.Discard, "", 0))
 	if err != nil || cfg.Boot != proto.BootRecover || cfg.FirstBoot || cfg.Env["MY_SECRET"] != "hunter2-very-secret" {
 		t.Fatalf("redeem after reboot: %v boot=%s first=%v", err, cfg.Boot, cfg.FirstBoot)
+	}
+	if k := ch3.TakeDataKey(); string(k) != string(diskKey) {
+		t.Fatal("the disk key changed across a reboot")
 	}
 }

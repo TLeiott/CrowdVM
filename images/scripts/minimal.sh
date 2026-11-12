@@ -23,7 +23,8 @@ Pin-Priority: -10
 EOF
 apt_get update
 apt_get install --no-install-recommends openssh-server sudo cloud-guest-utils e2fsprogs \
-	curl ca-certificates gnupg locales less nano vim-tiny iproute2 iputils-ping ufw
+	curl ca-certificates gnupg locales less nano vim-tiny iproute2 iputils-ping ufw \
+	cryptsetup-bin fdisk
 
 # Locale (Boat: LANG/LC_ALL en_US.UTF-8).
 locale-gen en_US.UTF-8
@@ -78,4 +79,7 @@ chmod -x /etc/update-motd.d/* 2>/dev/null || true
 # an initrd-less boot panics (it passes panic=-1, so don't run qemu -no-reboot).
 partuuid=$(blkid -s PARTUUID -o value "$(findmnt -no SOURCE /)")
 echo "GRUB_FORCE_PARTUUID=$partuuid" >/etc/default/grub.d/40-force-partuuid.cfg
+# Secure layer (v4): PID 1 is preinit, which unlocks the encrypted data
+# partition and puts an overlay root on it before systemd starts.
+echo 'GRUB_CMDLINE_LINUX="$GRUB_CMDLINE_LINUX init=/usr/local/lib/crowdvm/preinit"' >/etc/default/grub.d/60-crowdvm-preinit.cfg
 update-grub

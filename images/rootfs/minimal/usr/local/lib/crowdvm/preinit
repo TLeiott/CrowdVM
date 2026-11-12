@@ -1,0 +1,27 @@
+#!/bin/sh
+# PID 1 before systemd (grub: init=/usr/local/lib/crowdvm/preinit, image v4).
+# Mounts the config drive and runs `crowdvm-guest preinit` from it, which
+# unlocks the sandbox's encrypted data partition and execs /sbin/init. Without
+# a config drive or agent this is a plain boot.
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+mountpoint -q /proc || mount -t proc -o nosuid,nodev,noexec proc /proc
+mountpoint -q /sys || mount -t sysfs -o nosuid,nodev,noexec sysfs /sys
+mountpoint -q /dev || mount -t devtmpfs -o mode=0755,nosuid devtmpfs /dev
+mountpoint -q /run || mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /run
+cfg=/run/crowdvm/cfg
+mkdir -p "$cfg"
+if ! mountpoint -q "$cfg"; then
+	modprobe isofs 2>/dev/null
+	i=0
+	while [ "$i" -lt 50 ]; do
+		dev=$(blkid -L CROWDVM 2>/dev/null) && break
+		i=$((i + 1))
+		sleep 0.1
+	done
+	[ -n "$dev" ] && mount -o ro "$dev" "$cfg"
+fi
+if [ -x "$cfg/crowdvm-guest" ]; then
+	exec "$cfg/crowdvm-guest" preinit
+fi
+exec /sbin/init "$@"

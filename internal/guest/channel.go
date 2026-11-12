@@ -45,9 +45,12 @@ type Channel struct {
 	statePath string
 	log       *log.Logger
 
+	disk string // reported on ticket redemption (preinit): "luks" | "plain"
+
 	mu      sync.Mutex
 	session string
 	sess    *yamux.Session
+	dataKey []byte // from the welcome of a ticket redemption
 }
 
 type channelState struct {
@@ -103,7 +106,7 @@ func (c *Channel) connect(ctx context.Context) (proto.GuestConfig, error) {
 	if session != "" {
 		hello.Session = session
 	} else {
-		hello.Ticket = c.stub.Channel.Ticket
+		hello.Ticket, hello.Disk = c.stub.Channel.Ticket, c.disk
 	}
 	w, err := exchange(conn, br, hello)
 	if err == nil && w.Error == "session_invalid" && session != "" {
@@ -113,7 +116,7 @@ func (c *Channel) connect(ctx context.Context) (proto.GuestConfig, error) {
 		if conn, br, err = c.dial(ctx); err != nil {
 			return proto.GuestConfig{}, err
 		}
-		hello.Session, hello.Ticket = "", c.stub.Channel.Ticket
+		hello.Session, hello.Ticket, hello.Disk = "", c.stub.Channel.Ticket, c.disk
 		w, err = exchange(conn, br, hello)
 	}
 	if err != nil {
@@ -126,6 +129,9 @@ func (c *Channel) connect(ctx context.Context) (proto.GuestConfig, error) {
 	}
 	c.mu.Lock()
 	c.session = w.Session
+	if w.DataKey != "" {
+		c.dataKey, _ = base64.StdEncoding.DecodeString(w.DataKey)
+	}
 	c.mu.Unlock()
 	c.saveState(w.Session)
 	sess, err := yamux.Client(&bufReadConn{Conn: conn, r: br}, mux.Config())
@@ -140,6 +146,16 @@ func (c *Channel) connect(ctx context.Context) (proto.GuestConfig, error) {
 	c.sess = sess
 	c.mu.Unlock()
 	return *w.Config, nil
+}
+
+// TakeDataKey returns the disk key of the last ticket redemption and forgets
+// it (nil after a session reconnect, or when the server sent none).
+func (c *Channel) TakeDataKey() []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	k := c.dataKey
+	c.dataKey = nil
+	return k
 }
 
 func (c *Channel) saveState(session string) {
@@ -160,6 +176,9 @@ func (c *Channel) dial(ctx context.Context) (*tls.Conn, *bufio.Reader, error) {
 	host := u.Host
 	if u.Port() == "" {
 		host = net.JoinHostPort(u.Hostname(), map[bool]string{true: "443", false: "80"}[u.Scheme == "https"])
+	}
+	if a := c.stub.Channel.Addr; a != "" {
+		host = a // the node's gateway alias of the server (no DNS needed)
 	}
 	dctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()

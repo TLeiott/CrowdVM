@@ -63,7 +63,52 @@ CREATE TABLE guest_channels (
   config TEXT NOT NULL,
   issued_at INTEGER NOT NULL,
   redeemed_at INTEGER
-);`})
+);`}, store.Migration{Version: 2, SQL: `
+ALTER TABLE guest_channels ADD COLUMN data_key TEXT NOT NULL DEFAULT '';
+ALTER TABLE sandboxes ADD COLUMN data_key TEXT NOT NULL DEFAULT '';
+ALTER TABLE sandboxes ADD COLUMN disk TEXT NOT NULL DEFAULT '';
+ALTER TABLE snapshots ADD COLUMN data_key TEXT NOT NULL DEFAULT '';
+ALTER TABLE snapshots ADD COLUMN disk TEXT NOT NULL DEFAULT '';`})
+}
+
+// Encrypted data partition (secure-layer.md §5.4, one-disk variant). Image v4
+// guests keep every write on a LUKS2 partition of the sandbox disk, opened
+// before systemd starts with a key that only the server holds. The key
+// follows the disk content: a snapshot records the key of the sandbox it
+// came from (sandboxes.data_key and disk are copied into the row), and a
+// boot from a snapshot takes that key; a boot from the base image gets a new
+// one. Keys are sealed like env secrets.
+
+// ensureDiskKey sets the sandbox's disk key for a boot from parent ("" =
+// the base image) and returns it sealed.
+func (s *Server) ensureDiskKey(sbID, parent string) (string, error) {
+	var sealed string
+	if parent != "" {
+		_ = s.DB.QueryRow(`SELECT data_key FROM snapshots WHERE id=?`, parent).Scan(&sealed)
+		if sealed == "" { // a snapshot from before disk keys: the sandbox's own
+			_ = s.DB.QueryRow(`SELECT data_key FROM sandboxes WHERE id=?`, sbID).Scan(&sealed)
+		}
+	}
+	if sealed == "" {
+		k := make([]byte, 64)
+		if _, err := rand.Read(k); err != nil {
+			return "", err
+		}
+		var err error
+		if sealed, err = s.sealSecret(base64.StdEncoding.EncodeToString(k)); err != nil {
+			return "", err
+		}
+	}
+	_, err := s.DB.Exec(`UPDATE sandboxes SET data_key=? WHERE id=?`, sealed, sbID)
+	return sealed, err
+}
+
+// encryptedChain: the snapshot holds an encrypted data partition; only nodes
+// with the guest channel can boot it (the key comes over the channel).
+func (s *Server) encryptedChain(snapID string) bool {
+	var disk string
+	_ = s.DB.QueryRow(`SELECT disk FROM snapshots WHERE id=?`, snapID).Scan(&disk)
+	return disk == "luks"
 }
 
 // GuestUpgradeProto is the Upgrade token of GET /guest/v1/connect.
@@ -231,9 +276,11 @@ func (s *Server) issueGuestChannel(sb *Sandbox, nodeID string, full proto.GuestC
 		return proto.GuestConfig{}, err
 	}
 	ticket := randToken(40)
-	if _, err := s.DB.Exec(`INSERT INTO guest_channels(sandbox_id,node_id,ticket_hash,session_hash,config,issued_at,redeemed_at) VALUES(?,?,?,'',?,?,NULL)
-ON CONFLICT(sandbox_id) DO UPDATE SET node_id=excluded.node_id, ticket_hash=excluded.ticket_hash, session_hash='', config=excluded.config, issued_at=excluded.issued_at, redeemed_at=NULL`,
-		sb.ID, nodeID, hashToken(ticket), sealed, store.Now()); err != nil {
+	var key string
+	_ = s.DB.QueryRow(`SELECT data_key FROM sandboxes WHERE id=?`, sb.ID).Scan(&key)
+	if _, err := s.DB.Exec(`INSERT INTO guest_channels(sandbox_id,node_id,ticket_hash,session_hash,config,issued_at,redeemed_at,data_key) VALUES(?,?,?,'',?,?,NULL,?)
+ON CONFLICT(sandbox_id) DO UPDATE SET node_id=excluded.node_id, ticket_hash=excluded.ticket_hash, session_hash='', config=excluded.config, issued_at=excluded.issued_at, redeemed_at=NULL, data_key=excluded.data_key`,
+		sb.ID, nodeID, hashToken(ticket), sealed, store.Now(), key); err != nil {
 		return proto.GuestConfig{}, err
 	}
 	if old := s.guests.get(sb.ID); old != nil { // the previous boot's channel
@@ -312,58 +359,71 @@ func (s *Server) handleGuestReboot(w http.ResponseWriter, r *http.Request) {
 
 var errGuestChannelDown = errors.New("the sandbox's guest channel is not connected (the machine is starting, rebooting or lost its network)")
 
-// redeemGuest checks a hello and returns the session to use from now on and
-// the guest config.
-func (s *Server) redeemGuest(h proto.GuestHello) (string, *proto.GuestConfig, *Sandbox, error) {
-	var nodeID, ticketHash, sessionHash, sealed string
+// redeemGuest checks a hello and returns the session to use from now on, the
+// guest config and, on a ticket redemption, the disk key.
+func (s *Server) redeemGuest(h proto.GuestHello) (string, *proto.GuestConfig, *Sandbox, string, error) {
+	fail := func(code string) (string, *proto.GuestConfig, *Sandbox, string, error) {
+		return "", nil, nil, "", errors.New(code)
+	}
+	var nodeID, ticketHash, sessionHash, sealed, sealedKey string
 	var issued int64
 	var redeemed sql.NullInt64
-	err := s.DB.QueryRow(`SELECT node_id,ticket_hash,session_hash,config,issued_at,redeemed_at FROM guest_channels WHERE sandbox_id=?`, h.SandboxID).
-		Scan(&nodeID, &ticketHash, &sessionHash, &sealed, &issued, &redeemed)
+	err := s.DB.QueryRow(`SELECT node_id,ticket_hash,session_hash,config,issued_at,redeemed_at,data_key FROM guest_channels WHERE sandbox_id=?`, h.SandboxID).
+		Scan(&nodeID, &ticketHash, &sessionHash, &sealed, &issued, &redeemed, &sealedKey)
 	if err != nil {
-		return "", nil, nil, errors.New("unknown_sandbox")
+		return fail("unknown_sandbox")
 	}
 	sb, err := s.SandboxByID(h.SandboxID)
 	if err != nil || sb.DeletedAt != nil {
-		return "", nil, nil, errors.New("unknown_sandbox")
+		return fail("unknown_sandbox")
 	}
 	if sb.NodeID != nodeID {
-		return "", nil, nil, errors.New("not_placed_here")
+		return fail("not_placed_here")
 	}
-	session := h.Session
+	session, key := h.Session, ""
 	switch {
 	case h.Ticket != "":
 		if hashToken(h.Ticket) != ticketHash {
-			return "", nil, nil, errors.New("ticket_invalid")
+			return fail("ticket_invalid")
 		}
 		if redeemed.Valid {
 			s.Log.Warn("guest channel: boot ticket redeemed twice", "sandbox", sb.ID, "node", nodeID)
 			s.notifySandbox(sb, "security_ticket_reused", "warning", time.Hour, "Possible tampering on a node",
 				"Someone presented the one-time boot ticket of "+sb.Name+" a second time. Only the sandbox's own machine should hold it, so the node that hosts it may be trying to read the sandbox's configuration. The second attempt was refused.")
-			return "", nil, nil, errors.New("ticket_used")
+			return fail("ticket_used")
 		}
 		if store.Now()-issued > guestTicketTTL.Milliseconds() {
-			return "", nil, nil, errors.New("ticket_expired")
+			return fail("ticket_expired")
 		}
 		session = randToken(40)
 		res, err := s.DB.Exec(`UPDATE guest_channels SET session_hash=?, redeemed_at=? WHERE sandbox_id=? AND ticket_hash=? AND redeemed_at IS NULL`,
 			hashToken(session), store.Now(), sb.ID, ticketHash)
 		if n, _ := res.RowsAffected(); err != nil || n != 1 {
-			return "", nil, nil, errors.New("ticket_used")
+			return fail("ticket_used")
 		}
+		if h.Disk == "luks" || h.Disk == "plain" {
+			_, _ = s.DB.Exec(`UPDATE sandboxes SET disk=? WHERE id=?`, h.Disk, sb.ID)
+		}
+		key = sealedKey
 	case h.Session != "" && sessionHash != "" && hashToken(h.Session) == sessionHash:
 	default:
-		return "", nil, nil, errors.New("session_invalid")
+		return fail("session_invalid")
 	}
 	plain, err := s.openSecret(sealed)
 	if err != nil {
-		return "", nil, nil, errors.New("config_unreadable")
+		return fail("config_unreadable")
 	}
 	var cfg proto.GuestConfig
 	if err := json.Unmarshal([]byte(plain), &cfg); err != nil {
-		return "", nil, nil, errors.New("config_unreadable")
+		return fail("config_unreadable")
 	}
-	return session, &cfg, sb, nil
+	dataKey := ""
+	if key != "" {
+		if dataKey, err = s.openSecret(key); err != nil {
+			return fail("config_unreadable")
+		}
+	}
+	return session, &cfg, sb, dataKey, nil
 }
 
 // handleGuestConnect: GET /guest/v1/connect (Upgrade: crowdvm-guest), from a
@@ -395,7 +455,7 @@ func (s *Server) handleGuestConnect(w http.ResponseWriter, r *http.Request) {
 	var sb *Sandbox
 	if json.Unmarshal(line, &h) != nil || h.SandboxID == "" {
 		welcome.Error = "bad_hello"
-	} else if welcome.Session, welcome.Config, sb, err = s.redeemGuest(h); err != nil {
+	} else if welcome.Session, welcome.Config, sb, welcome.DataKey, err = s.redeemGuest(h); err != nil {
 		welcome.Error = err.Error()
 	}
 	out, _ := json.Marshal(welcome)

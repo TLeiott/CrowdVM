@@ -186,6 +186,7 @@ func (s *Server) pickNode(req schedReq) (*Node, error) {
 	var cands []candidate
 	var reasons []string
 	matching := 0
+	encrypted := len(req.Chain) > 0 && s.encryptedChain(req.Chain[0])
 	for id := range online {
 		n, err := s.NodeByID(id)
 		if err != nil || n.Disabled {
@@ -203,6 +204,10 @@ func (s *Server) pickNode(req schedReq) (*Node, error) {
 		}
 		if why := matchReason(n, req.Placement, req.Owners); why != "" {
 			reasons = append(reasons, n.Name+": "+why)
+			continue
+		}
+		if encrypted && !n.Info.GuestChannel {
+			reasons = append(reasons, n.Name+": cannot unlock an encrypted disk (crowdvm-node too old)")
 			continue
 		}
 		matching++

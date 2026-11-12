@@ -60,6 +60,10 @@ type GuestChannel struct {
 	URL    string `json:"url"`    // server base URL as the guest reaches it
 	Pin    string `json:"pin"`    // base64 SHA-256 of the server's channel certificate SPKI
 	Ticket string `json:"ticket"` // one-time boot ticket
+	// Addr is where the guest dials (host:port), set by the node to its
+	// gateway alias of the server (10.0.2.2:<port>): no DNS before the
+	// channel is up. "" = the URL's host. TLS and Host still use the URL.
+	Addr string `json:"addr,omitempty"`
 }
 
 // GuestHello is the guest's first line on the channel (inside TLS).
@@ -68,6 +72,10 @@ type GuestHello struct {
 	Ticket    string `json:"ticket,omitempty"`  // first connect of a boot
 	Session   string `json:"session,omitempty"` // reconnects (agent restart, reboot, network blip)
 	Version   string `json:"version,omitempty"`
+	// Disk (ticket redemption at boot): "luks" when the guest keeps its
+	// writes on the encrypted data partition, "plain" when it cannot
+	// (an older disk), "" from agents that do not know.
+	Disk string `json:"disk,omitempty"`
 }
 
 // GuestWelcome is the server's answer: the session for reconnects and the
@@ -76,6 +84,9 @@ type GuestWelcome struct {
 	Error   string       `json:"error,omitempty"`
 	Session string       `json:"session,omitempty"`
 	Config  *GuestConfig `json:"config,omitempty"`
+	// DataKey (base64, 64 bytes) unlocks the sandbox's encrypted data
+	// partition. Sent only on ticket redemption, never on reconnects.
+	DataKey string `json:"dataKey,omitempty"`
 }
 
 type GuestConfig struct {

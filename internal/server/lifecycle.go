@@ -466,7 +466,11 @@ func (s *Server) boot(ctx context.Context, id string, o bootOpts) (err error) {
 	vs.Guest = g
 	if s.channelNode(n) {
 		// Secure layer: the node gets a boot stub, the guest fetches the
-		// config from the server (guest_channel.go).
+		// config from the server (guest_channel.go), and the key of its
+		// encrypted data partition.
+		if _, err := s.ensureDiskKey(sb.ID, parent); err != nil {
+			return fmt.Errorf("prepare_failed: disk key: %v", err)
+		}
 		if vs.Guest, err = s.issueGuestChannel(sb, node.ID, g); err != nil {
 			return fmt.Errorf("prepare_failed: guest channel: %v", err)
 		}

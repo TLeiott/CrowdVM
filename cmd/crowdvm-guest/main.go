@@ -16,12 +16,22 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/crowdvm/crowdvm/internal/guest"
 	"github.com/crowdvm/crowdvm/internal/proto"
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "preinit" {
+		// PID 1 before systemd (image v4): unlock the encrypted disk.
+		err := guest.Preinit()
+		fmt.Fprintf(os.Stderr, "crowdvm-preinit: %v; powering off\n", err)
+		time.Sleep(3 * time.Second) // the console shows the reason
+		syscall.Sync()
+		_ = syscall.Reboot(syscall.LINUX_REBOOT_CMD_POWER_OFF)
+		os.Exit(1)
+	}
 	cfgPath := flag.String("config", "/run/crowdvm/cfg/config.json", "guest config (proto.GuestConfig JSON)")
 	home := flag.String("home", "", "sandbox home directory (default /home/user; required with --unprivileged)")
 	dataDir := flag.String("data-dir", "", "agent state directory (default /var/lib/crowdvm, or HOME/.local/state/crowdvm-guest when unprivileged)")
