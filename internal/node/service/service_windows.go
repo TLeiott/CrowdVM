@@ -218,3 +218,7 @@ func schtasks(out io.Writer, args ...string) error {
 // RestartsOnExit is false outside RunService; inside it, returning
 // ErrRestart exits like a crash and the recovery actions restart the node.
 func RestartsOnExit() bool { return false }
+
+// Refresh: the service and the logon task run the binary in place, so an
+// update needs no change to them.
+func Refresh(io.Writer) (bool, error) { return false, nil }

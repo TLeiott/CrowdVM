@@ -56,6 +56,16 @@ existing release gets its missing files.
 
 The server and the node app are not published: they stay internal.
 
+## Server and node binaries
+
+`make dist VERSION=v0.2.0` (`scripts/dist.sh`) builds every binary into
+`dist/` and writes `dist/manifest.json`: the version and each binary's sha256
+and size, keyed like the downloads (`<os>/<arch>/<name>`). On the server,
+`crowdvm-server downloads import dist` copies the binaries and the manifest;
+`GET /downloads` then lists the version and every file's sha256. Nodes install
+the release with `crowdvm-node update` (or Update node on their local page),
+and `crowdvm self-update` checks the CLI against the same checksums.
+
 ## Cutting a stable release
 
 1. On `main`, set `VERSION` (for example `0.2.0`), commit and push.

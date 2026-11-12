@@ -113,6 +113,7 @@ ol.steps b { font-weight: 600; }
   <div id="banner">Cannot reach the node daemon. Retrying…</div>
   <div class="notice" id="ronote" style="display:none">This page is read-only. To control the node, run <code>crowdvm-node open</code> on this machine.</div>
   <div class="notice warn" id="evacnote" style="display:none"></div>
+  <div class="notice" id="updnote" style="display:none"></div>
   <header>
     <div>
       <h1 id="name">CrowdVM Node</h1>
@@ -381,6 +382,41 @@ function renderLimits(s) {
   };
 }
 
+// Update: the node's own check (GET /api/update, cached by the daemon) or
+// the server's view in status.update {state, latest, deadline, command}.
+let upd = null, updMsg = "";
+async function checkUpdate() {
+  try { upd = await (await fetch("/api/update", {cache: "no-store"})).json(); } catch (e) {}
+  if (state) renderUpdate(state);
+}
+function renderUpdate(s) {
+  const su = s.update && typeof s.update === "object" ? s.update : null;
+  const fromServer = su && su.state && !["", "current", "ok", "none"].includes(su.state);
+  const latest = (su && su.latest) || (upd && upd.latest) || "";
+  const show = updMsg || fromServer || (upd && upd.available);
+  $("updnote").style.display = show ? "" : "none";
+  if (!show) return;
+  $("updnote").className = "notice" + (su && set(su.deadline) ? " warn" : "");
+  if (updMsg) { $("updnote").textContent = updMsg; return; }
+  let h = `crowdvm-node <b>${esc(latest || "update")}</b> is available (this node runs ${esc(s.version)})`;
+  if (su && set(su.deadline)) h += `. Update by <b>${esc(clock(su.deadline))}</b>`;
+  h += ". Running sandboxes keep running. ";
+  h += s.authorized ? `<button id="update" class="ctl">Update node</button>` :
+    `Run <span class="cmd">${esc((su && su.command) || "crowdvm-node update")}</span> on this machine.`;
+  $("updnote").innerHTML = h;
+  if ($("update")) $("update").onclick = async () => {
+    $("update").disabled = true; $("update").textContent = "Updating…";
+    try {
+      const r = await call("/api/update");
+      updMsg = !r.updated ? "Already up to date." : r.restarting ? "Updated. The node restarts; the page reconnects by itself." :
+        "Updated to " + (r.latest || "the new version") + ". Restart the node to use it.";
+      upd = null;
+    } catch (e) { updMsg = "Update failed: " + e.message; }
+    renderUpdate(state);
+    setTimeout(() => { updMsg = ""; checkUpdate(); }, 15000);
+  };
+}
+
 function renderLeave(s) {
   const name = s.name || "<node>", n = s.vms.length, dash = esc(dashURL(s));
   const steps = [
@@ -415,6 +451,7 @@ function render(s) {
   $("evacnote").style.display = s.evacuation ? "" : "none";
   if (s.evacuation) $("evacnote").innerHTML = `This machine is being reclaimed. Sandboxes still here at <b>${esc(clock(s.evacuation.deadline))}</b> are stopped, with their disks saved, and resumed on other nodes.`;
 
+  if (!$("update") || !$("update").disabled) renderUpdate(s); // not while an update runs
   renderAvailability(s);
   $("earned").textContent = num(s.earnedCredits, 2);
   $("earned24").textContent = `credits in total · ${num(s.earned24h, 2)} in the last 24 h`;
@@ -488,6 +525,8 @@ async function refresh() {
 }
 refresh();
 setInterval(refresh, 2000);
+checkUpdate();
+setInterval(checkUpdate, 10 * 60 * 1000);
 </script>
 </body>
 </html>

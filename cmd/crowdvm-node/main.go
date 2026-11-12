@@ -34,6 +34,10 @@ import (
 
 func main() {
 	if err := rootCmd().Execute(); err != nil {
+		var code exitCode
+		if errors.As(err, &code) {
+			os.Exit(int(code))
+		}
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
@@ -55,7 +59,7 @@ func rootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&g.dataDir, "data-dir", node.DefaultDataDir(), "node data directory (config, images, snapshots, VMs)")
 	root.PersistentFlags().BoolVarP(&g.verbose, "verbose", "v", false, "debug logging")
 	root.AddCommand(joinCmd(g), runCmd(g), benchCmd(g), statusCmd(g), openCmd(g), configCmd(g), imageCmd(g),
-		installServiceCmd(g), uninstallServiceCmd(), versionCmd())
+		installServiceCmd(g), uninstallServiceCmd(), updateCmd(g), versionCmd())
 	return root
 }
 

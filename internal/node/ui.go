@@ -301,7 +301,7 @@ location.replace("/");
 	ctl := http.NewServeMux()
 	// browserOK: routes the page uses; everything else needs the Bearer token.
 	browserOK := map[string]bool{"/api/pause": true, "/api/config": true, "/api/restart": true, "/api/bench": true,
-		"/api/logout": true} // bugs-r12-opus 1
+		"/api/logout": true, "/api/update": true} // bugs-r12-opus 1
 	m.Handle("POST /api/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		a := access(r)
 		if a == accessNone || (a == accessBrowser && !browserOK[r.URL.Path]) {
@@ -376,6 +376,7 @@ location.replace("/");
 		api.WriteJSON(w, 202, map[string]bool{"ok": true})
 		go func() { time.Sleep(300 * time.Millisecond); fn() }() // let the reply go out
 	})
+	n.updateRoutes(m, ctl)
 	ctl.HandleFunc("POST /api/bench", func(w http.ResponseWriter, r *http.Request) {
 		quick := r.URL.Query().Get("quick") != ""
 		if r.URL.Query().Get("wait") == "" {
