@@ -373,6 +373,14 @@ func (r *retState) erase(c *Ctx) error {
 		return ErrD(400, "confirmation_required", "Send confirmation: \""+retErasePhrase+"\".", map[string]any{"confirmation": retErasePhrase})
 	}
 	u := c.P.User
+	// An organization must keep an owner: its wallet, members and settings
+	// would be stuck for good (bugs-r19-sonnet 5).
+	var orgs int
+	_ = r.s.DB.QueryRow(`SELECT COUNT(*) FROM org_members m WHERE m.user_id=? AND m.role='owner'
+		AND EXISTS (SELECT 1 FROM org_members o WHERE o.org_id=m.org_id AND o.user_id!=m.user_id)`, u.ID).Scan(&orgs)
+	if orgs > 0 {
+		return Err(409, "owner_of_organization", "You own an organization with other members. Transfer its ownership (or delete it) before you erase your account.")
+	}
 	n, err := r.purge(u.ID)
 	if err != nil {
 		return err

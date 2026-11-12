@@ -155,9 +155,11 @@ func (s *Server) aiRenew(profileID, cred string, sec aiSecret) (aiSecret, bool) 
 		s.Log.Warn("AI sign-in renewal failed", "profile", profileID, "credential", cred, "err", err)
 		return sec, false
 	}
+	// Only the account whose sign-in was renewed: the active account may have
+	// changed during the call (bugs-r17-sonnet, code only).
 	accts, _ := s.aiAccounts(profileID, cred)
 	for _, a := range accts {
-		if a.Active {
+		if cur, err := s.aiSecretOf(a); err == nil && aiRefreshToken(cur) == aiRefreshToken(sec) {
 			b, _ := json.Marshal(nsec)
 			sealed, err := s.envSeal(b)
 			if err != nil {

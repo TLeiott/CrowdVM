@@ -102,14 +102,34 @@ func (s *Server) sshKeysOnEvent(e Event) {
 	}
 }
 
-// revokeTeammateKeys deletes non-creator keys from authorized_keys.
+// revokeMemberKeys (bugs-r17-opus 2) revokes what a removed or departed member
+// sent into the org's shared sandboxes, like unshare does for teammates: at
+// once when a sandbox runs, else on its next ready (the pending marker). It
+// does not end sessions the member already has open: that needs a guest-side
+// kill and is out of scope here.
+func (s *Server) revokeMemberKeys(orgID, userID string) {
+	for _, id := range s.walletIDs(`SELECT DISTINCT k.sandbox_id FROM sandbox_ssh_keys k JOIN sandboxes b ON b.id=k.sandbox_id WHERE k.user_id=? AND b.org_id=? AND b.owner_id!=? AND b.deleted_at IS NULL`, userID, orgID, userID) {
+		_ = s.SetSandboxExtra(id, "sshKeysRevokePending", true)
+		id := id
+		s.Go(func(ctx context.Context) { s.revokeTeammateKeys(ctx, id) })
+	}
+}
+
+// revokeTeammateKeys deletes stale non-creator keys from authorized_keys: all
+// of them on a private sandbox (unshare), and on a shared one those of users
+// who are no longer members of its org (bugs-r17-opus 2).
 func (s *Server) revokeTeammateKeys(ctx context.Context, id string) {
 	sb, err := s.SandboxByID(id)
-	if err != nil || sb.DeletedAt != nil || sb.Visibility != "private" || !sb.Usable() {
+	if err != nil || sb.DeletedAt != nil || !sb.Usable() {
 		return
 	}
+	stale := `user_id!=? AND (?=1 OR user_id NOT IN (SELECT user_id FROM org_members WHERE org_id=?))`
+	private := 0
+	if sb.Visibility == "private" {
+		private = 1
+	}
 	keys := map[string]bool{}
-	for _, k := range s.walletIDs(`SELECT key FROM sandbox_ssh_keys WHERE sandbox_id=? AND user_id!=?`, id, sb.OwnerID) {
+	for _, k := range s.walletIDs(`SELECT key FROM sandbox_ssh_keys WHERE sandbox_id=? AND `+stale, id, sb.OwnerID, private, sb.OrgID) {
 		keys[k] = true
 	}
 	// A key the creator also sent stays.
@@ -140,7 +160,7 @@ func (s *Server) revokeTeammateKeys(ctx context.Context, id string) {
 			}
 			_ = s.envGuestRun(ctx, sb, "chmod 600 ~/.ssh/authorized_keys")
 		}
-		_, _ = s.DB.Exec(`DELETE FROM sandbox_ssh_keys WHERE sandbox_id=? AND user_id!=?`, id, sb.OwnerID)
+		_, _ = s.DB.Exec(`DELETE FROM sandbox_ssh_keys WHERE sandbox_id=? AND `+stale, id, sb.OwnerID, private, sb.OrgID)
 	}
 	_ = s.SetSandboxExtra(id, "sshKeysRevokePending", false)
 }

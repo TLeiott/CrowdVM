@@ -394,6 +394,9 @@ func (s *Server) envApplyLive(ctx context.Context, sb *Sandbox, scrub bool) erro
 	// of new exec'd commands and running integrated agents (not only new
 	// shells). Secret files and registry logins are full replacements.
 	ac := proto.ApplyConfig{EnvSet: desired, EnvUnset: unset, SecretFiles: []proto.File{}, RegistryLogins: []proto.RegistryLogin{}, Repos: p.Repos, ClearAIProxy: clearProxy}
+	if p.Proxied && !clearProxy && p.AIProxy != nil {
+		ac.AIProxy = p.AIProxy // the vendors the profile holds keys for now (bugs-r17-opus 7)
+	}
 	ac.SecretFiles = append(ac.SecretFiles, p.Files...)
 	ac.RegistryLogins = append(ac.RegistryLogins, p.Registry...)
 	if len(rm) > 0 || scrub {

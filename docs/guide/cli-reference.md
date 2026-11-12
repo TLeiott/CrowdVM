@@ -81,7 +81,7 @@ Integrated AI agents:
 
 Settings and administration:
   admin              Server administration: users, credits, invite codes, sandboxes, nodes
-  agent-instructions Print an AGENTS.md section that teaches a coding agent to use crowdvm
+  agent-instructions Print the AGENTS.md rule that tells a coding agent when and how to use crowdvm
   api-key            Create and manage API keys (cvm_...)
   ci                 GitHub Actions on CrowdVM: setup, problems, stats and last jobs
   completions        Print a shell completion script
@@ -258,7 +258,7 @@ Available Commands:
   info        Show one node: capacity, benchmark, sandboxes, earned credits
   join-token  Create a token for `crowdvm-node join` (admins)
   join-tokens List node join tokens (admins)
-  remove      Remove a node (--force evicts it while it runs sandboxes)
+  remove      Remove a node (--force evicts it while it runs sandboxes or holds snapshots not uploaded yet)
   undrain     Place sandboxes on a drained node again
   update      Rename a node or replace its labels
 
@@ -361,7 +361,7 @@ Flags:
 ### crowdvm admin nodes remove
 
 ```text
-Remove a node (--force evicts it while it runs sandboxes)
+Remove a node (--force evicts it while it runs sandboxes or holds snapshots not uploaded yet)
 
 Usage:
   crowdvm admin nodes remove NODE [flags]
@@ -370,7 +370,7 @@ Aliases:
   remove, evict, rm
 
 Flags:
-      --force   remove even while it runs sandboxes
+      --force   remove even while it runs sandboxes or holds the only copy of snapshots (they are lost)
   -h, --help    help for remove
   -y, --yes     do not ask for confirmation
 ```
@@ -541,10 +541,14 @@ Flags:
 ## crowdvm agent-instructions
 
 ```text
-Print a short guide for coding agents (Claude Code, Codex, Cursor, ...).
-Append it to your project's AGENTS.md or CLAUDE.md:
+Print a short rule for coding agents (Claude Code, Codex, Cursor, ...): when
+to add sandboxes to the compute of this computer, and the core commands. Append it to
+your project's AGENTS.md or CLAUDE.md:
 
   crowdvm agent-instructions >> AGENTS.md
+
+The rule points to the crowdvm skill for the details; install that with
+'crowdvm skill install'.
 
 Usage:
   crowdvm agent-instructions [flags]
@@ -1321,7 +1325,7 @@ Usage:
 
 Flags:
       --amount float   credits to move
-      --from string    source wallet (default: the one in scope)
+      --from string    source wallet (default: the one in scope: --org, CROWDVM_ORG or the active org; "personal" for your own)
   -h, --help           help for transfer
       --to string      target wallet: user or org id/name
 ```
@@ -1430,6 +1434,7 @@ Flags:
 
 ```text
 Print and open the desktop URL. It carries a token: treat it as a secret.
+Without --public the desktop is private (a public one becomes private again).
 
 Usage:
   crowdvm desktop ID [flags]
@@ -1719,6 +1724,8 @@ line; more arguments run as argv. The default timeout is 30 seconds; above 600
 or with 0 (no limit) the command runs in the background and its output streams
 live, surviving network cuts. Exit code 124 means the timeout hit. ID may also
 be the sandbox's name; without one the current sandbox runs the command.
+Stdin is not passed to the command (the API has no stdin); to pipe data in,
+use 'crowdvm ssh ID -- CMD'.
 
 Usage:
   crowdvm exec [ID] [flags] [--] COMMAND...
@@ -1797,6 +1804,7 @@ Flags:
       --min-tier string          placement: minimum node tier: bronze, silver, gold or platinum
       --name string              display name of the fork
       --nested                   placement: run on a node with nested virtualization (KVM inside the sandbox)
+      --new-key                  give the copy a disk key of its own instead of the source's (see the security guide): its first start re-encrypts the whole disk, which takes a while. Encrypted disks only; ignored for others
       --no-auto-stop             never stop automatically
       --no-env                   give the sandbox none of your secrets
       --no-monitoring            keep no command output, process list or metrics
@@ -2127,6 +2135,7 @@ Flags:
       --min-tier string          placement: minimum node tier: bronze, silver, gold or platinum
       --name string              display name
       --nested                   placement: run on a node with nested virtualization (KVM inside the sandbox)
+      --new-key                  give the copy a disk key of its own instead of the source's (see the security guide): its first start re-encrypts the whole disk, which takes a while. Encrypted disks only; ignored for others
       --no-auto-stop             never stop automatically
       --no-env                   give the sandbox none of your secrets
       --no-monitoring            keep no command output, process list or metrics
@@ -2156,7 +2165,7 @@ Available Commands:
   info        Show one node: capacity, benchmark, sandboxes, earned credits
   join-token  Create a token for `crowdvm-node join` (admins)
   join-tokens List node join tokens (admins)
-  remove      Remove a node (--force evicts it while it runs sandboxes)
+  remove      Remove a node (--force evicts it while it runs sandboxes or holds snapshots not uploaded yet)
   undrain     Place sandboxes on a drained node again
   update      Rename a node or replace its labels
 
@@ -2259,7 +2268,7 @@ Flags:
 ### crowdvm nodes remove
 
 ```text
-Remove a node (--force evicts it while it runs sandboxes)
+Remove a node (--force evicts it while it runs sandboxes or holds snapshots not uploaded yet)
 
 Usage:
   crowdvm nodes remove NODE [flags]
@@ -2268,7 +2277,7 @@ Aliases:
   remove, evict, rm
 
 Flags:
-      --force   remove even while it runs sandboxes
+      --force   remove even while it runs sandboxes or holds the only copy of snapshots (they are lost)
   -h, --help    help for remove
   -y, --yes     do not ask for confirmation
 ```
@@ -2897,6 +2906,7 @@ integrated agents inside a sandbox already have.
   crowdvm skill install --agent claude   # one agent (claude, codex, opencode, cursor, agents)
   crowdvm skill install --project .      # into this project (.claude/skills, ...)
   crowdvm skill path                     # where it is (or would be) installed
+  crowdvm skill setup                    # the skill plus the rule in each agent's global instructions
 
 Also give the agent the docs (<server>/llms.txt, <server>/mcp) and the AGENTS.md
 rule from crowdvm agent-instructions.
@@ -2908,6 +2918,7 @@ Usage:
 Available Commands:
   install     Write the crowdvm skill into the agents' skills folders (replaces an older copy)
   path        Print the skill folder of each agent and whether the crowdvm skill is installed there
+  setup       Teach the coding agents on this machine to use CrowdVM (skill + global rule)
 
 Flags:
   -h, --help   help for skill
@@ -2939,6 +2950,30 @@ Flags:
       --agent stringArray   claude, codex, opencode, cursor or agents (repeatable; default: the agents found)
   -h, --help                help for path
       --project string      install into this project folder instead of your home folder
+```
+
+### crowdvm skill setup
+
+```text
+Install the crowdvm skill into every coding agent found in your home folder
+and add the CrowdVM rule (crowdvm agent-instructions) to its global instructions:
+~/.claude/CLAUDE.md (Claude Code), ~/.codex/AGENTS.md (Codex) and
+~/.config/opencode/AGENTS.md (OpenCode). Cursor gets the skill only.
+Running it again updates both in place.
+
+Asks first on a terminal. Without one (or with CI set) it only prints the
+command; --yes or CROWDVM_AGENT_SETUP=1 sets up without asking,
+CROWDVM_AGENT_SETUP=0 skips it.
+
+  crowdvm skill setup
+  crowdvm skill setup --yes
+
+Usage:
+  crowdvm skill setup [flags]
+
+Flags:
+  -h, --help   help for setup
+  -y, --yes    set up without asking
 ```
 
 ## crowdvm snapshot
@@ -3213,8 +3248,8 @@ Flags:
 
 ```text
 Authorize this computer's key on the sandbox and write
-~/.ssh/crowdvm/<id>.conf (Host <id>, ProxyCommand crowdvm tunnel, pinned host
-key). Add 'Include crowdvm/*.conf' at the top of ~/.ssh/config once; then
+~/.ssh/crowdvm/<id>.conf (Host <id>, ProxyCommand crowdvm tunnel --pin, which
+re-pins the host key after every resume). Add 'Include crowdvm/*.conf' at the top of ~/.ssh/config once; then
 'ssh <id>', 'scp file <id>:' and VS Code Remote-SSH work. --print only prints it.
 
 Usage:
@@ -3339,11 +3374,16 @@ ProxyCommand that 'crowdvm ssh' uses; you can use it in ~/.ssh/config:
 ('crowdvm ssh-config ID' writes such an entry for you.) The tunnel ends when
 the sandbox side closes; end of input on stdin is not passed on yet.
 
+With --pin the tunnel first authorizes the key and rewrites the sandbox's
+host key in the CLI's known_hosts (a sandbox gets a new key on every resume),
+printing nothing on stdout; 'crowdvm ssh-config' uses it.
+
 Usage:
   crowdvm tunnel ID PORT [flags]
 
 Flags:
   -h, --help   help for tunnel
+      --pin    refresh the sandbox's SSH host key in known_hosts before relaying
 ```
 
 ## crowdvm unshare

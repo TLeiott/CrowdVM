@@ -10,7 +10,9 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -219,6 +221,11 @@ func (s *Server) guestStreams(g *GuestConn, egress bool) http.Handler {
 	// DNS queries in flight per channel: a flood is answered 503 at once
 	// instead of piling up goroutines and streams (bugs-r14-opus 3).
 	dnsSlots := make(chan struct{}, maxEgressDNS)
+	// Flows end with their channel session: one blocked on a destination
+	// that never reads would otherwise outlive the sandbox, and each new
+	// session could park 256 more (bugs-r16-opus 2).
+	sessDone, endSess := context.WithCancel(context.Background())
+	go func() { <-g.sess.CloseChan(); endSess() }()
 	m := http.NewServeMux()
 	m.HandleFunc("GET /v1/egress", func(w http.ResponseWriter, r *http.Request) {
 		if !egress {
@@ -254,10 +261,33 @@ func (s *Server) guestStreams(g *GuestConn, egress bool) http.Handler {
 			out.Close()
 			return
 		}
+		// A destination that takes nothing for egressStall ends the flow,
+		// so stalled flows cannot hold all of a sandbox's slots
+		// (bugs-r17-opus 1).
+		out = &stallConn{Conn: out}
+		defer context.AfterFunc(sessDone, func() {
+			if sc, ok := out.(*stallConn); ok {
+				if tc, ok := sc.Conn.(*net.TCPConn); ok {
+					_ = tc.SetLinger(0) // reset: drop what the destination never read
+				}
+			}
+			out.Close()
+			conn.Close()
+		})()
 		mux.Join(&readerConn{Conn: conn, r: rw.Reader}, out)
 	})
 	m.HandleFunc("POST /v1/rebooting", func(w http.ResponseWriter, r *http.Request) {
 		s.guests.expectReboot(g.SandboxID) // see handleGuestReboot
+		w.WriteHeader(http.StatusNoContent)
+	})
+	m.HandleFunc("POST /v1/rekeyed", func(w http.ResponseWriter, r *http.Request) {
+		var v struct {
+			KeyHash string `json:"keyHash"`
+		}
+		if json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&v) != nil || !s.diskRekeyed(g.SandboxID, v.KeyHash) {
+			http.Error(w, "no re-encryption to this key is pending", 409)
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 	m.HandleFunc("POST /v1/egress/dns", func(w http.ResponseWriter, r *http.Request) {
@@ -287,6 +317,37 @@ func (s *Server) guestStreams(g *GuestConn, egress bool) http.Handler {
 	})
 	return m
 }
+
+// egressStall: how long an egress write may wait for its destination.
+var egressStall = 2 * time.Minute
+
+// stallConn fails a write the destination has not taken within egressStall
+// (each write gets the full time again).
+type stallConn struct {
+	net.Conn
+	stalled atomic.Bool
+}
+
+func (c *stallConn) Write(p []byte) (int, error) {
+	_ = c.Conn.SetWriteDeadline(time.Now().Add(egressStall))
+	n, err := c.Conn.Write(p)
+	if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		c.stalled.Store(true)
+	}
+	return n, err
+}
+
+// Close resets a stalled flow: what the destination never took is dropped,
+// not kept in the kernel until it gives up.
+func (c *stallConn) Close() error {
+	if tc, ok := c.Conn.(*net.TCPConn); ok && c.stalled.Load() {
+		_ = tc.SetLinger(0)
+	}
+	return c.Conn.Close()
+}
+
+// CloseWrite keeps the half-close of the TCP conn (mux.Join).
+func (c *stallConn) CloseWrite() error { return mux.CloseWrite(c.Conn) }
 
 // maxGuestStreams caps the streams a guest channel has served at once: TCP
 // flows (maxEgressFlows), DNS and its calls, with room to spare.

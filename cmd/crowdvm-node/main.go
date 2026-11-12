@@ -200,12 +200,30 @@ func joinCmd(g *globals) *cobra.Command {
 	return c
 }
 
+// supervisedByService: a service manager restarts this daemon when it exits
+// with an error (a variable for tests).
+var supervisedByService = service.RestartsOnExit
+
 func runCmd(g *globals) *cobra.Command {
 	var f nodeFlags
 	c := &cobra.Command{
 		Use:   "run",
 		Short: "Run the node daemon (connects to the server and hosts VMs)",
 		RunE: func(c *cobra.Command, _ []string) error {
+			// Count this start of an updated build (or roll it back) before
+			// anything it could fail at: a build that cannot even read its
+			// config must not crash-loop for good (bugs-r18-opus 5). Only the
+			// data dir is needed.
+			counted := false
+			if supervisedByService() {
+				counted = true
+				if back, err := node.CheckUpdateStart(c.Context(), &node.Config{DataDir: g.dataDir}, ""); err != nil {
+					fmt.Fprintln(os.Stderr, "pending update:", err)
+				} else if back {
+					fmt.Fprintln(os.Stderr, "rolled back the updated crowdvm-node: it did not reach the server; restarting into the previous build")
+					return service.ErrRestart
+				}
+			}
 			cfg, err := g.config()
 			if err != nil {
 				return err
@@ -246,12 +264,14 @@ func runCmd(g *globals) *cobra.Command {
 						return service.ErrRestart
 					}
 					// Count this start of a new build, or roll back one that
-					// never reached the server.
-					if back, err := node.CheckUpdateStart(ctx, cfg, ""); err != nil {
-						log.Warn("pending update", "err", err)
-					} else if back {
-						log.Warn("rolled back the updated crowdvm-node: it did not reach the server; restarting into the previous build")
-						return service.ErrRestart
+					// never reached the server (unless done above).
+					if !counted {
+						if back, err := node.CheckUpdateStart(ctx, cfg, ""); err != nil {
+							log.Warn("pending update", "err", err)
+						} else if back {
+							log.Warn("rolled back the updated crowdvm-node: it did not reach the server; restarting into the previous build")
+							return service.ErrRestart
+						}
 					}
 				}
 				drv, err := newDriver(cfg, log)

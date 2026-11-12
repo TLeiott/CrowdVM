@@ -7,11 +7,19 @@ results back and stops the sandbox.
 ## Teach the agent
 
 ```sh
-crowdvm agent-instructions >> AGENTS.md     # or CLAUDE.md
+crowdvm skill setup                         # every agent on this machine (the installer offers this)
+crowdvm agent-instructions >> AGENTS.md     # or CLAUDE.md, for one repository
 ```
 
-That prints a short section with the workflow below, the sizes and the error codes
-worth handling. Keep it in the repository so every agent session sees it.
+`crowdvm skill setup` installs the crowdvm skill into Claude Code, Codex, OpenCode and
+Cursor (the ones found in your home folder) and adds the CrowdVM rule to their global
+instructions: `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.config/opencode/AGENTS.md`.
+The rule sits between `crowdvm:begin`/`crowdvm:end` comments, so running it again updates
+it in place. `--yes` skips the question.
+
+`crowdvm agent-instructions` prints the same rule: when to use a sandbox and the core
+commands. The skill holds the rest (pitfalls, error codes, in-sandbox commands). To pin the
+rule to one repository, keep it in that repository's `AGENTS.md` or `CLAUDE.md`.
 
 ## Sign the agent in
 

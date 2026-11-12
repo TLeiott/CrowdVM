@@ -16,9 +16,12 @@ export default async function (ctx) {
   if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
   const browser = ctx.query.get('view') === 'browser';
   ctx.title(`${browser ? 'Browser' : 'Desktop'} ${id}`);
-  if (!token && !ctx.session.me) return ctx.nav(`/login?next=${encodeURIComponent(location.pathname + location.search)}`, { replace: true });
+  // bugs-r16-opus 3: without a token or session try anyway (the server admits anonymous viewers of a
+  // public desktop) and go to sign-in only when the websocket is refused.
+  const anon = !token && !ctx.session.me;
+  const toLogin = () => ctx.nav(`/login?next=${encodeURIComponent(location.pathname + location.search)}`, { replace: true });
   const v = desktopViewer({ id, token: token || null, signal: ctx.signal, full: true, title: browser ? `${id} · browser` : id,
-    overlay: ctx.query.get('overlay') !== '0', theme: theme || '', renew: !!ctx.session.me && !browser });
+    overlay: ctx.query.get('overlay') !== '0', theme: theme || '', renew: !!ctx.session.me && !browser, anon, onRefused: toLogin });
   ctx.root.append(v.el);
   v.connect();
 }

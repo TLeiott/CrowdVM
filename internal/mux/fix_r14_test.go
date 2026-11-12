@@ -1,6 +1,7 @@
 package mux
 
 import (
+	"io"
 	"net"
 	"net/http"
 	"sync/atomic"
@@ -40,4 +41,33 @@ func TestServeLimitCapsConcurrentStreams(t *testing.T) {
 		t.Fatalf("%d streams served at once, want 2", p)
 	}
 	close(release)
+}
+
+// bugs-r19-sonnet (code only): a sender that breaks off (a reset) reached
+// the backend as a clean end of input, so a truncated upload looked
+// complete. A read error now resets a TCP receiver.
+func TestR19JoinPassesAnAbortOn(t *testing.T) {
+	sender, proxyIn := tcpPair(t)
+	proxyOut, backend := tcpPair(t)
+	defer backend.Close()
+	go Join(proxyIn, proxyOut)
+	sender.Write([]byte("partial upload"))
+	time.Sleep(100 * time.Millisecond)
+	_ = sender.SetLinger(0)
+	sender.Close() // a reset, not an end of input
+	_ = backend.SetReadDeadline(time.Now().Add(3 * time.Second))
+	buf := make([]byte, 1024)
+	for {
+		_, err := backend.Read(buf)
+		if err == nil {
+			continue
+		}
+		if err == io.EOF {
+			t.Fatal("the backend saw a clean end of input after the sender broke off")
+		}
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			t.Fatal("the backend saw nothing")
+		}
+		return // reset: the backend knows the upload is incomplete
+	}
 }

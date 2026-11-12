@@ -66,6 +66,15 @@ type Store interface {
 	Snapshots() []proto.SnapshotRef
 }
 
+// Compactor is optionally implemented by Stores whose snapshot files can be
+// sparse (a guest's discards punch holes in them). CompactSnapshot writes a
+// copy of snapshot id into dir that holds only its allocated data, with the
+// same guest view and backing reference, and returns its path; "" when the
+// file is not sparse. The caller removes the copy.
+type Compactor interface {
+	CompactSnapshot(id, dir string) (string, error)
+}
+
 // Dialer is optionally implemented by drivers that can reach guest ports
 // without going through the guest agent tunnel.
 type Dialer interface {

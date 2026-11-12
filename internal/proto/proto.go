@@ -110,6 +110,11 @@ type GuestWelcome struct {
 	// DataKey (base64, 64 bytes) unlocks the sandbox's encrypted data
 	// partition. Sent only on ticket redemption, never on reconnects.
 	DataKey string `json:"dataKey,omitempty"`
+	// OldDataKey (with DataKey): the volume still opens with this key. The
+	// guest re-encrypts it to DataKey, then confirms with POST /v1/rekeyed
+	// ({"keyHash": hex SHA-256 of the raw DataKey}); until then every
+	// ticket redemption carries both.
+	OldDataKey string `json:"oldDataKey,omitempty"`
 }
 
 type GuestConfig struct {
@@ -207,6 +212,12 @@ type RegistryLogin struct {
 type AIProxy struct {
 	BaseURL string `json:"baseUrl"` // e.g. http://10.0.2.2:8420/ai-proxy  (as reachable from the guest)
 	Token   string `json:"token"`   // per-sandbox proxy token
+	// Vendors the sandbox's profile has a credential for (VendorsSet: the
+	// list is given; older servers send none and every vendor is proxied).
+	// Others keep their own endpoints, e.g. OpenCode's free models
+	// (bugs-r17-opus 7).
+	Vendors    []string `json:"vendors,omitempty"`
+	VendorsSet bool     `json:"vendorsSet,omitempty"`
 }
 
 type DesktopConfig struct {
@@ -272,6 +283,10 @@ type NodeInfo struct {
 	// server over the pinned guest channel (GuestConfig.Channel) and do not
 	// follow guest events or push guest firewall rules for them.
 	GuestChannel bool `json:"guestChannel,omitempty"`
+	// DiskRekey: the node's guests can re-encrypt a copy's data partition to
+	// a key of its own (GuestWelcome.OldDataKey). Older guests cannot open
+	// such a disk, so a copy waiting for it goes only to these nodes.
+	DiskRekey bool `json:"diskRekey,omitempty"`
 	// GPUs: the GPUs this node passes through to sandboxes (VFIO; node
 	// config gpu.passthrough, validated when the node starts). Only these
 	// make a node eligible for placement gpu, and only while one is free

@@ -427,7 +427,7 @@ class CreateSandboxRequestFilesItem(_CreateSandboxRequestFilesItemRequired, tota
     encoding: Literal["utf8", "base64"]
 
 
-CreateSandboxRequest = TypedDict("CreateSandboxRequest", {"type": "Literal[\"small\", \"default\", \"large\", \"xlarge\"]", "ttlSeconds": "Union[int, None]", "labels": "Dict[str, str]", "env": "Dict[str, str]", "environment": "str", "noEnv": "bool", "snapshots": "bool", "monitoring": "bool", "failFast": "bool", "count": "int", "setupScript": "str", "name": "str", "visibility": "Literal[\"private\", \"shared\"]", "hostedPorts": "List[HostPortRequest]", "files": "List[CreateSandboxRequestFilesItem]", "org": "str", "teamId": "str", "from": "str"}, total=False)
+CreateSandboxRequest = TypedDict("CreateSandboxRequest", {"type": "Literal[\"small\", \"default\", \"large\", \"xlarge\"]", "ttlSeconds": "Union[int, None]", "labels": "Dict[str, str]", "env": "Dict[str, str]", "environment": "str", "noEnv": "bool", "snapshots": "bool", "monitoring": "bool", "failFast": "bool", "count": "int", "setupScript": "str", "name": "str", "visibility": "Literal[\"private\", \"shared\"]", "hostedPorts": "List[HostPortRequest]", "files": "List[CreateSandboxRequestFilesItem]", "org": "str", "teamId": "str", "from": "str", "newDiskKey": "bool"}, total=False)
 
 class StopRequest(TypedDict, total=False):
     """Options for stopping a sandbox."""

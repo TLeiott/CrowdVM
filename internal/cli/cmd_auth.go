@@ -680,7 +680,7 @@ they host. Admins grant credits on the server.`,
 			return a.result(r, func() { a.printf("moved %g credits to %s\n", amount, to) })
 		},
 	}
-	transfer.Flags().StringVar(&from, "from", "", "source wallet (default: the one in scope)")
+	transfer.Flags().StringVar(&from, "from", "", "source wallet (default: the one in scope: --org, CROWDVM_ORG or the active org; \"personal\" for your own)")
 	transfer.Flags().StringVar(&to, "to", "", "target wallet: user or org id/name")
 	transfer.Flags().Float64Var(&amount, "amount", 0, "credits to move")
 	cmd.AddCommand(transfer)

@@ -157,6 +157,9 @@ type CreateSandboxRequest struct {
 	From        string            `json:"from,omitempty"`
 	// Placement is the CrowdVM extension: hard requirements on the node.
 	Placement *Placement `json:"placement,omitempty"`
+	// NewDiskKey (CrowdVM, with From): the copy re-encrypts its encrypted
+	// disk to a key of its own on its first start.
+	NewDiskKey bool `json:"newDiskKey,omitempty"`
 }
 
 // Placement (CrowdVM extension of create, resume and fork) pins a sandbox to
@@ -201,6 +204,7 @@ type ForkRequest struct {
 	NoEnv       bool              `json:"noEnv,omitempty"`
 	Name        string            `json:"name,omitempty"`
 	Placement   *Placement        `json:"placement,omitempty"`
+	NewDiskKey  bool              `json:"newDiskKey,omitempty"` // see CreateSandboxRequest
 }
 
 type UpdateSandboxRequest struct {
@@ -481,11 +485,13 @@ type HostFirewall struct {
 }
 
 type DesktopRequest struct {
-	PublicAccess bool `json:"publicAccess,omitempty"`
+	// bugs-r17-opus 8: a pointer, so false ("make it private") is sent too.
+	PublicAccess *bool `json:"publicAccess,omitempty"`
 }
 
 type DesktopResult struct {
 	DesktopURL   string `json:"desktopUrl"`
+	PublicAccess bool   `json:"publicAccess,omitempty"` // bugs-r17-opus 8
 	IP           string `json:"ip,omitempty"`
 	Mode         string `json:"mode,omitempty"`
 	Provisioning bool   `json:"provisioning,omitempty"`

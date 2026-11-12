@@ -98,14 +98,14 @@ func (s *Server) serveBoxAlias(w http.ResponseWriter, r *http.Request) {
 	if v := r.Header.Get("X-Box-Org"); v != "" && r.Header.Get("X-Boat-Org") == "" {
 		r2.Header.Set("X-Boat-Org", v)
 	}
-	if r.Body != nil {
-		// Same cap as Ctx.bind; the inner route enforces it for the body it reads.
-		r2.Body = http.MaxBytesReader(w, r.Body, 8<<20)
-	}
 	// Only rewrite (parse) the body of an authenticated caller: an anonymous
-	// request is passed through unread and refused by the inner route.
-	if _, err := s.authenticate(w, r); err == nil && strings.Contains(r.Header.Get("Content-Type"), "json") && r.Body != nil {
-		body, err := io.ReadAll(r2.Body)
+	// request is passed through unread and refused by the inner route. File
+	// bytes are never rewritten and keep the inner route's own size limit
+	// (bugs-r19-sonnet 2, 3).
+	raw := strings.HasSuffix(strings.TrimSuffix(rest, "/"), "/files/raw")
+	if _, err := s.authenticate(w, r); err == nil && !raw && strings.Contains(r.Header.Get("Content-Type"), "json") && r.Body != nil {
+		// Same cap as Ctx.bind for the body read here.
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 8<<20))
 		if err != nil {
 			http.Error(w, "could not read body", http.StatusRequestEntityTooLarge)
 			return

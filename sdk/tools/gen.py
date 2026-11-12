@@ -42,10 +42,12 @@ EXTRA_OPS = [
          ret_type="BrowserResponse", ret_schema={"$ref": "#/components/schemas/BrowserResponse"}),
 ]
 # CrowdVM request fields the Boat spec does not know (per operation id).
+NEW_DISK_KEY = {"type": "boolean", "description": "Copies only: re-encrypt the copy's encrypted disk to a key of its own on its first start (slow: rewrites the disk). Ignored for unencrypted disks."}
 EXTRA_BODY_PROPS = {
     "create": {"nested": {"type": "boolean", "description": "Expose /dev/kvm (nested virtualization)."},
                       "placement": {"$ref": "#/components/schemas/Placement"}},
-    "fork": {"placement": {"$ref": "#/components/schemas/Placement"}},
+    "fork": {"placement": {"$ref": "#/components/schemas/Placement"},
+             "newDiskKey": NEW_DISK_KEY},
     "resume": {"placement": {"$ref": "#/components/schemas/Placement"}},
 }
 # Operations that take the X-Boat-Org header although the spec does not list it.
@@ -68,6 +70,7 @@ EXTRA_SCHEMAS = {
                                               "providers": {"type": "array", "items": {"type": "object", "additionalProperties": True}}}},
 }
 SCHEMAS.update(EXTRA_SCHEMAS)
+SCHEMAS["CreateSandboxRequest"]["properties"]["newDiskKey"] = NEW_DISK_KEY
 
 HEADER_RENAME = {}
 SKIP_HEADERS = set()

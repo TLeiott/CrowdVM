@@ -353,17 +353,20 @@ snapshot. /home/user lands in DIR/home_user/ and Docker volumes in DIR/docker/.
 				}
 				dest := filepath.Join(out, localName(rel))
 				if strings.Contains(ctype, "tar") {
-					n, err := extractTar(rc, dest, "", nil)
+					// bugs-r16-sonnet 3: the tar is rooted at the folder's name (a volume's
+					// root is "_data"); strip it so a second pull overwrites in place.
+					root := path.Base(rel)
+					if rel == "" {
+						root = ""
+					} else if strings.HasPrefix(rel, "__dockervol__/") && strings.Count(rel, "/") == 1 {
+						root = "_data"
+					}
+					n, err := extractTar(rc, dest, root, nil)
 					rc.Close()
 					if err != nil {
 						return err
 					}
 					total += n
-					// A tar whose entries are rooted at the folder name: flatten.
-					flattenSingle(dest, path.Base(rel))
-					if strings.HasPrefix(rel, "__dockervol__/") {
-						flattenSingle(dest, "_data") // docker/<vol>/ holds the volume's files
-					}
 				} else {
 					err = writeFile(dest, rc, 0o644)
 					rc.Close()
@@ -394,20 +397,6 @@ func localName(rel string) string {
 		return filepath.FromSlash("docker/" + strings.TrimPrefix(rel, "__dockervol__/"))
 	}
 	return filepath.FromSlash(rel)
-}
-
-// flattenSingle moves dest/<base>/* up into dest when that is the only entry.
-func flattenSingle(dest, base string) {
-	ents, err := os.ReadDir(dest)
-	if err != nil || len(ents) != 1 || ents[0].Name() != base || !ents[0].IsDir() {
-		return
-	}
-	inner := filepath.Join(dest, base)
-	kids, _ := os.ReadDir(inner)
-	for _, k := range kids {
-		_ = os.Rename(filepath.Join(inner, k.Name()), filepath.Join(dest, k.Name()))
-	}
-	_ = os.Remove(inner)
 }
 
 func (a *App) snapshotDeleteCmd() *cobra.Command {

@@ -45,18 +45,19 @@ type App struct {
 	// Poll is the interval for state polling.
 	Poll time.Duration
 
-	jsonOut  bool
-	jsonSet  bool
-	apiURL   string
-	org      string
-	profileF string
-	noUpdate bool
-	invite   string // login/onboard --invite
-	cfg      *Config
-	cfgBase  map[string]any // cfg as loaded or last saved: saves write only the difference
-	profile  string
-	cl       *client.Client
-	ctx      context.Context
+	jsonOut   bool
+	jsonSet   bool
+	apiURL    string
+	org       string
+	profileF  string
+	noUpdate  bool
+	noDelHint bool   // bugs-r16-opus 6: `run` deletes its sandbox itself; waitReady must not say "Remove it with"
+	invite    string // login/onboard --invite
+	cfg       *Config
+	cfgBase   map[string]any // cfg as loaded or last saved: saves write only the difference
+	profile   string
+	cl        *client.Client
+	ctx       context.Context
 }
 
 // exitError ends the process with a code and no message.
@@ -174,6 +175,11 @@ func (a *App) reportError(err error) int {
 		}
 		return 130
 	}
+	// bugs-r17-opus 10: the reader of stdout went away (`| head`): end quietly
+	// with 128+SIGPIPE. An EPIPE on a network connection is not this case.
+	if errors.Is(err, syscall.EPIPE) && !isNetworkError(err) {
+		return 141
+	}
 	apiErr, isAPI := client.AsError(err)
 	if a.jsonOut {
 		line := map[string]any{"event": "error", "error": err.Error()}
@@ -211,12 +217,19 @@ func (a *App) reportError(err error) int {
 		return 1
 	}
 	fmt.Fprintln(a.Err, "error:", err)
-	var ne net.Error
-	var oe *net.OpError
-	if errors.As(err, &oe) || errors.As(err, &ne) || strings.Contains(err.Error(), "connection refused") {
+	if isNetworkError(err) || strings.Contains(err.Error(), "connection refused") {
 		fmt.Fprintln(a.Err, "hint: is the CrowdVM server reachable? check `crowdvm status` and --api-url / CROWDVM_API_BASE")
 	}
 	return 1
+}
+
+// isNetworkError is true for real network failures only. Not net.Error: a bare
+// syscall.Errno (EPIPE on stdout) satisfies it too (bugs-r17-opus 10).
+func isNetworkError(err error) bool {
+	var oe *net.OpError
+	var ue *url.Error
+	var de *net.DNSError
+	return errors.As(err, &oe) || errors.As(err, &ue) || errors.As(err, &de)
 }
 
 func isCobraUsage(err error) bool {
@@ -255,15 +268,26 @@ var hints = map[string]string{
 
 func hintFor(code string) string { return hints[code] }
 
+// catchPipe makes a write to a closed stdout (`| head`) fail with EPIPE
+// instead of killing the CLI, until the returned func runs: exec and run
+// then stop the remote command (bugs-r16-sonnet 8). Only around those
+// streams: elsewhere the default (exit) is what a pipeline expects.
+func catchPipe() func() {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGPIPE)
+	return func() { signal.Stop(ch) }
+}
+
 // --- output ---
 
-func (a *App) emit(v any) {
+func (a *App) emit(v any) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		fmt.Fprintln(a.Err, "error: encode json:", err)
-		return
+		return nil
 	}
-	fmt.Fprintln(a.Out, string(b))
+	_, err = fmt.Fprintln(a.Out, string(b)) // bugs-r16-sonnet 8: the caller may stop on a write error
+	return err
 }
 
 // result prints v as one JSON line in --json mode, else calls text.

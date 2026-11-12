@@ -55,7 +55,7 @@ export async function mountRFB(screen, { url, token, password, viewOnly = false,
 // token: a desktop token from a desktop URL. It is spent on the first connection;
 // later reconnects ask the server for a fresh one when renew is true (signed in),
 // so the viewer never depends on reusing a token (DESK-005: single-use links).
-export function desktopViewer({ id, token, signal, full = false, title = '', overlay: chrome = true, theme = '', renew = true }) {
+export function desktopViewer({ id, token, signal, full = false, title = '', overlay: chrome = true, theme = '', renew = true, anon = false, onRefused = null }) {
   const screen = h('div.screen', { 'aria-label': 'Remote desktop. Click to focus; keystrokes go to the sandbox.' });
   const overlay = h('div.overlay');
   const statusEl = h('span.small', { 'aria-live': 'polite' });
@@ -85,7 +85,7 @@ export function desktopViewer({ id, token, signal, full = false, title = '', ove
     : h('div.stack.tight', h('div.row', ...tools), h('div.desktop-frame', screen, overlay));
   if (full) Object.assign(screen.style, { position: 'absolute', inset: '0' });
   if (full && theme === 'light') frame.classList.add('light');
-  let spent = false;
+  let spent = false, opened = false;
 
   async function connect() {
     rfb?.disconnect(); rfb = null;
@@ -93,21 +93,25 @@ export function desktopViewer({ id, token, signal, full = false, title = '', ove
     setOverlay(h('span.spinner.lg', { style: { margin: '0 auto' } }), h('div', 'Opening the desktop…'));
     try {
       const fromLink = token && !(spent && renew);
-      if (fromLink) { last = { token }; spent = true; }
+      if (anon) last = {}; // bugs-r16-opus 3: a public desktop needs no token; the server decides
+      else if (fromLink) { last = { token }; spent = true; }
       else last = await requestDesktop(id, signal, (m) => setOverlay(h('span.spinner.lg', { style: { margin: '0 auto' } }), h('div', m)));
       const { url, token: tok } = wsURLFrom(id, last);
       rfb = await mountRFB(screen, { url, token: tok, password: last.password, viewOnly, background: theme === 'light' ? '#e9e9e5' : '#0b0c0c', onStatus: (s, why) => {
         statusEl.textContent = s;
-        if (s === 'connected') { setOverlay(); rfb.focus(); }
+        if (s === 'connected') { opened = true; setOverlay(); rfb.focus(); }
         else if (s === 'password') {
           const pw = h('input.input', { type: 'password', placeholder: 'VNC password', 'aria-label': 'VNC password' });
           setOverlay(h('div', 'This desktop needs a password.'), pw, btn('Connect', { kind: 'primary', onClick: () => rfb.sendCredentials({ password: pw.value }) }));
           pw.focus();
         } else if (s === 'disconnected' || s === 'failed') {
+          if (anon && !opened && onRefused) return onRefused(); // bugs-r16-opus 3: refused before RFB: sign in
+          // bugs-r16-opus 8: a spent single-use link with no session to renew it cannot reconnect.
           const linkOnly = fromLink && !renew;
+          reconnect.hidden = linkOnly;
           setOverlay(icon('monitor', 'lg'), h('div', s === 'failed' ? `Could not connect${why ? `: ${why}` : '.'}` : 'Disconnected.'),
-            linkOnly ? h('div.small', 'Desktop links are valid for 10 minutes and stop working when the sandbox stops. Ask for a new one with ', h('code', `crowdvm desktop ${id}`), ' or open the sandbox in the dashboard.') : null,
-            btn('Reconnect', { kind: 'primary', ico: 'refresh', onClick: connect }));
+            linkOnly ? h('div', 'This link was used or expired. Run ', h('code', `crowdvm desktop ${id}`), ' for a new one.') : null,
+            linkOnly ? null : btn('Reconnect', { kind: 'primary', ico: 'refresh', onClick: connect }));
         }
       } });
     } catch (e) {

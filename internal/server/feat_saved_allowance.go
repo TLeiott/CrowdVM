@@ -42,7 +42,9 @@ func (s *Server) savedIncluded(wallet string) int {
 
 func (s *Server) savedCount(wallet string) int {
 	var n int
-	_ = s.DB.QueryRow(`SELECT COUNT(*) FROM saved_snapshots WHERE owner_id=?`, wallet).Scan(&n)
+	// Saves that hold a disk, or are being saved; a failed first save stores
+	// nothing and costs nothing (bugs-r19-opus 2).
+	_ = s.DB.QueryRow(`SELECT COUNT(*) FROM saved_snapshots WHERE owner_id=? AND (snapshot_id IS NOT NULL OR status='saving')`, wallet).Scan(&n)
 	return n
 }
 
@@ -87,7 +89,7 @@ func (s *Server) allowanceJSON(wallet string, org *Org) map[string]any {
 // once per UTC day (billing tick).
 func (s *Server) chargeSavedExtras() {
 	today := time.Now().UTC().Format("2006-01-02")
-	rows, err := s.DB.Query(`SELECT owner_id, COUNT(*) FROM saved_snapshots GROUP BY owner_id`)
+	rows, err := s.DB.Query(`SELECT owner_id, COUNT(*) FROM saved_snapshots WHERE snapshot_id IS NOT NULL GROUP BY owner_id`) // bugs-r19-opus 2
 	if err != nil {
 		return
 	}

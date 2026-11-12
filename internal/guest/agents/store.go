@@ -75,6 +75,7 @@ func (m *Manager) load() {
 	defer m.mu.Unlock()
 	if m.zdr() { // retention turned on: drop what an earlier boot kept
 		_ = m.evFile.Truncate(0)
+		m.events, m.evIndex, m.evBytes = nil, map[string]int{}, 0 // in memory too (bugs-r18-sonnet)
 	} else if m.evBytes > m.maxEventBytes() {
 		m.compactLocked()
 	}
@@ -86,7 +87,20 @@ func (m *Manager) load() {
 			dirty = true
 		}
 	}
-	if dirty {
+	// Retention on: rewrite state.json without the text an earlier boot kept
+	// (bugs-r17-sonnet 6), and drop it from memory too (bugs-r19-sonnet 6).
+	if m.zdr() {
+		for _, c := range m.convs {
+			c.LastPromptPreview = ""
+		}
+		for _, p := range m.prompts {
+			p.Prompt = ""
+		}
+		for _, st := range m.steers {
+			st.Message = ""
+		}
+	}
+	if dirty || m.zdr() {
 		m.saveLocked()
 	}
 }

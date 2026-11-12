@@ -2,6 +2,7 @@
 #   irm http://<server>:8420/install.ps1 | iex
 #   $env:CROWDVM_NODE=1; irm http://<server>:8420/install.ps1 | iex   # CLI + node app
 #   $env:CROWDVM_NO_SHELL=1 skips the PowerShell function; $env:CROWDVM_NO_LOGIN=1 skips sign-in.
+#   $env:CROWDVM_AGENT_SETUP=1/0 answers the coding-agent setup question without asking.
 $ErrorActionPreference = 'Stop'
 $Server = if ($env:CROWDVM_SERVER) { $env:CROWDVM_SERVER } else { '__CROWDVM_SERVER__' }
 $BinDir = if ($env:CROWDVM_BIN_DIR) { $env:CROWDVM_BIN_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\crowdvm' }
@@ -15,12 +16,17 @@ function Fetch($name) {
   $dest = Join-Path $BinDir $name
   $tmp = "$dest.tmp"
   Invoke-WebRequest -UseBasicParsing "$Server/downloads/windows/$Arch/$name" -OutFile $tmp
-  if (Test-Path $dest) {
-    Remove-Item -Force "$dest.old" -ErrorAction SilentlyContinue
-    Move-Item -Force $dest "$dest.old"
+  # Old copies a running program still holds stay until a later run.
+  Get-ChildItem -Path "$dest.*old" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+  $old = "$dest.$([guid]::NewGuid().ToString('N').Substring(0, 8)).old"
+  if (Test-Path $dest) { Move-Item -Force $dest $old }
+  try {
+    Move-Item -Force $tmp $dest
+  } catch {
+    if (Test-Path $old) { Move-Item -Force $old $dest }  # put the old one back
+    throw
   }
-  Move-Item -Force $tmp $dest
-  Remove-Item -Force "$dest.old" -ErrorAction SilentlyContinue  # still running: removed next time
+  Remove-Item -Force $old -ErrorAction SilentlyContinue
 }
 Write-Host "Installing crowdvm from $Server into $BinDir"
 Fetch 'crowdvm.exe'
@@ -56,7 +62,14 @@ if ($env:CROWDVM_NO_SHELL -ne '1') {
 if ($env:CROWDVM_NO_LOGIN -ne '1' -and [Environment]::UserInteractive -and -not [Console]::IsInputRedirected) {
   & $Cli onboard
   if ($LASTEXITCODE -ne 0) { Write-Host 'Sign in later with: crowdvm login' }
-  Write-Host 'Done. Open a new terminal to use the crowdvm function.'
+  $Next = 'Open a new terminal to use the crowdvm function.'
 } else {
-  Write-Host 'Done. Run: crowdvm onboard   (open a new terminal first to load the crowdvm function)'
+  $Next = 'Run: crowdvm onboard   (open a new terminal first to load the crowdvm function)'
 }
+# Coding agents (Claude Code, Codex, OpenCode, Cursor): offer the crowdvm skill and
+# rule. Asks on the console; without one (or in CI) it prints the command.
+Write-Host ''
+& $Cli skill setup --json=false
+if ($LASTEXITCODE -ne 0) { Write-Host 'Set up coding agents later with: crowdvm skill setup' }
+Write-Host ''
+Write-Host "Done. $Next"

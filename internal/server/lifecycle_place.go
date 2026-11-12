@@ -142,6 +142,7 @@ func (s *Server) tryPlace(id string) bool {
 		return false
 	}
 	spec, _ := api.SizeByName(sb.Size)
+	spec = diskSpec(sb, spec) // bugs-r17-opus 9
 	chainFrom := pb.Parent
 	if pb.LiveFrom != "" && chainFrom == "" {
 		if src, err := s.SandboxByID(pb.LiveFrom); err == nil {
@@ -385,6 +386,7 @@ AND head_snapshot_id IS NOT NULL AND COALESCE(degraded_since,updated_at)<?`, cut
 			continue // the newest data is only on the lost node: hold
 		}
 		spec, _ := api.SizeByName(sb.Size)
+		spec = diskSpec(sb, spec)
 		if !s.couldEverPlace(schedReq{Size: spec, Placement: sb.Placement, Exclude: sb.NodeID, Owners: s.ownersFor(sb.OwnerID, sb.OrgID), Encrypted: sb.Disk == "luks"}) {
 			// Pinned (--node, labels, ...) to the lost node: it waits for it.
 			// Say so, or it just sits in node_offline (field test).

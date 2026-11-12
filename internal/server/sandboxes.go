@@ -242,6 +242,7 @@ func (s *Server) authorizeSandbox(p *Principal, sb *Sandbox, action string, owne
 // SandboxJSON renders the Boat Sandbox object for viewer p (nil = owner view).
 func (s *Server) SandboxJSON(sb *Sandbox, p *Principal) map[string]any {
 	spec, _ := api.SizeByName(sb.Size)
+	disk := diskSpec(sb, spec).DiskGiB // the disk it has (bugs-r17-opus 9)
 	access := AccessOwner
 	if p != nil {
 		access = s.accessOf(p, sb)
@@ -341,7 +342,7 @@ func (s *Server) SandboxJSON(sb *Sandbox, p *Principal) map[string]any {
 		"environment": nz(sb.Environment), "environmentVersion": envVer, "stop": stop,
 		// CrowdVM extensions
 		"nodeId": nz(sb.NodeID), "node": nz(sb.NodeID), "imageId": nz(sb.ImageID), "placement": sb.Placement, "agentState": nz(sb.AgentState),
-		"noEnv": sb.NoEnv, "nested": sb.Nested, "storage": map[string]any{"diskGB": spec.DiskGiB, "encrypted": sb.Disk == "luks"},
+		"noEnv": sb.NoEnv, "nested": sb.Nested, "storage": map[string]any{"diskGB": disk, "encrypted": sb.Disk == "luks"},
 	}
 	if v, ok := sb.Extra["snapshotDataExpiredAt"].(float64); ok && v > 0 {
 		m["dataExpiredAt"] = tsMs(int64(v))
@@ -668,6 +669,11 @@ func (s *Server) handleUpdateSandbox(c *Ctx) error {
 		if len(sd) < 3 || len(sd) > 40 || !subdomainRe.MatchString(sd) || strings.Contains(sd, "--") || strings.HasSuffix(sd, "-desktop") || regexp.MustCompile(`-\d+$`).MatchString(sd) {
 			return Err(400, "invalid_subdomain", "subdomain must be 3-40 lowercase letters, digits and single hyphens, not ending in -desktop or -<number>.")
 		}
+		// bx-<id> is the label space of sandboxes without a subdomain: taking
+		// another sandbox's would serve its URLs (bugs-r19-opus 1).
+		if strings.HasPrefix(sd, strings.ReplaceAll(api.PrefixSandbox, "_", "-")) && sd != strings.ReplaceAll(sb.ID, "_", "-") {
+			return Err(400, "invalid_subdomain", "Subdomains starting with "+strings.ReplaceAll(api.PrefixSandbox, "_", "-")+" are reserved for sandbox ids.")
+		}
 		var n int
 		_ = s.DB.QueryRow(`SELECT COUNT(*) FROM sandboxes WHERE subdomain=? AND id<>? AND deleted_at IS NULL`, sd, sb.ID).Scan(&n)
 		if n > 0 {
@@ -757,6 +763,9 @@ type CreateSandboxRequest struct {
 	From        string            `json:"from"`
 	Nested      bool              `json:"nested"`
 	Placement   Placement         `json:"placement"`
+	// NewDiskKey (with from): the copy re-encrypts its disk to a key of its
+	// own on its first start (encrypted chains only; bugs-r14-opus 1).
+	NewDiskKey bool `json:"newDiskKey"`
 }
 
 func (s *Server) handleCreateSandbox(c *Ctx) error {
@@ -939,6 +948,9 @@ func (s *Server) handleCreateSandbox(c *Ctx) error {
 	var chain []string
 	if src != nil {
 		parent = src.SnapshotID
+		if err := s.copyRekeyErr(parent); err != nil {
+			return fail(err)
+		}
 		chain = s.snapshotChain(parent)
 		if sn, err := s.SnapshotByID(parent); err == nil && sn.ImageID != "" {
 			image = sn.ImageID
@@ -984,6 +996,12 @@ func (s *Server) handleCreateSandbox(c *Ctx) error {
 		if err := s.insertSandbox(sb); err != nil {
 			s.rollbackCreated(created)
 			return fail(err)
+		}
+		if src != nil && req.NewDiskKey {
+			_ = s.SetSandboxExtra(sb.ID, "newDiskKey", true) // see ensureDiskKey
+		}
+		if d := s.snapshotDiskGiB(parent); d > 0 {
+			_ = s.SetSandboxExtra(sb.ID, "diskGiB", d) // the saved disk, never shrunk (bugs-r18-sonnet 4)
 		}
 		if src != nil && src.Foreign {
 			s.addPendingScrub(sb.ID, s.foreignDeployScrub(src.OwnerID, src.SourceSandboxID))

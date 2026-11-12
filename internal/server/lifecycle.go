@@ -303,6 +303,7 @@ func (s *Server) requeueBoot(id string, o bootOpts, nf *nodeFullError) bool {
 		// (its next heartbeat): try once more on another node with room now
 		// (bugs-r13-opus 11).
 		spec, _ := api.SizeByName(sb.Size)
+		spec = diskSpec(sb, spec)
 		req := schedReq{Size: spec, Placement: sb.Placement, Chain: s.snapshotChain(nf.parent), ImageID: sb.ImageID, Exclude: nf.node, Owners: s.ownersFor(sb.OwnerID, sb.OrgID), Encrypted: sb.Disk == "luks"}
 		if _, err := s.placeSandbox(id, state, req); err == nil {
 			o.Retried = true
@@ -439,6 +440,10 @@ func (s *Server) boot(ctx context.Context, id string, o bootOpts) (err error) {
 		return err
 	}
 	spec, _ := api.SizeByName(sb.Size)
+	spec = diskSpec(sb, spec) // the node never shrinks a disk (bugs-r17-opus 9)
+	if prev, _ := sb.Extra["diskGiB"].(float64); int(prev) < spec.DiskGiB {
+		_ = s.SetSandboxExtra(sb.ID, "diskGiB", spec.DiskGiB)
+	}
 	token := randToken(40)
 	env := map[string]string{}
 	for k, v := range sb.Env {
@@ -1645,7 +1650,9 @@ func (s *Server) handleResume(c *Ctx) error {
 	if sb.State == api.StateError {
 		prevNode = sb.NodeID
 	}
-	sreq := schedReq{Size: spec, Placement: placement, Chain: chain, ImageID: sb.ImageID, Owners: s.ownersFor(sb.OwnerID, sb.OrgID), Encrypted: sb.Disk == "luks"}
+	// Placed by the disk it really has: it does not shrink (bugs-r17-opus 9).
+	// The type_too_small check below keeps the type's own size.
+	sreq := schedReq{Size: diskSpec(sb, spec), Placement: placement, Chain: chain, ImageID: sb.ImageID, Owners: s.ownersFor(sb.OwnerID, sb.OrgID), Encrypted: sb.Disk == "luks"}
 	// Shrinking below the data on the disk is refused (SIZE-010).
 	if used := diskUsedBytes(sb); used > 0 && newSize != sb.Size && used > int64(spec.DiskGiB)<<30 {
 		return ErrD(409, "type_too_small", fmt.Sprintf("The sandbox holds %.1f GB of data, more than the %d GB disk of %s. Free space first, or pick a larger type.",
@@ -1703,6 +1710,7 @@ func (s *Server) handleFork(c *Ctx) error {
 		TTLSeconds  OptInt             `json:"ttlSeconds"`
 		Name        string             `json:"name"`
 		Placement   *Placement         `json:"placement"`
+		NewDiskKey  bool               `json:"newDiskKey"` // see CreateSandboxRequest
 	}
 	if len(strings.TrimSpace(string(raw))) > 0 {
 		if err := json.Unmarshal(raw, &req); err != nil {
@@ -1737,7 +1745,15 @@ func (s *Server) handleFork(c *Ctx) error {
 	if !src.SnapshotsEnabled {
 		return Err(409, "snapshots_disabled", "This sandbox has snapshots off and cannot be forked.")
 	}
+	if s.sandboxRekeyPending(src.ID) {
+		return errRekeyPending
+	}
 	live := src.Usable() && src.NodeID != "" && s.nodes.get(src.NodeID) != nil
+	if !live { // a running source gets a live snapshot of its own
+		if err := s.copyRekeyErr(src.HeadSnapshotID); err != nil {
+			return err
+		}
+	}
 	if !live && src.HeadSnapshotID == "" {
 		if src.FirstBootDone && src.State != api.StateError {
 			return s.noHeadErr(src)
@@ -1848,6 +1864,12 @@ func (s *Server) handleFork(c *Ctx) error {
 	}
 	if err := s.insertSandbox(fk); err != nil {
 		return fail(err)
+	}
+	if req.NewDiskKey {
+		_ = s.SetSandboxExtra(fk.ID, "newDiskKey", true) // see ensureDiskKey
+	}
+	if d, _ := src.Extra["diskGiB"].(float64); d > 0 {
+		_ = s.SetSandboxExtra(fk.ID, "diskGiB", int(d)) // its source's disk, never shrunk (bugs-r18-sonnet 4)
 	}
 	chain := s.snapshotChain(src.HeadSnapshotID)
 	sreq := schedReq{Size: spec, Placement: placement, Chain: chain, ImageID: src.ImageID, Owners: s.ownersFor(fk.OwnerID, fk.OrgID), Encrypted: src.Disk == "luks"}

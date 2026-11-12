@@ -18,7 +18,7 @@ type sandboxFlags struct {
 	ttl                    int
 	noAutoStop, noEnv      bool
 	noSnapshots, noMonitor bool
-	failFast               bool
+	failFast, newKey       bool
 	env                    []string
 	// placement (CrowdVM extension)
 	gpu, nested            bool
@@ -79,6 +79,12 @@ func (s *sandboxFlags) bind(cmd *cobra.Command, lifecycle bool) {
 	}
 }
 
+// bindNewKey: --new-key on the commands that copy a sandbox's disk.
+func (s *sandboxFlags) bindNewKey(cmd *cobra.Command) {
+	cmd.Flags().BoolVar(&s.newKey, "new-key", false, "give the copy a disk key of its own instead of the source's (see the security guide): "+
+		"its first start re-encrypts the whole disk, which takes a while. Encrypted disks only; ignored for others")
+}
+
 func (s *sandboxFlags) bindData(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&s.noSnapshots, "no-snapshots", false, "never snapshot; stopping erases the sandbox")
 	cmd.Flags().BoolVar(&s.noMonitor, "no-monitoring", false, "keep no command output, process list or metrics")
@@ -110,7 +116,10 @@ func (a *App) newCmd() *cobra.Command {
 			}
 			req := &client.CreateSandboxRequest{
 				Type: sf.typ, TTLSeconds: ttlFor(cmd, sf.ttl, sf.noAutoStop), Env: env, Environment: sf.environment,
-				NoEnv: sf.noEnv, FailFast: sf.failFast, Name: name, Visibility: visibility, From: from,
+				NoEnv: sf.noEnv, FailFast: sf.failFast, Name: name, Visibility: visibility, From: from, NewDiskKey: sf.newKey,
+			}
+			if sf.newKey && from == "" {
+				return usagef("--new-key needs --from (a new sandbox from the base image always gets its own key)")
 			}
 			if sf.noSnapshots {
 				req.Snapshots = boolPtr(false)
@@ -189,6 +198,7 @@ func (a *App) newCmd() *cobra.Command {
 	}
 	sf.bind(cmd, true)
 	sf.bindData(cmd)
+	sf.bindNewKey(cmd)
 	f := cmd.Flags()
 	f.StringVar(&setupFile, "setup-file", "", "local shell script to run once after the sandbox is ready (64KB)")
 	f.StringVar(&from, "from", "", "start from a saved snapshot name or share code")
@@ -699,7 +709,7 @@ func (a *App) forkCmd() *cobra.Command {
 				return err
 			}
 			req := &client.ForkRequest{FailFast: sf.failFast, Env: env, Type: sf.typ, Environment: sf.environment,
-				NoEnv: sf.noEnv, TTLSeconds: ttlFor(cmd, sf.ttl, sf.noAutoStop), Name: name}
+				NoEnv: sf.noEnv, TTLSeconds: ttlFor(cmd, sf.ttl, sf.noAutoStop), Name: name, NewDiskKey: sf.newKey}
 			if sf.noSnapshots {
 				req.Snapshots = boolPtr(false)
 			}
@@ -726,6 +736,7 @@ func (a *App) forkCmd() *cobra.Command {
 	}
 	sf.bind(cmd, true)
 	sf.bindData(cmd)
+	sf.bindNewKey(cmd)
 	cmd.Flags().BoolVar(&wait, "wait", false, "wait until the fork is ready")
 	cmd.Flags().StringVar(&name, "name", "", "display name of the fork")
 	return cmd

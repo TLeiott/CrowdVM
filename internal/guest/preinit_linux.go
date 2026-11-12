@@ -19,6 +19,7 @@ package guest
 // key never formats anything.
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -94,7 +95,7 @@ func Preinit() error {
 	if err := netUp(); err != nil {
 		return fmt.Errorf("network: %w", err)
 	}
-	key, err := redeem(stub, mode, logger)
+	c, err := redeem(stub, mode, logger)
 	netDown()
 	if err != nil {
 		return err
@@ -102,12 +103,29 @@ func Preinit() error {
 	if mode == "plain" {
 		return execInit()
 	}
+	key, old := c.TakeDataKey(), c.TakeOldDataKey()
 	if len(key) < 32 {
 		return errors.New("the server sent no disk key")
 	}
 	logger.Printf("boot ticket redeemed; opening the encrypted data partition %s", part)
-	if err := openData(disk, part, key, logger); err != nil {
+	if err := openData(disk, part, key, old, logger); err != nil {
 		return err
+	}
+	if old != nil {
+		// Until the server hears this it sends the old key with every
+		// boot ticket; without it, no boot (the next one retries).
+		if err := netUp(); err != nil {
+			return fmt.Errorf("network: %w", err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		err := c.ConfirmRekeyed(ctx, key)
+		cancel()
+		c.Close()
+		netDown()
+		if err != nil {
+			return fmt.Errorf("confirming the new disk key to the server: %w", err)
+		}
+		logger.Printf("the server dropped the old disk key")
 	}
 	if err := overlayRoot(); err != nil {
 		return err
@@ -116,9 +134,10 @@ func Preinit() error {
 	return switchRoot()
 }
 
-// redeem fetches the config over the channel (retrying until it works) and
-// returns the disk key. The session stays in /run/crowdvm for the agent.
-func redeem(stub proto.GuestConfig, mode string, logger *log.Logger) ([]byte, error) {
+// redeem fetches the config over the channel (retrying until it works); the
+// channel holds the disk keys. The session stays in /run/crowdvm for the
+// agent.
+func redeem(stub proto.GuestConfig, mode string, logger *log.Logger) (*Channel, error) {
 	c := &Channel{stub: stub, statePath: filepath.Join(runState, "channel.json"), log: logger, disk: mode}
 	backoff := 500 * time.Millisecond
 	for {
@@ -135,15 +154,8 @@ func redeem(stub proto.GuestConfig, mode string, logger *log.Logger) ([]byte, er
 		time.Sleep(backoff)
 		backoff = min(backoff*2, 5*time.Second)
 	}
-	key := c.TakeDataKey()
-	c.mu.Lock()
-	sess := c.sess
-	c.sess = nil
-	c.mu.Unlock()
-	if sess != nil {
-		_ = sess.Close()
-	}
-	return key, nil
+	c.Close()
+	return c, nil
 }
 
 func run(stdin []byte, name string, args ...string) error {
@@ -190,6 +202,46 @@ type sfdiskTable struct {
 			Start, Size      int64
 		} `json:"partitions"`
 	} `json:"partitiontable"`
+}
+
+// growData grows the data partition to the end of a larger disk and keeps
+// its size a multiple of the LUKS sector (4 KiB): an unaligned partition
+// cannot be opened (bugs-r16-opus 1). Failures are logged; the partition
+// then keeps its size.
+func growData(disk, part string, logger *log.Logger) {
+	n := strings.TrimPrefix(strings.TrimPrefix(part, disk), "p")
+	if n == "" {
+		return
+	}
+	_ = run(nil, "sfdisk", "--no-reread", "--no-tell-kernel", "--relocate", "gpt-bak-std", disk)
+	if err := run(nil, "growpart", disk, n); err != nil && !strings.Contains(err.Error(), "NOCHANGE") {
+		logger.Printf("growing the data partition: %v", err) // bugs-r15-opus 2
+	}
+	if err := alignPartition(disk, part, n); err != nil {
+		logger.Printf("aligning the data partition: %v", err)
+	}
+	_ = run(nil, "partx", "-u", "-n", n, disk)
+}
+
+// alignPartition rounds partition n's (node part) size down to a multiple
+// of 8 sectors (4 KiB). It also repairs a partition an earlier grow left
+// unaligned.
+func alignPartition(disk, part, n string) error {
+	t, err := readTable(disk)
+	if err != nil {
+		return err
+	}
+	for _, p := range t.PartitionTable.Partitions {
+		if p.Node != part {
+			continue
+		}
+		if p.Size%8 == 0 {
+			return nil
+		}
+		in := []byte(fmt.Sprintf("%d,%d\n", p.Start, p.Size-p.Size%8))
+		return run(in, "sfdisk", "--no-reread", "--no-tell-kernel", "-N", n, disk)
+	}
+	return fmt.Errorf("%s not in the partition table of %s", part, disk)
 }
 
 func readTable(disk string) (sfdiskTable, error) {
@@ -295,10 +347,11 @@ func blkType(dev string) string {
 }
 
 // openData opens the LUKS2 partition (formatting it when it is blank),
-// grows it with the disk and mounts its ext4 at /run/crowdvm/data.
-func openData(disk, part string, key []byte, logger *log.Logger) error {
+// grows it with the disk and mounts its ext4 at /run/crowdvm/data. With
+// old, the partition is re-encrypted from old to key first.
+func openData(disk, part string, key, old []byte, logger *log.Logger) error {
 	_ = run(nil, "modprobe", "dm_crypt")
-	fresh := false
+	fresh, justFormatted := false, false
 	switch t := blkType(part); t {
 	case "crypto_LUKS":
 		fresh = blkLabel(part) == freshLabel // the last first boot ended before mkfs
@@ -311,13 +364,26 @@ func openData(disk, part string, key []byte, logger *log.Logger) error {
 			"--pbkdf-force-iterations", "1000", "--sector-size", "4096", "--label", freshLabel, "--key-file=-", part); err != nil {
 			return err
 		}
-		fresh = true
+		fresh, justFormatted = true, true
 	default:
 		return fmt.Errorf("%s holds %q, not an encrypted data partition; refusing to touch it", part, t)
 	}
+	if !fresh {
+		// Before the open: the LUKS2 segment runs to the end of the
+		// partition, so a grown (and 4 KiB-aligned) partition is opened at
+		// its new size (bugs-r16-opus 1).
+		growData(disk, part, logger)
+	}
+	rekeyed := false
+	if old != nil && !justFormatted {
+		if err := rekeyData(part, key, old, logger); err != nil {
+			return fmt.Errorf("re-encrypting the data partition to its new key: %w", err)
+		}
+		rekeyed = true
+	}
 	if err := run(key, "cryptsetup", "open", "--type", "luks2", "--key-file=-", "--allow-discards",
 		"--perf-no_read_workqueue", "--perf-no_write_workqueue", part, dataPartName); err != nil {
-		return fmt.Errorf("the disk key was refused: %w", err)
+		return fmt.Errorf("opening the encrypted data partition (wrong key, or a damaged partition): %w", err)
 	}
 	dev := "/dev/mapper/" + dataPartName
 	if fresh {
@@ -331,16 +397,6 @@ func openData(disk, part string, key []byte, logger *log.Logger) error {
 			return err
 		}
 	} else {
-		// A larger sandbox disk: grow partition, LUKS and ext4 (offline).
-		_ = run(nil, "sfdisk", "--no-reread", "--no-tell-kernel", "--relocate", "gpt-bak-std", disk)
-		if n := strings.TrimPrefix(strings.TrimPrefix(part, disk), "p"); n != "" {
-			if err := run(nil, "growpart", disk, n); err == nil {
-				_ = run(nil, "partx", "-u", "-n", n, disk)
-				_ = run(key, "cryptsetup", "resize", "--key-file=-", dataPartName)
-			} else if !strings.Contains(err.Error(), "NOCHANGE") {
-				logger.Printf("growing the data partition: %v", err) // bugs-r15-opus 2
-			}
-		}
 		if err := exec.Command("e2fsck", "-p", dev).Run(); err != nil {
 			if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() >= 4 {
 				return fmt.Errorf("e2fsck %s: %v", dev, err)
@@ -357,7 +413,151 @@ func openData(disk, part string, key []byte, logger *log.Logger) error {
 	}
 	// Online: offline resize2fs wants a fresh e2fsck -f first.
 	_ = run(nil, "resize2fs", dev)
+	if rekeyed {
+		// The re-encryption wrote every block, also the never-used ones
+		// the disk image held as holes: give those back.
+		if err := run(nil, "fstrim", dataMount); err != nil {
+			logger.Printf("fstrim after the re-encryption: %v", err)
+		}
+	}
 	return nil
+}
+
+// rekeyData re-encrypts the LUKS2 volume on part from the passphrase old
+// (and its volume key) to a new volume key, then replaces the passphrase
+// old with key: afterwards neither the old passphrase nor the old volume
+// key opens it. The VM may die at any point: LUKS2 records an unfinished
+// re-encryption in its header (with a checksummed hot zone), so the next
+// boot (which gets both keys again) resumes it, and a cut-off passphrase
+// change leaves one of the two passphrases (or both) working.
+func rekeyData(part string, key, old []byte, logger *log.Logger) error {
+	dump, err := exec.Command("cryptsetup", "luksDump", part).Output()
+	if err != nil {
+		return fmt.Errorf("cryptsetup luksDump: %v", err)
+	}
+	resume := reencryptPending(string(dump))
+	if !resume && opens(part, key) {
+		if opens(part, old) { // the passphrase change was cut off
+			if err := run(old, "cryptsetup", "luksRemoveKey", "--batch-mode", "--key-file=-", part); err != nil {
+				return err
+			}
+		}
+		logger.Printf("the data partition is re-encrypted to its new key")
+		return nil
+	}
+	start := time.Now()
+	args := []string{"reencrypt", "--batch-mode", "--key-file=-", "--progress-json", "--progress-frequency", "10"}
+	if resume {
+		logger.Printf("resuming the interrupted re-encryption of the data partition (a copy's own disk key)")
+		// A hard stop can leave the hot zone half written; repair
+		// restores it from the checksums LUKS2 keeps (a no-op otherwise).
+		if err := run(old, "cryptsetup", "repair", "--batch-mode", "--key-file=-", part); err != nil {
+			return err
+		}
+		args = append(args, "--resume-only")
+	} else {
+		logger.Printf("re-encrypting the data partition to a disk key of its own (a copy's first start: every block is read and written, this takes a while)")
+		args = append(args, "--pbkdf", "pbkdf2", "--pbkdf-force-iterations", "1000", "--sector-size", "4096")
+	}
+	if err := runProgress(old, logger, "cryptsetup", append(args, part)...); err != nil {
+		return err
+	}
+	logger.Printf("re-encrypted in %s; replacing the passphrase", time.Since(start).Round(time.Second))
+	if err := runKeys([][]byte{old, key}, "cryptsetup", "luksChangeKey", "--batch-mode", "--pbkdf", "pbkdf2", "--pbkdf-force-iterations", "1000",
+		"--key-file=/proc/self/fd/3", part, "/proc/self/fd/4"); err != nil {
+		return err
+	}
+	if opens(part, old) || !opens(part, key) {
+		return errors.New("the passphrase change did not take")
+	}
+	return nil
+}
+
+// reencryptPending: a luksDump shows an unfinished re-encryption.
+func reencryptPending(dump string) bool {
+	for _, l := range strings.Split(dump, "\n") {
+		if f, ok := strings.CutPrefix(strings.TrimSpace(l), "Requirements:"); ok && strings.Contains(f, "reencrypt") {
+			return true
+		}
+	}
+	return false
+}
+
+// opens: passphrase k opens the LUKS volume on part.
+func opens(part string, k []byte) bool {
+	return run(k, "cryptsetup", "open", "--test-passphrase", "--key-file=-", part) == nil
+}
+
+// runKeys runs a command with keys on fds 3, 4, ... (pipes: nothing on disk).
+func runKeys(keys [][]byte, name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Env = append(os.Environ(), "DM_DISABLE_UDEV=1", "TMPDIR=/run")
+	for _, k := range keys {
+		r, w, err := os.Pipe()
+		if err != nil {
+			return err
+		}
+		defer r.Close()
+		_, err = w.Write(k) // 64 bytes fit the pipe buffer
+		w.Close()
+		if err != nil {
+			return err
+		}
+		cmd.ExtraFiles = append(cmd.ExtraFiles, r)
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%s %s: %v: %s", name, strings.Join(args, " "), err, bytes.TrimSpace(out))
+	}
+	return nil
+}
+
+// runProgress runs a command with stdin and logs its --progress-json lines.
+func runProgress(stdin []byte, logger *log.Logger, name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Env = append(os.Environ(), "DM_DISABLE_UDEV=1", "TMPDIR=/run")
+	cmd.Stdin = bytes.NewReader(stdin)
+	var errOut bytes.Buffer
+	cmd.Stderr = &errOut
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	sc := bufio.NewScanner(out)
+	for sc.Scan() {
+		if p := progressLine(sc.Text()); p != "" {
+			logger.Print(p)
+		} else {
+			errOut.WriteString(sc.Text() + "\n")
+		}
+	}
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("%s %s: %v: %s", name, strings.Join(args, " "), err, bytes.TrimSpace(errOut.Bytes()))
+	}
+	return nil
+}
+
+// progressLine renders one line of cryptsetup --progress-json ("" if it is
+// not one).
+func progressLine(l string) string {
+	var p struct {
+		Done  string `json:"device_bytes"`
+		Size  string `json:"device_size"`
+		Speed string `json:"speed"`
+		ETA   string `json:"eta_ms"`
+	}
+	if json.Unmarshal([]byte(l), &p) != nil || p.Size == "" {
+		return ""
+	}
+	n := func(s string) float64 { v, _ := strconv.ParseFloat(s, 64); return v }
+	size := n(p.Size)
+	if size <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("re-encrypting: %.0f%% of %.1f GB, %.0f MB/s, %s left", 100*n(p.Done)/size, size/1e9, n(p.Speed)/1e6,
+		(time.Duration(n(p.ETA)) * time.Millisecond).Round(time.Second))
 }
 
 // blank: the first MiB is all zeros (a partition nobody wrote yet).

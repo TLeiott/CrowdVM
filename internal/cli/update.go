@@ -23,6 +23,10 @@ import (
 
 const updateCheckEvery = 6 * time.Hour
 
+// compareVersions orders two release versions (internal/version: nightlies
+// and release candidates by their identifiers, bugs-r16-sonnet 1).
+func compareVersions(a, b string) (int, bool) { return version.Compare(a, b) }
+
 // serverVersion asks GET /api/v1/server for the server's release.
 func (a *App) serverVersion(ctx context.Context) (string, error) {
 	cl, err := a.client()

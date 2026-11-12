@@ -53,6 +53,7 @@ type Channel struct {
 	session string
 	sess    *yamux.Session
 	dataKey []byte          // from the welcome of a ticket redemption
+	oldKey  []byte          // with dataKey while a re-encryption is pending
 	nonce   string          // sent with the ticket; a retry with it survives a lost welcome (bugs-r14-sonnet 3)
 	dnsSess *yamux.Session  // the session dnsTr dials on
 	dnsTr   *http.Transport // DNS forwards (bugs-r14-opus 3)
@@ -191,6 +192,7 @@ func (c *Channel) connect(ctx context.Context) (proto.GuestConfig, error) {
 	c.session = w.Session
 	if w.DataKey != "" {
 		c.dataKey, _ = base64.StdEncoding.DecodeString(w.DataKey)
+		c.oldKey, _ = base64.StdEncoding.DecodeString(w.OldDataKey)
 	}
 	c.mu.Unlock()
 	c.saveState(w.Session)
@@ -216,6 +218,73 @@ func (c *Channel) TakeDataKey() []byte {
 	k := c.dataKey
 	c.dataKey = nil
 	return k
+}
+
+// TakeOldDataKey returns the key the volume still opens with while it is
+// re-encrypted to the data key (nil when none is pending), and forgets it.
+func (c *Channel) TakeOldDataKey() []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	k := c.oldKey
+	c.oldKey = nil
+	if len(k) == 0 {
+		return nil
+	}
+	return k
+}
+
+// ConfirmRekeyed tells the server that the data partition opens with key
+// only, so it stops sending the old one. It reconnects with the session
+// and retries until ctx ends; a refusal (no such re-encryption pending)
+// ends it at once.
+func (c *Channel) ConfirmRekeyed(ctx context.Context, key []byte) error {
+	h := sha256.Sum256(key)
+	body := `{"keyHash":"` + hex.EncodeToString(h[:]) + `"}`
+	for backoff := time.Second; ; backoff = min(backoff*2, 10*time.Second) {
+		c.mu.Lock()
+		sess := c.sess
+		c.mu.Unlock()
+		var err error
+		if sess == nil || sess.IsClosed() {
+			if _, err = c.connect(ctx); err == nil {
+				c.mu.Lock()
+				sess = c.sess
+				c.mu.Unlock()
+			}
+		}
+		if err == nil {
+			req, _ := http.NewRequestWithContext(ctx, "POST", "http://server/v1/rekeyed", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			var resp *http.Response
+			if resp, err = (&http.Client{Transport: mux.Transport(sess), Timeout: 30 * time.Second}).Do(req); err == nil {
+				resp.Body.Close()
+				if resp.StatusCode == http.StatusNoContent {
+					return nil
+				}
+				err = fmt.Errorf("server: %s", resp.Status)
+				if resp.StatusCode == http.StatusConflict {
+					return err
+				}
+			}
+		}
+		c.log.Printf("confirming the new disk key: %v (retrying)", err)
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(backoff):
+		}
+	}
+}
+
+// Close ends the yamux session (the session token stays for the agent).
+func (c *Channel) Close() {
+	c.mu.Lock()
+	sess := c.sess
+	c.sess = nil
+	c.mu.Unlock()
+	if sess != nil {
+		_ = sess.Close()
+	}
 }
 
 func (c *Channel) saveState(session string) {

@@ -141,7 +141,12 @@ func (s *Server) handlePrompt(c *Ctx) error {
 				}
 			}
 		}
-		if !s.promptConfigured(sb, provider, reqEnv) {
+		// A named conversation without a provider keeps its own harness,
+		// which only the guest knows: it reports a missing credential itself
+		// (bugs-r18-sonnet 3).
+		conv, _ := req["conversationId"].(string)
+		prov, _ := req["provider"].(string)
+		if !(conv != "" && prov == "") && !s.promptConfigured(sb, provider, reqEnv) {
 			name := provider
 			if p, ok := s.catalogProvider(provider); ok {
 				name = p.Name
@@ -190,6 +195,12 @@ func (s *Server) effectiveProvider(sb *Sandbox, req map[string]any) string {
 // applyPromptDefaults fills provider/model/fast from the caller's account
 // settings; it reports whether req changed.
 func (s *Server) applyPromptDefaults(u *User, sb *Sandbox, req map[string]any) bool {
+	// The account's defaults are for new conversations: a prompt that names
+	// one keeps that conversation's agent, which the guest knows
+	// (bugs-r17-sonnet 4).
+	if conv, _ := req["conversationId"].(string); conv != "" {
+		return false
+	}
 	st := s.accountSettings(u.ID)
 	changed := false
 	provider, _ := req["provider"].(string)

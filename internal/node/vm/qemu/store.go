@@ -500,11 +500,53 @@ func (s *store) gcOrphans(orphans bool) {
 
 func (s *store) gc() { s.gcOrphans(false) }
 
+// CompactSnapshot (vm.Compactor): a layer whose file is mostly holes (the
+// guest discarded what it wrote, e.g. fstrim after a disk re-encryption)
+// is copied with qemu-img convert onto the same backing file, which writes
+// its allocated clusters only. The copy is deterministic, so a retried
+// upload has the same sha256.
+func (s *store) CompactSnapshot(id, dir string) (string, error) {
+	src, err := s.SnapshotPath(id)
+	if err != nil {
+		return "", err
+	}
+	info, err := s.info(src)
+	if err != nil {
+		return "", err
+	}
+	if info.FullBackingFile == "" || info.BackingFormat == "" || info.ActualSize >= fileSize(src)/2 {
+		return "", nil
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	f, err := os.CreateTemp(dir, "snapshot-"+id+"-*.part") // removed at node start if left behind
+	if err != nil {
+		return "", err
+	}
+	f.Close()
+	if err := s.run("convert", "-U", "-O", "qcow2", "-B", info.FullBackingFile, "-F", info.BackingFormat, src, f.Name()); err != nil {
+		os.Remove(f.Name())
+		return "", err
+	}
+	// convert writes the backing file's absolute path (this node's paths);
+	// keep the reference the layer itself had (a header-only change).
+	if info.BackingFile != info.FullBackingFile {
+		if err := s.run("rebase", "-u", "-b", info.BackingFile, "-F", info.BackingFormat, f.Name()); err != nil {
+			os.Remove(f.Name())
+			return "", err
+		}
+	}
+	return f.Name(), nil
+}
+
 type imgInfo struct {
-	Format      string `json:"format"`
-	VirtualSize int64  `json:"virtual-size"`
-	ActualSize  int64  `json:"actual-size"`
-	BackingFile string `json:"backing-filename"`
+	Format          string `json:"format"`
+	VirtualSize     int64  `json:"virtual-size"`
+	ActualSize      int64  `json:"actual-size"`
+	BackingFile     string `json:"backing-filename"`
+	FullBackingFile string `json:"full-backing-filename"`
+	BackingFormat   string `json:"backing-filename-format"`
 }
 
 func (s *store) info(path string) (imgInfo, error) {

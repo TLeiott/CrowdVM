@@ -46,6 +46,18 @@ func (a *App) sshKey() (keyPath, pub string, err error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", "", err
 	}
+	// bugs-r16-sonnet 5: one writer creates the pair; the others read it.
+	if err := os.MkdirAll(a.configDir(), 0o700); err != nil {
+		return "", "", err
+	}
+	unlock, err := lockConfig(a.configDir())
+	if err != nil {
+		return "", "", err
+	}
+	defer unlock()
+	if b, err := os.ReadFile(keyPath + ".pub"); err == nil && fileExists(keyPath) {
+		return keyPath, strings.TrimSpace(string(b)), nil
+	}
 	pk, sk, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return "", "", err
@@ -71,28 +83,46 @@ func (a *App) sshKey() (keyPath, pub string, err error) {
 // sshOptions authorizes the CLI key on the sandbox and returns the ssh -o
 // options (ProxyCommand through `crowdvm tunnel`) and the login user.
 func (a *App) sshOptions(ctx context.Context, c *client.Client, id string) ([]string, string, error) {
+	return a.sshOptionsPin(ctx, c, id, false)
+}
+
+// authorizeAndPin authorizes the CLI key on the sandbox and writes the
+// sandbox's current host key to the CLI's known_hosts. pinned is false when
+// the sandbox sent no key or the file could not be written.
+func (a *App) authorizeAndPin(ctx context.Context, c *client.Client, id string) (keyPath string, res *client.SSHKeyResult, pinned bool, err error) {
 	keyPath, pub, err := a.sshKey()
 	if err != nil {
-		return nil, "", err
+		return "", nil, false, err
 	}
-	res, err := c.AddSSHKey(ctx, id, pub)
+	res, err = c.AddSSHKey(ctx, id, pub)
 	if err != nil {
-		return nil, "", err
+		return "", nil, false, err
 	}
-	kh := filepath.Join(a.configDir(), "known_hosts")
-	strict := "accept-new"
 	// Both go into ssh files: a sandbox must not add lines to them
 	// (bugs-r11-opus 1).
 	if res.HostKey != "" && !api.ValidHostKey(res.HostKey) {
-		return nil, "", fmt.Errorf("the sandbox sent an invalid SSH host key")
+		return "", nil, false, fmt.Errorf("the sandbox sent an invalid SSH host key")
 	}
 	if !api.ValidSSHUser(res.SSHUser) {
 		res.SSHUser = "user"
 	}
 	if res.HostKey != "" {
-		if err := setKnownHost(kh, id, res.HostKey); err == nil {
-			strict = "yes"
-		}
+		pinned = setKnownHost(filepath.Join(a.configDir(), "known_hosts"), id, res.HostKey) == nil
+	}
+	return keyPath, res, pinned, nil
+}
+
+// sshOptionsPin is sshOptions; pin makes the ProxyCommand re-pin the host
+// key on every connect (bugs-r16-opus 5: a resume gives a new key).
+func (a *App) sshOptionsPin(ctx context.Context, c *client.Client, id string, pin bool) ([]string, string, error) {
+	keyPath, res, pinned, err := a.authorizeAndPin(ctx, c, id)
+	if err != nil {
+		return nil, "", err
+	}
+	kh := filepath.Join(a.configDir(), "known_hosts")
+	strict := "accept-new"
+	if pinned {
+		strict = "yes"
 	}
 	proxy := []string{quoteExe(a.Exe)}
 	if a.apiURL != "" {
@@ -101,17 +131,30 @@ func (a *App) sshOptions(ctx context.Context, c *client.Client, id string) ([]st
 	if a.profileF != "" {
 		proxy = append(proxy, "--profile", a.profileF)
 	}
-	proxy = append(proxy, "tunnel", "%h", "22")
+	proxy = append(proxy, "tunnel")
+	if pin {
+		proxy = append(proxy, "--pin") // bugs-r16-opus 5
+	}
+	proxy = append(proxy, "%h", "22")
 	opts := []string{
 		"-i", keyPath,
 		"-o", "IdentitiesOnly=yes",
 		"-o", "ProxyCommand=" + strings.Join(proxy, " "),
-		"-o", "UserKnownHostsFile=" + kh,
+		"-o", "UserKnownHostsFile=" + sshQuote(kh), // bugs-r16-sonnet 2
 		"-o", "StrictHostKeyChecking=" + strict,
 		"-o", "ServerAliveInterval=30",
 		"-o", "LogLevel=ERROR",
 	}
 	return opts, res.SSHUser, nil
+}
+
+// sshQuote double-quotes an ssh option or config value that has a space
+// (OpenSSH splits unquoted values there).
+func sshQuote(p string) string {
+	if strings.ContainsAny(p, " \t") {
+		return `"` + p + `"`
+	}
+	return p
 }
 
 func quoteExe(p string) string {
@@ -127,6 +170,14 @@ func setKnownHost(file, host, key string) error {
 	if f := strings.Fields(key); len(f) >= 3 && !strings.HasPrefix(f[0], "ssh-") && !strings.HasPrefix(f[0], "ecdsa-") {
 		key = strings.Join(f[1:], " ") // "host keytype key" form
 	}
+	// One writer at a time, and a rename: parallel ssh connections (the
+	// ssh-config entry pins on each) kept losing each other's line, and a
+	// reader saw a truncated file (bugs-r17-sonnet 2).
+	unlock, err := lockFile(file + ".lock")
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	var keep []string
 	if b, err := os.ReadFile(file); err == nil {
 		for _, l := range strings.Split(string(b), "\n") {
@@ -137,7 +188,24 @@ func setKnownHost(file, host, key string) error {
 		}
 	}
 	keep = append(keep, host+" "+key)
-	return os.WriteFile(file, []byte(strings.Join(keep, "\n")+"\n"), 0o600)
+	f, err := os.CreateTemp(filepath.Dir(file), filepath.Base(file)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	_, err = f.WriteString(strings.Join(keep, "\n") + "\n")
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Chmod(f.Name(), 0o600)
+	}
+	if err == nil {
+		err = os.Rename(f.Name(), file)
+	}
+	if err != nil {
+		os.Remove(f.Name())
+	}
+	return err
 }
 
 // runTool runs an external program attached to the CLI's stdio and returns
@@ -206,8 +274,8 @@ func (a *App) sshConfigCmd() *cobra.Command {
 		Use:   "ssh-config ID",
 		Short: "Write an OpenSSH config entry for a sandbox (for ssh, scp, VS Code, rsync)",
 		Long: `Authorize this computer's key on the sandbox and write
-~/.ssh/crowdvm/<id>.conf (Host <id>, ProxyCommand crowdvm tunnel, pinned host
-key). Add 'Include crowdvm/*.conf' at the top of ~/.ssh/config once; then
+~/.ssh/crowdvm/<id>.conf (Host <id>, ProxyCommand crowdvm tunnel --pin, which
+re-pins the host key after every resume). Add 'Include crowdvm/*.conf' at the top of ~/.ssh/config once; then
 'ssh <id>', 'scp file <id>:' and VS Code Remote-SSH work. --print only prints it.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -215,7 +283,7 @@ key). Add 'Include crowdvm/*.conf' at the top of ~/.ssh/config once; then
 			if err != nil {
 				return err
 			}
-			opts, user, err := a.sshOptions(cmd.Context(), c, id)
+			opts, user, err := a.sshOptionsPin(cmd.Context(), c, id, true) // bugs-r16-opus 5
 			if err != nil {
 				return err
 			}
@@ -224,7 +292,7 @@ key). Add 'Include crowdvm/*.conf' at the top of ~/.ssh/config once; then
 			for i := 0; i+1 < len(opts); i += 2 {
 				switch opts[i] {
 				case "-i":
-					fmt.Fprintf(&b, "  IdentityFile %s\n", opts[i+1])
+					fmt.Fprintf(&b, "  IdentityFile %s\n", sshQuote(opts[i+1])) // bugs-r16-sonnet 2
 				case "-o":
 					k, v, _ := strings.Cut(opts[i+1], "=")
 					fmt.Fprintf(&b, "  %s %s\n", k, v)
@@ -250,7 +318,12 @@ key). Add 'Include crowdvm/*.conf' at the top of ~/.ssh/config once; then
 			}
 			included := false
 			if bb, err := os.ReadFile(filepath.Join(home, ".ssh", "config")); err == nil {
-				included = strings.Contains(string(bb), "crowdvm/*.conf")
+				// bugs-r16-sonnet 6: a comment does not count
+				for _, l := range strings.Split(string(bb), "\n") {
+					if f := strings.Fields(l); len(f) >= 2 && strings.EqualFold(f[0], "Include") && strings.Contains(l, "crowdvm/*.conf") {
+						included = true
+					}
+				}
 			}
 			return a.result(map[string]any{"id": id, "path": path, "included": included}, func() {
 				a.printf("wrote %s\n", path)
@@ -335,7 +408,8 @@ API instead. Relative remote paths start in /home/user.`,
 }
 
 func (a *App) tunnelCmd() *cobra.Command {
-	return &cobra.Command{
+	var pin bool
+	cmd := &cobra.Command{
 		Use:   "tunnel ID PORT",
 		Short: "Bridge stdin/stdout to a TCP port in the sandbox (ssh ProxyCommand)",
 		Long: `Connect stdin/stdout to 127.0.0.1:PORT inside the sandbox. This is the
@@ -347,7 +421,11 @@ ProxyCommand that 'crowdvm ssh' uses; you can use it in ~/.ssh/config:
     ProxyCommand crowdvm tunnel %h 22
 
 ('crowdvm ssh-config ID' writes such an entry for you.) The tunnel ends when
-the sandbox side closes; end of input on stdin is not passed on yet.`,
+the sandbox side closes; end of input on stdin is not passed on yet.
+
+With --pin the tunnel first authorizes the key and rewrites the sandbox's
+host key in the CLI's known_hosts (a sandbox gets a new key on every resume),
+printing nothing on stdout; 'crowdvm ssh-config' uses it.`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, id, err := a.clientAndID(args[0])
@@ -358,6 +436,11 @@ the sandbox side closes; end of input on stdin is not passed on yet.`,
 			if err != nil {
 				return usagef("bad port %q", args[1])
 			}
+			if pin { // bugs-r16-opus 5: stdout is the ssh transport; this prints nothing
+				if _, _, _, err := a.authorizeAndPin(cmd.Context(), c, id); err != nil {
+					return err
+				}
+			}
 			conn, err := c.Tunnel(cmd.Context(), id, port)
 			if err != nil {
 				return err
@@ -365,6 +448,8 @@ the sandbox side closes; end of input on stdin is not passed on yet.`,
 			return client.Pipe(stdio{a.In, a.Out}, conn)
 		},
 	}
+	cmd.Flags().BoolVar(&pin, "pin", false, "refresh the sandbox's SSH host key in known_hosts before relaying")
+	return cmd
 }
 
 type stdio struct {
@@ -706,7 +791,7 @@ func (a *App) desktopCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "desktop ID",
 		Short: "Open the sandbox desktop (noVNC) in your browser",
-		Long:  "Print and open the desktop URL. It carries a token: treat it as a secret.",
+		Long:  "Print and open the desktop URL. It carries a token: treat it as a secret.\nWithout --public the desktop is private (a public one becomes private again).",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, id, err := a.clientAndID(args[0])
@@ -715,7 +800,7 @@ func (a *App) desktopCmd() *cobra.Command {
 			}
 			var res *client.DesktopResult
 			for i := 0; ; i++ {
-				res, err = c.Desktop(cmd.Context(), id, &client.DesktopRequest{PublicAccess: public}, true)
+				res, err = c.Desktop(cmd.Context(), id, &client.DesktopRequest{PublicAccess: &public}, true) // bugs-r17-opus 8: false makes it private again
 				if err != nil {
 					return err
 				}
@@ -733,7 +818,11 @@ func (a *App) desktopCmd() *cobra.Command {
 			if !noOpen && !a.jsonOut {
 				_ = a.OpenURL(res.DesktopURL)
 			}
-			return a.result(map[string]any{"id": id, "desktopUrl": res.DesktopURL, "viewerUrl": res.DesktopURL, "mode": res.Mode}, func() {
+			if res.PublicAccess {
+				// Always on stderr (also with --json): this is about who can open it.
+				fmt.Fprintf(a.Err, "note: this desktop is public: anyone with the URL can open it; run `crowdvm desktop %s` without --public to make it private\n", id) // bugs-r17-opus 8
+			}
+			return a.result(map[string]any{"id": id, "desktopUrl": res.DesktopURL, "viewerUrl": res.DesktopURL, "mode": res.Mode, "publicAccess": res.PublicAccess}, func() {
 				a.printf("%s\n", res.DesktopURL)
 			})
 		},
@@ -793,7 +882,24 @@ is opened for each port unless --no-firewall.`,
 					}
 					ports = append(ports, client.DirectPort{Port: n, Proto: firstNonEmpty(proto, "tcp")})
 				}
-				if res, err = c.SetDirectPorts(cmd.Context(), id, ports); err == nil && !noFirewall {
+				if clear && len(ports) > 0 {
+					// bugs-r16-sonnet 4: --clear PORT... drops those ports from the current list
+					var cur *client.DirectPorts
+					if cur, err = c.DirectPorts(cmd.Context(), id); err != nil {
+						return err
+					}
+					rest := []client.DirectPort{}
+					for _, p := range cur.Ports {
+						drop := false
+						for _, q := range ports {
+							drop = drop || (p.Port == q.Port && firstNonEmpty(p.Proto, "tcp") == q.Proto)
+						}
+						if !drop {
+							rest = append(rest, client.DirectPort{Port: p.Port, Proto: firstNonEmpty(p.Proto, "tcp")})
+						}
+					}
+					res, err = c.SetDirectPorts(cmd.Context(), id, rest)
+				} else if res, err = c.SetDirectPorts(cmd.Context(), id, ports); err == nil && !noFirewall && !clear {
 					a.openFirewall(cmd.Context(), c, id, ports)
 				}
 			}

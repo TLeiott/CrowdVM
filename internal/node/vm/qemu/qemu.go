@@ -1560,9 +1560,21 @@ func (d *Driver) reticket(ctx context.Context, m *machine, cfg *proto.GuestConfi
 }
 
 func (d *Driver) waitBoot(m *machine, r *run) {
-	ctx, cancel := context.WithTimeout(d.ctx, d.opt.BootTimeout)
-	defer cancel()
-	err := d.guest(m).WaitHealthy(ctx, r.exited)
+	console := filepath.Join(d.vmDir(m.id), "console.log")
+	limit := time.Now().Add(maxRekeyBoot)
+	var err error
+	for {
+		ctx, cancel := context.WithTimeout(d.ctx, d.opt.BootTimeout)
+		err = d.guest(m).WaitHealthy(ctx, r.exited)
+		cancel()
+		// A copy re-encrypting its disk to its own key before the agent
+		// starts takes minutes per 10 GB: while the console shows it
+		// progressing, the boot gets more time (bugs-r18-opus 3).
+		if err == nil || !r.alive() || d.ctx.Err() != nil || time.Now().After(limit) || !rekeyProgressing(console) {
+			break
+		}
+		d.opt.Logf("qemu: %s still re-encrypting its disk; waiting longer for the guest", m.id)
+	}
 	d.mu.Lock()
 	cur := m.run == r && m.st.State == proto.VMStarting && !m.gone
 	d.mu.Unlock()
@@ -1577,6 +1589,19 @@ func (d *Driver) waitBoot(m *machine, r *run) {
 	d.opt.Logf("qemu: %s boot timeout; serial console tail:\n%s", m.id, consoleTail(filepath.Join(d.vmDir(m.id), "console.log"), 4000))
 	d.setState(m, proto.VMError, fmt.Sprintf("boot timeout: guest agent not healthy after %s", d.opt.BootTimeout))
 	d.kill(r)
+}
+
+// maxRekeyBoot bounds a boot that re-encrypts its disk.
+const maxRekeyBoot = 2 * time.Hour
+
+// rekeyProgressing: the serial console was written in the last minute and
+// its tail shows preinit's re-encryption progress.
+func rekeyProgressing(console string) bool {
+	fi, err := os.Stat(console)
+	if err != nil || time.Since(fi.ModTime()) > time.Minute {
+		return false
+	}
+	return strings.Contains(consoleTail(console, 2000), "re-encrypting")
 }
 
 // kill makes qemu exit: QMP stop (vCPUs halt at once) and quit (clean
@@ -1633,6 +1658,7 @@ func (d *Driver) adoptAll() {
 			}
 			m.st.State, m.st.Error = proto.VMError, "qemu not running after node restart"
 			d.opt.Logf("qemu: %s: %s (overlay kept)", m.id, m.st.Error)
+			d.forgetFDs(rec.PID) // its qemu is gone: the ticket memfd never hangs up (bugs-r16-sonnet 9)
 			continue
 		}
 		proc, _ := os.FindProcess(rec.PID)
@@ -1641,6 +1667,7 @@ func (d *Driver) adoptAll() {
 		if rec.Net == NetNetstack {
 			if err := d.adoptNet(m, r); err != nil {
 				d.kill(r)
+				d.forgetFDs(rec.PID) // bugs-r16-sonnet 9
 				m.st.State, m.st.Error = proto.VMError, "guest network not reattached after node restart: "+err.Error()
 				d.opt.Logf("qemu: %s: %s (overlay kept)", m.id, m.st.Error)
 				continue

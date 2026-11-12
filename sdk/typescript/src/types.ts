@@ -480,6 +480,8 @@ export interface CreateSandboxRequest {
   teamId?: string;
   /** Create the sandbox from a saved snapshot (saved with `POST /saved-snapshots`, or `crowdvm snapshot <id> <name>` in the CLI). The sandbox starts from that exact frozen state. Omitting `type` inherits the type the… */
   from?: string;
+  /** Copies only: re-encrypt the copy's encrypted disk to a key of its own on its first start (slow: rewrites the disk). Ignored for unencrypted disks. */
+  newDiskKey?: boolean;
 }
 
 /** Options for stopping a sandbox. */

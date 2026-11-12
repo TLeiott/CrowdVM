@@ -442,7 +442,7 @@ export abstract class GeneratedOperations {
   path: string;
   content: string;
   encoding?: "utf8" | "base64";
-})[]; org?: string; teamId?: string; from?: string; nested?: boolean; placement?: T.Placement; } = {}, options?: RequestOptions): Promise<T.CreateSandboxResponse> {
+})[]; org?: string; teamId?: string; from?: string; newDiskKey?: boolean; nested?: boolean; placement?: T.Placement; } = {}, options?: RequestOptions): Promise<T.CreateSandboxResponse> {
     return this._op(OPERATIONS.create, params, options) as Promise<T.CreateSandboxResponse>;
   }
 
@@ -487,7 +487,7 @@ export abstract class GeneratedOperations {
   }
 
   /** Fork sandbox (`POST /sandboxes/{sandboxId}/fork`) */
-  fork(params: { sandboxId: string; idempotencyKey?: string; xBoatOrg?: string; forkRequest?: Record<string, unknown>; } & { labels?: Record<string, string>; failFast?: boolean; monitoring?: boolean; env?: Record<string, string>; environment?: string; noEnv?: boolean; type?: "small" | "default" | "large" | "xlarge"; ttlSeconds?: number | null; placement?: T.Placement; }, options?: RequestOptions): Promise<T.SandboxActionResponse> {
+  fork(params: { sandboxId: string; idempotencyKey?: string; xBoatOrg?: string; forkRequest?: Record<string, unknown>; } & { labels?: Record<string, string>; failFast?: boolean; monitoring?: boolean; env?: Record<string, string>; environment?: string; noEnv?: boolean; type?: "small" | "default" | "large" | "xlarge"; ttlSeconds?: number | null; placement?: T.Placement; newDiskKey?: boolean; }, options?: RequestOptions): Promise<T.SandboxActionResponse> {
     return this._op(OPERATIONS.fork, params, options) as Promise<T.SandboxActionResponse>;
   }
 

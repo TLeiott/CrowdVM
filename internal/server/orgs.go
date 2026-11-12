@@ -566,7 +566,14 @@ func (s *Server) handleRemoveMember(c *Ctx) error {
 	if trole == "owner" {
 		return Err(400, "owner_cannot_leave", "Transfer ownership before the owner leaves.")
 	}
+	// bugs-r17-opus 3: a service account's sandboxes would be orphaned here;
+	// its own endpoint refuses while it still has sandboxes.
+	if tu, err := s.UserByID(target); err == nil && tu.Kind == "service" {
+		return Err(409, "service_account", "This is a service account: remove it with DELETE /orgs/"+o.ID+"/service-accounts/"+target+".")
+	}
+	var ownIDs []string
 	err = s.DB.Tx(s.ctx, func(tx *sql.Tx) error {
+		ownIDs = nil
 		// Refuse removal until every org-billed run ends; moving only org_id
 		// would leave an open run charging the organization's wallet.
 		var active int
@@ -579,6 +586,19 @@ func (s *Server) handleRemoveMember(c *Ctx) error {
 		if _, err := tx.Exec(`DELETE FROM org_members WHERE org_id=? AND user_id=?`, o.ID, target); err != nil {
 			return err
 		}
+		// Their own sandboxes that go personal below: teammates' keys in
+		// them are revoked at their next start (bugs-r18-sonnet 2).
+		rows, qerr := tx.Query(`SELECT id FROM sandboxes WHERE org_id=? AND owner_id=? AND deleted_at IS NULL`, o.ID, target)
+		if qerr != nil {
+			return qerr
+		}
+		for rows.Next() {
+			var id string
+			if rows.Scan(&id) == nil {
+				ownIDs = append(ownIDs, id)
+			}
+		}
+		rows.Close()
 		// Their sandboxes go back to personal billing (Boat semantics).
 		if _, err := tx.Exec(`UPDATE sandboxes SET org_id=NULL, visibility=NULL WHERE org_id=? AND owner_id=?`, o.ID, target); err != nil {
 			return err
@@ -591,6 +611,10 @@ func (s *Server) handleRemoveMember(c *Ctx) error {
 	})
 	if err != nil {
 		return err
+	}
+	s.revokeMemberKeys(o.ID, target) // bugs-r17-opus 2
+	for _, id := range ownIDs {      // all stopped (refused above otherwise)
+		_ = s.SetSandboxExtra(id, "sshKeysRevokePending", true)
 	}
 	return c.OK(200, "org.member_removed", map[string]any{"org": o.ID, "userId": target})
 }
@@ -732,12 +756,24 @@ func (s *Server) handleAcceptInvite(c *Ctx) error {
 	if email != "" && c.P.User.Email != "" && !strings.EqualFold(email, c.P.User.Email) {
 		s.Log.Info("invite accepted by a different email", "invite", email, "user", c.P.User.Email)
 	}
-	if s.memberRole(orgID, c.P.User.ID) == "" {
-		if _, err := s.DB.Exec(`INSERT INTO org_members(org_id,user_id,role,joined_at) VALUES(?,?,?,?)`, orgID, c.P.User.ID, role, store.Now()); err != nil {
+	// bugs-r17-opus 6: claim the invite with one conditional UPDATE, in the
+	// same transaction as the insert, so two accepts cannot both join.
+	err = s.DB.Tx(s.ctx, func(tx *sql.Tx) error {
+		now := store.Now()
+		res, err := tx.Exec(`UPDATE org_invites SET accepted_at=?, accepted_by=? WHERE id=? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at>?`, now, c.P.User.ID, id, now)
+		if err != nil {
 			return err
 		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return Err(404, "invalid_invite", "The invite is wrong, used, revoked or expired.")
+		}
+		// An existing member keeps their role (the claim above still burns the invite).
+		_, err = tx.Exec(`INSERT INTO org_members(org_id,user_id,role,joined_at) VALUES(?,?,?,?) ON CONFLICT DO NOTHING`, orgID, c.P.User.ID, role, now)
+		return err
+	})
+	if err != nil {
+		return err
 	}
-	_, _ = s.DB.Exec(`UPDATE org_invites SET accepted_at=?, accepted_by=? WHERE id=?`, store.Now(), c.P.User.ID, id)
 	o, err := s.OrgByID(orgID)
 	if err != nil {
 		return err

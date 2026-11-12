@@ -73,7 +73,9 @@ export function waitForDesktop(cvm: CrowdVM, sandboxId: string, o: WaitOptions &
       const out = await cvm.desktop({ sandboxId, vnc: 1, theme, publicAccess }, { signal: o.signal });
       return out.provisioning || !out.desktopUrl ? undefined : out;
     } catch (e) {
-      if (e instanceof ApiError && [400, 409, 503].includes(e.status)) return undefined;
+      // A 400 (bad theme or profile) never becomes a desktop: say so at once
+      // (bugs-r16-sonnet 10).
+      if (e instanceof ApiError && [409, 503].includes(e.status)) return undefined;
       throw e;
     }
   }, `the desktop of ${sandboxId}`, o, 120_000);

@@ -70,11 +70,32 @@ type schedReq struct {
 	Exclude   string
 	Owners    []string // users whose nodes are "own" (placement.trust)
 	Encrypted bool     // the sandbox's disk is encrypted: guest-channel nodes only
+	Rekey     bool     // a copy whose disk still has to get its own key: DiskRekey nodes only
 }
 
 // encrypted: the request needs a node that can give the guest its disk key.
 func (r schedReq) encrypted(s *Server) bool {
 	return r.Encrypted || (len(r.Chain) > 0 && s.encryptedChain(r.Chain[0]))
+}
+
+// diskSpec is spec with the disk a sandbox really has: a disk never shrinks,
+// so after a resume at a smaller type it keeps the largest it booted with
+// (extra.diskGiB, bugs-r17-opus 9).
+func diskSpec(sb *Sandbox, spec api.SizeSpec) api.SizeSpec {
+	if d, _ := sb.Extra["diskGiB"].(float64); int(d) > spec.DiskGiB {
+		spec.DiskGiB = int(d)
+	}
+	return spec
+}
+
+// snapshotDiskGiB: the disk size the sandbox that took snapshot id had
+// recorded (0: none).
+func (s *Server) snapshotDiskGiB(id string) int {
+	var d int
+	if id != "" {
+		_ = s.DB.QueryRow(`SELECT COALESCE(json_extract(b.extra,'$.diskGiB'),0) FROM snapshots n JOIN sandboxes b ON b.id=n.sandbox_id WHERE n.id=?`, id).Scan(&d)
+	}
+	return d
 }
 
 // liveStates: the sandbox states that hold room on their node.
@@ -86,31 +107,32 @@ func (s *Server) reservedOn(nodeID string) proto.Usage {
 }
 
 // reservations sums placed sandbox sizes per node, for one node or (nodeID
-// "") all of them, in one query.
+// "") all of them, in one query. A sandbox's disk counts at the largest it
+// booted with (bugs-r17-opus 9).
 func (s *Server) reservations(nodeID string) map[string]proto.Usage {
 	out := map[string]proto.Usage{}
-	q := `SELECT node_id, size, COUNT(*) FROM sandboxes WHERE node_id IS NOT NULL AND deleted_at IS NULL AND ` + liveStates
+	q := `SELECT node_id, size, COALESCE(json_extract(extra,'$.diskGiB'),0) AS disk, COUNT(*) FROM sandboxes WHERE node_id IS NOT NULL AND deleted_at IS NULL AND ` + liveStates
 	args := []any{}
 	if nodeID != "" {
 		q += ` AND node_id=?`
 		args = append(args, nodeID)
 	}
-	rows, err := s.DB.Query(q+` GROUP BY node_id, size`, args...)
+	rows, err := s.DB.Query(q+` GROUP BY node_id, size, disk`, args...)
 	if err != nil {
 		return out
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var id, sz string
-		var n int
-		if rows.Scan(&id, &sz, &n) != nil {
+		var disk, n int
+		if rows.Scan(&id, &sz, &disk, &n) != nil {
 			continue
 		}
 		spec, _ := api.SizeByName(sz)
 		u := out[id]
 		u.VCPU += n * spec.VCPU
 		u.MemoryMiB += n * spec.MemoryMiB
-		u.DiskGiB += n * spec.DiskGiB
+		u.DiskGiB += n * max(spec.DiskGiB, disk)
 		u.VMs += n
 		out[id] = u
 	}
@@ -235,6 +257,10 @@ func (s *Server) pickNode(req schedReq) (*Node, error) {
 			reasons = append(reasons, n.Name+": cannot unlock an encrypted disk (crowdvm-node too old)")
 			continue
 		}
+		if req.Rekey && !n.Info.DiskRekey {
+			reasons = append(reasons, n.Name+": cannot give a copy its own disk key (crowdvm-node too old)")
+			continue
+		}
 		matching++
 		if req.Placement.GPU && s.gpusInUse(id) >= len(n.Info.GPUs) {
 			reasons = append(reasons, n.Name+": all GPUs in use")
@@ -310,6 +336,8 @@ func (s *Server) ownersFor(owner, org string) []string {
 func (s *Server) placeSandbox(sbID, state string, req schedReq) (*Node, error) {
 	s.schedMu.Lock()
 	defer s.schedMu.Unlock()
+	// A copy made with newDiskKey, until its disk has its own key.
+	_ = s.DB.QueryRow(`SELECT rekey_from!='' OR (COALESCE(json_extract(extra,'$.newDiskKey'),0)=1 AND COALESCE(data_key,'')='') FROM sandboxes WHERE id=?`, sbID).Scan(&req.Rekey)
 	n, err := s.pickNode(req)
 	if err != nil {
 		return nil, err

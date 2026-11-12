@@ -6,7 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"mime"
 	"net/http"
 	"os"
@@ -14,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/crowdvm/crowdvm/internal/api"
@@ -523,18 +526,36 @@ func maxParallel(env func(string) string) int {
 // listed by name and type only, to keep the event log small.
 const maxEventAttachInline = 256 << 10
 
+// readInline reads a small regular file without ever blocking: a FIFO
+// swapped in after the preflight is refused, not waited on (the caller holds
+// the manager lock: bugs-r17-sonnet 7), and a large file is not read at all.
+func readInline(path string) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !st.Mode().IsRegular() || st.Size() > maxEventAttachInline {
+		return nil, errors.New("not inlined")
+	}
+	b, err := io.ReadAll(io.LimitReader(f, maxEventAttachInline+1))
+	if err == nil && len(b) > maxEventAttachInline {
+		err = errors.New("not inlined")
+	}
+	return b, err
+}
+
 func eventAttachments(paths []string, home string) []map[string]any {
 	out := make([]map[string]any, 0, len(paths))
 	for _, p := range paths {
-		full := p
-		if strings.HasPrefix(full, "~/") {
-			full = filepath.Join(home, full[2:])
-		} else if !filepath.IsAbs(full) {
-			full = filepath.Join(home, full)
-		}
+		full := attachPath(p, home)
 		a := map[string]any{"filename": filepath.Base(p)}
 		mt := mime.TypeByExtension(filepath.Ext(p))
-		if b, err := os.ReadFile(full); err == nil && len(b) <= maxEventAttachInline {
+		if b, err := readInline(full); err == nil {
 			if mt == "" {
 				mt = http.DetectContentType(b)
 			}

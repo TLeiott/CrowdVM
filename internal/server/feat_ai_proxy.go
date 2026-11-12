@@ -115,6 +115,13 @@ func (s *Server) handleAIProxy(w http.ResponseWriter, r *http.Request) {
 		aiProxyFail(w, 403, "ai_access_blocked", "AI access is blocked for this sandbox.")
 		return
 	}
+	// An organization's profile only while the sandbox's owner may still use
+	// it: removed members and narrowed access lists end at once, not at the
+	// next start (bugs-r17-sonnet 1).
+	if p, err := s.aiProfileByID(profileID); err != nil || (p.Org && !s.orgCanUse(p.Access, p.OwnerID, sb.OwnerID)) {
+		aiProxyFail(w, 403, "ai_profile_not_usable", "This sandbox's owner may no longer use these AI credentials. Restart the sandbox to use their own.")
+		return
+	}
 
 	var base, credID string
 	var setAuth func(h http.Header)

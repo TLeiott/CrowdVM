@@ -65,6 +65,9 @@ type NodeOptions struct {
 	// GuestChannel: advertise guest-channel boots (the server then sends a
 	// boot stub; a test runs the guest side itself).
 	GuestChannel bool
+	// NoDiskRekey: a guest-channel node whose guests cannot give a copy its
+	// own disk key (an older node).
+	NoDiskRekey bool
 	// DirectHost: publish direct ports (ssh, VMSpec.DirectPorts, PUT
 	// /v1/vms/{id}/direct-ports) as DirectHost:<port>; "" = only the fake
 	// ssh endpoint, and direct-ports answers 409 direct_disabled.
@@ -169,7 +172,7 @@ func StartFakeNode(serverURL string, o NodeOptions) (*FakeNode, error) {
 	if o.Gen != nil {
 		gen = *o.Gen
 	}
-	n.info = proto.NodeInfo{Name: o.Name, Version: "fake", Gen: gen, OS: "linux", Arch: "amd64", Driver: "fake", Labels: o.Labels, Bench: bench, Capacity: o.Capacity, Images: o.Images, DirectHost: o.DirectHost, LazyChain: o.LazyChain, GPUs: o.PassthroughGPUs, Paused: o.Paused, GuestChannel: o.GuestChannel}
+	n.info = proto.NodeInfo{Name: o.Name, Version: "fake", Gen: gen, OS: "linux", Arch: "amd64", Driver: "fake", Labels: o.Labels, Bench: bench, Capacity: o.Capacity, Images: o.Images, DirectHost: o.DirectHost, LazyChain: o.LazyChain, GPUs: o.PassthroughGPUs, Paused: o.Paused, GuestChannel: o.GuestChannel, DiskRekey: o.GuestChannel && !o.NoDiskRekey}
 	body, _ := json.Marshal(proto.RegisterRequest{JoinToken: o.JoinToken, Info: n.info})
 	resp, err := http.Post(n.server+"/node/v1/register", "application/json", bytes.NewReader(body))
 	if err != nil {

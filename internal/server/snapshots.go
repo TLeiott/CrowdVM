@@ -71,9 +71,9 @@ func (s *Server) addLocation(snapID, nodeID string) {
 	_, _ = s.DB.Exec(`INSERT OR IGNORE INTO snapshot_locations(snapshot_id,node_id) VALUES(?,?)`, snapID, nodeID)
 }
 
-// snapDiskCols: a new snapshot row takes its sandbox's disk key and disk
-// kind (the key follows the disk content; see ensureDiskKey).
-const snapDiskCols = `COALESCE((SELECT data_key FROM sandboxes WHERE id=?),''),COALESCE((SELECT disk FROM sandboxes WHERE id=?),'')`
+// snapDiskCols: a new snapshot row takes its sandbox's disk key, disk kind
+// and pending old key (the key follows the disk content; see ensureDiskKey).
+const snapDiskCols = `COALESCE((SELECT data_key FROM sandboxes WHERE id=?),''),COALESCE((SELECT disk FROM sandboxes WHERE id=?),''),COALESCE((SELECT rekey_from FROM sandboxes WHERE id=?),'')`
 
 // recordSnapshot stores a snapshot taken by a node for sb. A stop layer is
 // the sandbox's head at once (the newest state; a resume elsewhere waits
@@ -91,9 +91,9 @@ func (s *Server) recordSnapshot(sb *Sandbox, ref proto.SnapshotRef, nodeID, kind
 	if image == "" {
 		image = sb.ImageID
 	}
-	res, err := s.DB.Exec(`INSERT OR IGNORE INTO snapshots(id,sandbox_id,owner_id,parent_id,image_id,kind,generation,chain_id,size_bytes,node_id,created_at,data_key,disk)
+	res, err := s.DB.Exec(`INSERT OR IGNORE INTO snapshots(id,sandbox_id,owner_id,parent_id,image_id,kind,generation,chain_id,size_bytes,node_id,created_at,data_key,disk,rekey_from)
 VALUES(?,?,?,?,?,?,?,?,?,?,?,`+snapDiskCols+`)`,
-		ref.ID, sb.ID, sb.OwnerID, nz(ref.ParentID), image, kind, gen, chain, ref.SizeBytes, nz(nodeID), created, sb.ID, sb.ID)
+		ref.ID, sb.ID, sb.OwnerID, nz(ref.ParentID), image, kind, gen, chain, ref.SizeBytes, nz(nodeID), created, sb.ID, sb.ID, sb.ID)
 	if err != nil {
 		s.Log.Error("record snapshot", "err", err)
 		return
@@ -216,8 +216,8 @@ WHERE s.id=? AND s.purged_at IS NULL AND (s.node_id=? OR b.node_id=?)`, nodeID, 
 		image = sb.ImageID
 	}
 	gen, chain := s.chainPos(ref)
-	res, err := s.DB.Exec(`INSERT OR IGNORE INTO snapshots(id,sandbox_id,owner_id,parent_id,image_id,kind,generation,chain_id,size_bytes,node_id,created_at,deleted_at,data_key,disk) VALUES(?,?,?,?,?,'periodic',?,?,?,?,?,?,`+snapDiskCols+`)`,
-		ref.ID, sb.ID, sb.OwnerID, nz(ref.ParentID), image, gen, chain, ref.SizeBytes, nz(nodeID), created, deleted, sb.ID, sb.ID)
+	res, err := s.DB.Exec(`INSERT OR IGNORE INTO snapshots(id,sandbox_id,owner_id,parent_id,image_id,kind,generation,chain_id,size_bytes,node_id,created_at,deleted_at,data_key,disk,rekey_from) VALUES(?,?,?,?,?,'periodic',?,?,?,?,?,?,`+snapDiskCols+`)`,
+		ref.ID, sb.ID, sb.OwnerID, nz(ref.ParentID), image, gen, chain, ref.SizeBytes, nz(nodeID), created, deleted, sb.ID, sb.ID, sb.ID)
 	if err != nil {
 		s.Log.Error("record taken snapshot", "err", err)
 		return

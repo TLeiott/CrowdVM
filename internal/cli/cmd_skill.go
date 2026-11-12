@@ -54,44 +54,14 @@ integrated agents inside a sandbox already have.
   crowdvm skill install --agent claude   # one agent (claude, codex, opencode, cursor, agents)
   crowdvm skill install --project .      # into this project (.claude/skills, ...)
   crowdvm skill path                     # where it is (or would be) installed
+  crowdvm skill setup                    # the skill plus the rule in each agent's global instructions
 
 Also give the agent the docs (<server>/llms.txt, <server>/mcp) and the AGENTS.md
 rule from crowdvm agent-instructions.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error { return cmd.Help() },
 	}
-	targets := func(all bool) ([]string, error) {
-		base := a.homeDir()
-		dirs := skillAgents
-		if project != "" {
-			abs, err := filepath.Abs(project)
-			if err != nil {
-				return nil, err
-			}
-			base, dirs = abs, skillProjectDirs
-		}
-		names := agents
-		if len(names) == 0 {
-			for n := range dirs {
-				if all || project != "" || exists(filepath.Join(base, skillAgentHomes[n])) {
-					names = append(names, n)
-				}
-			}
-			if len(names) == 0 {
-				names = []string{"claude", "agents"}
-			}
-		}
-		sort.Strings(names)
-		var out []string
-		for _, n := range names {
-			d, ok := dirs[n]
-			if !ok {
-				return nil, usagef("unknown agent %q (want claude, codex, opencode, cursor or agents)", n)
-			}
-			out = append(out, filepath.Join(base, filepath.FromSlash(d)))
-		}
-		return out, nil
-	}
+	targets := func(all bool) ([]string, error) { return a.skillTargets(agents, project, all) }
 	install := &cobra.Command{
 		Use:   "install",
 		Short: "Write the crowdvm skill into the agents' skills folders (replaces an older copy)",
@@ -101,18 +71,7 @@ rule from crowdvm agent-instructions.`,
 			if err != nil {
 				return err
 			}
-			for _, d := range dirs {
-				for _, sk := range skills.Names() {
-					dest := filepath.Join(d, sk)
-					n, err := writeSkill(sk, dest)
-					if err != nil {
-						return err
-					}
-					a.result(map[string]any{"event": "installed", "skill": sk, "path": dest, "files": n},
-						func() { a.printf("installed %s skill: %s\n", sk, dest) })
-				}
-			}
-			return nil
+			return a.installSkills(dirs)
 		},
 	}
 	path := &cobra.Command{
@@ -138,8 +97,59 @@ rule from crowdvm agent-instructions.`,
 		c.Flags().StringArrayVar(&agents, "agent", nil, "claude, codex, opencode, cursor or agents (repeatable; default: the agents found)")
 		c.Flags().StringVar(&project, "project", "", "install into this project folder instead of your home folder")
 	}
-	cmd.AddCommand(install, path)
+	cmd.AddCommand(install, path, a.skillSetupCmd())
 	return cmd
+}
+
+// skillTargets returns the skills folders to use: the named agents, else the
+// agents found (all of them with all), else claude and agents.
+func (a *App) skillTargets(agents []string, project string, all bool) ([]string, error) {
+	base := a.homeDir()
+	dirs := skillAgents
+	if project != "" {
+		abs, err := filepath.Abs(project)
+		if err != nil {
+			return nil, err
+		}
+		base, dirs = abs, skillProjectDirs
+	}
+	names := agents
+	if len(names) == 0 {
+		for n := range dirs {
+			if all || project != "" || exists(filepath.Join(base, skillAgentHomes[n])) {
+				names = append(names, n)
+			}
+		}
+		if len(names) == 0 {
+			names = []string{"claude", "agents"}
+		}
+	}
+	sort.Strings(names)
+	var out []string
+	for _, n := range names {
+		d, ok := dirs[n]
+		if !ok {
+			return nil, usagef("unknown agent %q (want claude, codex, opencode, cursor or agents)", n)
+		}
+		out = append(out, filepath.Join(base, filepath.FromSlash(d)))
+	}
+	return out, nil
+}
+
+// installSkills writes every embedded skill into each skills folder.
+func (a *App) installSkills(dirs []string) error {
+	for _, d := range dirs {
+		for _, sk := range skills.Names() {
+			dest := filepath.Join(d, sk)
+			n, err := writeSkill(sk, dest)
+			if err != nil {
+				return err
+			}
+			a.result(map[string]any{"event": "installed", "skill": sk, "path": dest, "files": n},
+				func() { a.printf("installed %s skill: %s\n", sk, dest) })
+		}
+	}
+	return nil
 }
 
 // writeSkill copies skill name from the embedded skills to dest, replacing an older copy.
