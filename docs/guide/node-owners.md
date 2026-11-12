@@ -208,6 +208,7 @@ The page's "Leave the pool" box walks through it:
 | Drain / undrain | `crowdvm nodes drain <node>` / `crowdvm nodes undrain <node>`, or the dashboard |
 | Remove the node | see [Leaving the pool](#leaving-the-pool) |
 | Rename it | `crowdvm nodes update <node> --name lab-gpu` |
+| Update crowdvm-node | `crowdvm-node update` (see [Updates](updates.md)) |
 
 While it hosts sandboxes, a Linux node keeps the machine from going to sleep on its
 own (a systemd "sleep" inhibitor, listed by `systemd-inhibit --list`). Closing a
