@@ -75,6 +75,7 @@ func (m *Manager) load() {
 	defer m.mu.Unlock()
 	if m.zdr() { // retention turned on: drop what an earlier boot kept
 		_ = m.evFile.Truncate(0)
+		m.events, m.evIndex, m.evBytes = nil, map[string]int{}, 0 // in memory too (bugs-r18-sonnet)
 	} else if m.evBytes > m.maxEventBytes() {
 		m.compactLocked()
 	}

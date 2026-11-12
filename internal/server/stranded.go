@@ -46,6 +46,11 @@ func (s *Server) snapshotsNeeded(gcOnly bool) (map[string]bool, []string) {
 		// snapshot, also when the source is deleted meanwhile.
 		`SELECT s.head_snapshot_id FROM sandboxes f JOIN sandboxes s ON s.id=f.source_id
 			WHERE f.source_kind='fork' AND f.deleted_at IS NULL AND f.head_snapshot_id IS NULL AND s.head_snapshot_id IS NOT NULL`,
+		// A boot still waiting for a node (a deploy of a saved or shared
+		// snapshot, a resume, a rebuild) boots from its queued parent, also
+		// when that snapshot was removed meanwhile (bugs-r18-opus 4).
+		`SELECT json_extract(extra,'$.pendingBoot.parent') FROM sandboxes WHERE deleted_at IS NULL
+			AND COALESCE(json_extract(extra,'$.pendingBoot.parent'),'')<>''`,
 		// A running machine's disk builds on the layer it booted from and the
 		// layers it took since, also when they were deleted: its next layer
 		// (a stop) needs them (bugs-r3-opus 2).

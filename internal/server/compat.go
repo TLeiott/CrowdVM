@@ -146,7 +146,8 @@ func (s *Server) syncOutdated(nodeID string) {
 // nodes have not fetched yet).
 func (s *Server) currentNodeOnline() bool {
 	for id := range s.nodes.online() {
-		if n, err := s.NodeByID(id); err == nil && !n.Disabled && !nodeOutdated(n) {
+		// A paused node takes nothing either (bugs-r18-sonnet 5).
+		if n, err := s.NodeByID(id); err == nil && !n.Disabled && !n.Info.Paused && !nodeOutdated(n) {
 			return true
 		}
 	}

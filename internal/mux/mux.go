@@ -249,8 +249,14 @@ func Join(a, b io.ReadWriteCloser) {
 	}
 	copyDir := func(dst, src io.ReadWriteCloser) {
 		if _, err := io.Copy(touchWriter{dst, touch}, src); err != nil {
-			closeBoth() // a failed read or write (not an end of input): nothing to wait for
-			return
+			// A write that timed out (a stalled egress destination,
+			// bugs-r17-opus 1): nothing more will move. Other errors keep
+			// the half-close below, so an early answer (a 413 to a large
+			// upload) still reaches the client (bugs-r18-sonnet).
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				closeBoth()
+				return
+			}
 		}
 		if cw, ok := dst.(interface{ CloseWrite() error }); ok && cw.CloseWrite() == nil {
 			mu.Lock()

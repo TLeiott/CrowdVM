@@ -141,7 +141,12 @@ func (s *Server) handlePrompt(c *Ctx) error {
 				}
 			}
 		}
-		if !s.promptConfigured(sb, provider, reqEnv) {
+		// A named conversation without a provider keeps its own harness,
+		// which only the guest knows: it reports a missing credential itself
+		// (bugs-r18-sonnet 3).
+		conv, _ := req["conversationId"].(string)
+		prov, _ := req["provider"].(string)
+		if !(conv != "" && prov == "") && !s.promptConfigured(sb, provider, reqEnv) {
 			name := provider
 			if p, ok := s.catalogProvider(provider); ok {
 				name = p.Name

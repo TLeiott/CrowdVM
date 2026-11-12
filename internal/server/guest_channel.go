@@ -130,6 +130,27 @@ func (s *Server) ensureDiskKey(sbID, parent string) (string, error) {
 	return sealed, err
 }
 
+// errRekeyPending: no copy of a disk that is still getting its own key. Its
+// snapshot may open with either key, and a copy would carry the source's old
+// key along (bugs-r18-sonnet 1).
+var errRekeyPending = ErrD(409, "disk_rekey_pending", "This sandbox is still re-encrypting its disk to a key of its own (its first start after being copied with --new-key). Retry in a few minutes.",
+	map[string]any{"retryable": true, "retryAfterSeconds": 60})
+
+func (s *Server) sandboxRekeyPending(id string) bool {
+	var p string
+	_ = s.DB.QueryRow(`SELECT rekey_from FROM sandboxes WHERE id=?`, id).Scan(&p)
+	return p != ""
+}
+
+func (s *Server) snapshotRekeyPending(id string) bool {
+	if id == "" {
+		return false
+	}
+	var p string
+	_ = s.DB.QueryRow(`SELECT rekey_from FROM snapshots WHERE id=?`, id).Scan(&p)
+	return p != ""
+}
+
 // diskRekeyed: the guest re-encrypted its data partition to the key whose
 // SHA-256 is keyHash (hex); its old key is no longer needed. A repeated
 // confirmation (its answer was lost) succeeds again.

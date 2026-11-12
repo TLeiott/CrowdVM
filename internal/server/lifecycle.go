@@ -1745,6 +1745,9 @@ func (s *Server) handleFork(c *Ctx) error {
 	if !src.SnapshotsEnabled {
 		return Err(409, "snapshots_disabled", "This sandbox has snapshots off and cannot be forked.")
 	}
+	if s.sandboxRekeyPending(src.ID) || s.snapshotRekeyPending(src.HeadSnapshotID) {
+		return errRekeyPending
+	}
 	live := src.Usable() && src.NodeID != "" && s.nodes.get(src.NodeID) != nil
 	if !live && src.HeadSnapshotID == "" {
 		if src.FirstBootDone && src.State != api.StateError {
@@ -1859,6 +1862,9 @@ func (s *Server) handleFork(c *Ctx) error {
 	}
 	if req.NewDiskKey {
 		_ = s.SetSandboxExtra(fk.ID, "newDiskKey", true) // see ensureDiskKey
+	}
+	if d, _ := src.Extra["diskGiB"].(float64); d > 0 {
+		_ = s.SetSandboxExtra(fk.ID, "diskGiB", int(d)) // its source's disk, never shrunk (bugs-r18-sonnet 4)
 	}
 	chain := s.snapshotChain(src.HeadSnapshotID)
 	sreq := schedReq{Size: spec, Placement: placement, Chain: chain, ImageID: src.ImageID, Owners: s.ownersFor(fk.OwnerID, fk.OrgID), Encrypted: src.Disk == "luks"}

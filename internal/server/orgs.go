@@ -571,7 +571,9 @@ func (s *Server) handleRemoveMember(c *Ctx) error {
 	if tu, err := s.UserByID(target); err == nil && tu.Kind == "service" {
 		return Err(409, "service_account", "This is a service account: remove it with DELETE /orgs/"+o.ID+"/service-accounts/"+target+".")
 	}
+	var ownIDs []string
 	err = s.DB.Tx(s.ctx, func(tx *sql.Tx) error {
+		ownIDs = nil
 		// Refuse removal until every org-billed run ends; moving only org_id
 		// would leave an open run charging the organization's wallet.
 		var active int
@@ -584,6 +586,19 @@ func (s *Server) handleRemoveMember(c *Ctx) error {
 		if _, err := tx.Exec(`DELETE FROM org_members WHERE org_id=? AND user_id=?`, o.ID, target); err != nil {
 			return err
 		}
+		// Their own sandboxes that go personal below: teammates' keys in
+		// them are revoked at their next start (bugs-r18-sonnet 2).
+		rows, qerr := tx.Query(`SELECT id FROM sandboxes WHERE org_id=? AND owner_id=? AND deleted_at IS NULL`, o.ID, target)
+		if qerr != nil {
+			return qerr
+		}
+		for rows.Next() {
+			var id string
+			if rows.Scan(&id) == nil {
+				ownIDs = append(ownIDs, id)
+			}
+		}
+		rows.Close()
 		// Their sandboxes go back to personal billing (Boat semantics).
 		if _, err := tx.Exec(`UPDATE sandboxes SET org_id=NULL, visibility=NULL WHERE org_id=? AND owner_id=?`, o.ID, target); err != nil {
 			return err
@@ -598,6 +613,9 @@ func (s *Server) handleRemoveMember(c *Ctx) error {
 		return err
 	}
 	s.revokeMemberKeys(o.ID, target) // bugs-r17-opus 2
+	for _, id := range ownIDs {      // all stopped (refused above otherwise)
+		_ = s.SetSandboxExtra(id, "sshKeysRevokePending", true)
+	}
 	return c.OK(200, "org.member_removed", map[string]any{"org": o.ID, "userId": target})
 }
 

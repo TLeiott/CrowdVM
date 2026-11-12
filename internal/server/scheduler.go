@@ -87,6 +87,16 @@ func diskSpec(sb *Sandbox, spec api.SizeSpec) api.SizeSpec {
 	return spec
 }
 
+// snapshotDiskGiB: the disk size the sandbox that took snapshot id had
+// recorded (0: none).
+func (s *Server) snapshotDiskGiB(id string) int {
+	var d int
+	if id != "" {
+		_ = s.DB.QueryRow(`SELECT COALESCE(json_extract(b.extra,'$.diskGiB'),0) FROM snapshots n JOIN sandboxes b ON b.id=n.sandbox_id WHERE n.id=?`, id).Scan(&d)
+	}
+	return d
+}
+
 // reservedOn sums the sizes of the sandboxes the server placed on a node.
 func (s *Server) reservedOn(nodeID string) proto.Usage {
 	var u proto.Usage

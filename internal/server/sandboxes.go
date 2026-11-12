@@ -943,6 +943,9 @@ func (s *Server) handleCreateSandbox(c *Ctx) error {
 	var chain []string
 	if src != nil {
 		parent = src.SnapshotID
+		if s.snapshotRekeyPending(parent) {
+			return fail(errRekeyPending)
+		}
 		chain = s.snapshotChain(parent)
 		if sn, err := s.SnapshotByID(parent); err == nil && sn.ImageID != "" {
 			image = sn.ImageID
@@ -991,6 +994,9 @@ func (s *Server) handleCreateSandbox(c *Ctx) error {
 		}
 		if src != nil && req.NewDiskKey {
 			_ = s.SetSandboxExtra(sb.ID, "newDiskKey", true) // see ensureDiskKey
+		}
+		if d := s.snapshotDiskGiB(parent); d > 0 {
+			_ = s.SetSandboxExtra(sb.ID, "diskGiB", d) // the saved disk, never shrunk (bugs-r18-sonnet 4)
 		}
 		if src != nil && src.Foreign {
 			s.addPendingScrub(sb.ID, s.foreignDeployScrub(src.OwnerID, src.SourceSandboxID))
