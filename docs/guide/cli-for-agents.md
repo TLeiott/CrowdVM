@@ -17,8 +17,9 @@ instructions: `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.config/opencode/A
 The rule sits between `crowdvm:begin`/`crowdvm:end` comments, so running it again updates
 it in place. `--yes` skips the question.
 
-`crowdvm agent-instructions` prints the same rule: the workflow below, the sizes and the
-error codes worth handling. Keep it in the repository so every agent session sees it.
+`crowdvm agent-instructions` prints the same rule: when to use a sandbox and the core
+commands. The skill holds the rest (pitfalls, error codes, in-sandbox commands). To pin the
+rule to one repository, keep it in that repository's `AGENTS.md` or `CLAUDE.md`.
 
 ## Sign the agent in
 

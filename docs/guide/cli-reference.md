@@ -2906,6 +2906,7 @@ integrated agents inside a sandbox already have.
   crowdvm skill install --agent claude   # one agent (claude, codex, opencode, cursor, agents)
   crowdvm skill install --project .      # into this project (.claude/skills, ...)
   crowdvm skill path                     # where it is (or would be) installed
+  crowdvm skill setup                    # the skill plus the rule in each agent's global instructions
 
 Also give the agent the docs (<server>/llms.txt, <server>/mcp) and the AGENTS.md
 rule from crowdvm agent-instructions.
@@ -2917,6 +2918,7 @@ Usage:
 Available Commands:
   install     Write the crowdvm skill into the agents' skills folders (replaces an older copy)
   path        Print the skill folder of each agent and whether the crowdvm skill is installed there
+  setup       Teach the coding agents on this machine to use CrowdVM (skill + global rule)
 
 Flags:
   -h, --help   help for skill
@@ -2948,6 +2950,30 @@ Flags:
       --agent stringArray   claude, codex, opencode, cursor or agents (repeatable; default: the agents found)
   -h, --help                help for path
       --project string      install into this project folder instead of your home folder
+```
+
+### crowdvm skill setup
+
+```text
+Install the crowdvm skill into every coding agent found in your home folder
+and add the CrowdVM rule (crowdvm agent-instructions) to its global instructions:
+~/.claude/CLAUDE.md (Claude Code), ~/.codex/AGENTS.md (Codex) and
+~/.config/opencode/AGENTS.md (OpenCode). Cursor gets the skill only.
+Running it again updates both in place.
+
+Asks first on a terminal. Without one (or with CI set) it only prints the
+command; --yes or CROWDVM_AGENT_SETUP=1 sets up without asking,
+CROWDVM_AGENT_SETUP=0 skips it.
+
+  crowdvm skill setup
+  crowdvm skill setup --yes
+
+Usage:
+  crowdvm skill setup [flags]
+
+Flags:
+  -h, --help   help for setup
+  -y, --yes    set up without asking
 ```
 
 ## crowdvm snapshot
