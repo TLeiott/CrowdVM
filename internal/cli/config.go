@@ -126,16 +126,25 @@ func updateConfig(dir string, fn func(cur *Config) error) error {
 	if err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(dir, "config.json.*.tmp")
+	return writeFileAtomic(filepath.Join(dir, "config.json"), append(b, '\n'), 0o600)
+}
+
+// writeFileAtomic replaces path through a temp file and a rename, so another
+// process reads either the old file or the whole new one, never a partial one.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
 	if err != nil {
 		return err
 	}
-	_, err = f.Write(append(b, '\n'))
+	_, err = f.Write(data)
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
 	if err == nil {
-		err = os.Rename(f.Name(), filepath.Join(dir, "config.json"))
+		err = os.Chmod(f.Name(), perm)
+	}
+	if err == nil {
+		err = os.Rename(f.Name(), path)
 	}
 	if err != nil {
 		os.Remove(f.Name())

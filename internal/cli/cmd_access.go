@@ -71,10 +71,13 @@ func (a *App) sshKey() (keyPath, pub string, err error) {
 		return "", "", err
 	}
 	pub = strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sp))) + " crowdvm"
-	if err := os.WriteFile(keyPath, pem.EncodeToMemory(block), 0o600); err != nil {
+	// Atomic writes: the fast path above reads without the lock, and a
+	// half-written .pub would hand that command an empty or cut-off key.
+	// The private key lands first, so a complete .pub implies a complete key.
+	if err := writeFileAtomic(keyPath, pem.EncodeToMemory(block), 0o600); err != nil {
 		return "", "", err
 	}
-	if err := os.WriteFile(keyPath+".pub", []byte(pub+"\n"), 0o644); err != nil {
+	if err := writeFileAtomic(keyPath+".pub", []byte(pub+"\n"), 0o644); err != nil {
 		return "", "", err
 	}
 	return keyPath, pub, nil
@@ -188,24 +191,7 @@ func setKnownHost(file, host, key string) error {
 		}
 	}
 	keep = append(keep, host+" "+key)
-	f, err := os.CreateTemp(filepath.Dir(file), filepath.Base(file)+".*.tmp")
-	if err != nil {
-		return err
-	}
-	_, err = f.WriteString(strings.Join(keep, "\n") + "\n")
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = os.Chmod(f.Name(), 0o600)
-	}
-	if err == nil {
-		err = os.Rename(f.Name(), file)
-	}
-	if err != nil {
-		os.Remove(f.Name())
-	}
-	return err
+	return writeFileAtomic(file, []byte(strings.Join(keep, "\n")+"\n"), 0o600)
 }
 
 // runTool runs an external program attached to the CLI's stdio and returns

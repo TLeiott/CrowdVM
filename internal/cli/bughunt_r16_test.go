@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -236,6 +237,48 @@ func TestBughuntR16SSHOptionQuotesKnownHostsWithSpaces(t *testing.T) {
 	for _, arg := range e.ran[0].Args {
 		if v, ok := strings.CutPrefix(arg, "UserKnownHostsFile="); ok && strings.Contains(v, " ") && !strings.HasPrefix(v, `"`) {
 			t.Fatalf("-o %s: the path has a space and is not quoted, ssh reads it as two files", arg)
+		}
+	}
+}
+
+// The fast path of sshKey reads the key pair without the lock. With plain
+// os.WriteFile the .pub exists empty for a moment while the first command
+// writes it, and a command reading in that gap gets an empty or cut-off
+// public key and no error.
+func TestFixR16SSHKeyFastPathNeverSeesPartialKey(t *testing.T) {
+	for round := 0; round < 20; round++ {
+		dir := t.TempDir()
+		var bad atomic.Value
+		done := make(chan struct{})
+		var wg sync.WaitGroup
+		for range 8 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				a := &App{ConfigDir: dir, Getenv: func(string) string { return "" }}
+				for {
+					select {
+					case <-done:
+						return
+					default:
+					}
+					if !fileExists(filepath.Join(dir, "id_ed25519.pub")) {
+						continue
+					}
+					if _, pub, err := a.sshKey(); err == nil && !strings.HasSuffix(pub, " crowdvm") {
+						bad.Store(pub)
+					}
+				}
+			}()
+		}
+		a := &App{ConfigDir: dir, Getenv: func(string) string { return "" }}
+		if _, _, err := a.sshKey(); err != nil {
+			t.Fatal(err)
+		}
+		close(done)
+		wg.Wait()
+		if v := bad.Load(); v != nil {
+			t.Fatalf("round %d: a command read a partial public key %q", round, v)
 		}
 	}
 }
