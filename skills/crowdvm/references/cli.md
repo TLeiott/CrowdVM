@@ -3,16 +3,18 @@
 Taken from `crowdvm --help` and `crowdvm <command> --help`. Inside a sandbox the same
 binary answers to `crowdvm`, `boat` and `box`; `host ARGS` is `crowdvm host ARGS`.
 
-`ID` is a sandbox id (`bx_...`), `current` (last sandbox created or forked in this
-shell), or `self` (the sandbox the CLI runs in). Commands shown with `[ID]` use the
-current sandbox when the id is left out (inside a sandbox: the sandbox itself).
+`ID` is a sandbox id (`bx_...`), a sandbox name, `current` (the last sandbox created
+or forked with this profile, or in this shell after `crowdvm shell-init`), or `self`
+(the sandbox the CLI runs in). Commands shown with `[ID]` use the current sandbox when
+the id is left out (inside a sandbox: the sandbox itself). In scripts and agent
+sessions always pass the id.
 
 ## Global flags
 
 | Flag | Env | Meaning |
 |---|---|---|
 | `--api-url URL` | `CROWDVM_API_BASE` (also `CROWDVM_API_URL`) | Server URL |
-| `--json` | | One JSON object per line. On by default when piped |
+| `--json` | `CROWDVM_JSON=1` | One JSON object per line. On by default when piped, except for `exec`, `run`, `ssh`, `host` and `ssh-config --print`, which pass plain output through. `--json=false` forces text |
 | `--org ORG` | `CROWDVM_ORG` | Run against this organization |
 | `--profile NAME` | `CROWDVM_PROFILE` | Config profile |
 | `--no-update` | `CROWDVM_NO_UPDATE=1` | Skip the newer-CLI check |
@@ -20,17 +22,22 @@ current sandbox when the id is left out (inside a sandbox: the sandbox itself).
 The API key comes from `CROWDVM_API_KEY`, else the profile, else `CROWDVM_TOKEN` /
 `ASCII_TOKEN`.
 
+Exit codes: 0 ok, 1 error, 2 usage error, 124 command timed out, 130 interrupted;
+`exec` and `run` exit with the remote command's code. In JSON mode an error is the last
+stdout line, `{"event":"error","error":...,"code":...,"status":...,"details":...}`; in
+text mode it is `error: MESSAGE (CODE, HTTP STATUS)` on stderr.
+
 ## Lifecycle
 
 ```sh
-crowdvm new [flags]                 # create and wait until ready
+crowdvm new [flags]                 # create and wait until ready; --json=false prints only the id
 crowdvm list [--all] [--filter rsp] # alias ls; groups: r up, s stopped, p pending, t stopping, e error
 crowdvm info [ID]                   # state, size, IP, desktop, TTL
-crowdvm stop ID [--wait] [--force] [--status OP_ID] [-y]
+crowdvm stop ID [--wait] [--force] [--status OP_ID] [-y]   # returns at once; --wait waits for stopped
 crowdvm resume ID [flags]           # --type/--environment/--no-env change a stopped sandbox
 crowdvm delete ID [-y] [--no-wait]  # alias rm; scripts must pass --yes
 crowdvm deletion status OPERATION_ID
-crowdvm fork ID [flags]             # copy from the latest snapshot
+crowdvm fork ID [flags]             # copy of the disk (a running sandbox is copied live); --wait waits until ready
 crowdvm extend ID (--hours H | --ttl SECONDS | --no-auto-stop)
 crowdvm recover ID                  # power-cycle a sandbox that does not respond
 crowdvm rename ID NAME
@@ -48,10 +55,10 @@ crowdvm usage ID [--since T] [--until T]  # machine time and credits used
 | `--no-auto-stop` | Never stop automatically |
 | `--name NAME` | Display name |
 | `--from NAME\|CODE` | Start from a saved snapshot or share code |
-| `--count N` | With `--from`: create N sandboxes at once |
+| `--count N` | With `--from`: create N sandboxes at once (prints the ids, does not wait until they are ready) |
 | `-e, --env KEY=VALUE` | Per-sandbox variable (repeatable) |
 | `--environment NAME` | Environment to start from (`crowdvm env list`) |
-| `--no-env` | Give the sandbox none of your secrets |
+| `--no-env` | Give the sandbox none of your secrets (use it for untrusted code) |
 | `--file SANDBOX_PATH=LOCAL_FILE` | Write a file before ready (repeatable) |
 | `--setup-file SCRIPT` | Local shell script run once after ready (64 KB) |
 | `--host PORT` / `--host PORT:public` | Host a port (repeatable) |
@@ -77,7 +84,10 @@ crowdvm ps ID                       # processes, busiest first
 crowdvm ssh [-t] ID [--] [COMMAND...]
 ```
 
-`exec` flags: one argument is a shell command line; more arguments run as argv.
+`exec`: one argument is a shell command line; more arguments run as argv. Commands run
+as `user` in `/home/user`. Stdin is not passed (use `crowdvm ssh ID -- CMD` to pipe
+data in). Ending the CLI (Ctrl-C, a killed terminal) stops the remote command, except
+with `--detach`.
 
 | Flag | Meaning |
 |---|---|
@@ -85,9 +95,9 @@ crowdvm ssh [-t] ID [--] [COMMAND...]
 | `--cwd DIR` | Working directory, relative to `/home/user` |
 | `--push DIR` | Push this local directory first and run in it |
 | `--stream` | Print output as it is written |
-| `--detach` | Run in the background, print the process id (`.processId` in JSON) |
-| `--status PID` | Status and log tails of a detached process |
-| `--attach PID` | Follow a detached process's output until it ends |
+| `--detach` | Run in the background, print the process id (`.processId` in JSON; the bare number with `--json=false`) |
+| `--status PID` | Status and log tails of a detached process: `.status` (`running`, `exited`, `lost`), `.exitCode`, `.stdout`, `.stderr` |
+| `--attach PID` | Print a detached process's output from the start and follow it; exits with its exit code. Interrupting it leaves the process running |
 | `--kill PID` | Stop a detached process and its children |
 
 `run` creates a sandbox, optionally pushes, runs with live output, prints time and
@@ -102,11 +112,16 @@ minutes later), `--from`, `--type`, `-e/--env`, `--environment`, `--no-env`,
 ## Files
 
 ```sh
-crowdvm push ID DIR [--to PATH]     # git-aware archive copy; default /home/user/<dir name>
+crowdvm push ID DIR [--to PATH]     # one-way git-aware copy; default /home/user/<dir name>
 crowdvm scp [-r] [--api] SRC... DST # ID:/path is the remote side; relative = /home/user
 crowdvm ssh-config ID [--print]     # writes ~/.ssh/crowdvm/<id>.conf
 crowdvm tunnel ID PORT              # stdin/stdout to 127.0.0.1:PORT (ssh ProxyCommand)
 ```
+
+`push` in a git repository sends tracked files and untracked files that `.gitignore`
+does not exclude (no `.git`, no `node_modules`, no ignored `.env`); elsewhere it sends
+everything. It replaces files and deletes nothing. `scp` uses the system `scp`, or the
+API with `--api` or when `scp` is missing.
 
 After `ssh-config`, add `Include crowdvm/*.conf` at the top of `~/.ssh/config` once;
 then `ssh <id>`, `scp file <id>:`, `rsync` and VS Code Remote-SSH work.
@@ -118,13 +133,15 @@ crowdvm host [ID] PORT [--public|--private] [--title T] [--localhost]
 crowdvm host list [ID] [--all]      # alias ls; --all includes hidden ports
 crowdvm host url [ID] PORT [--public] [--localhost]   # full URL, hosting first if needed
 crowdvm host hide [ID] PORT         # take the URL down; the token is kept
-crowdvm forward ID --remote PORT [--local PORT] [--bind ADDR]   # alias port-forward
+crowdvm forward ID --remote PORT [--local PORT] [--bind ADDR]   # alias port-forward; runs until stopped
 crowdvm forward ID --reverse --local PORT   # this machine's port at 127.0.0.1:PORT in the sandbox
+crowdvm direct-ports ID [PORT[/udp]...] [--clear]   # raw TCP/UDP ports on the node's LAN address
 crowdvm subdomain ID LABEL
 ```
 
 - URLs: `http://<label>-<port>.<domain>/` (label = subdomain, or the id with `_` → `-`)
-  and `http://<server>/p/<id>/<port>/`.
+  and `http://<server>/p/<id>/<port>/`. The CrowdVM server serves them, so they open
+  from wherever the server is reachable (the team's LAN or Tailscale).
 - Private URLs carry `?_token=`. `--public` drops the token. Running `host` again
   returns the same URL.
 - Ports 22, 5900-5902, 6080 and 7070 cannot be hosted. 50 hosted ports per sandbox.
@@ -143,7 +160,7 @@ crowdvm snapshot shares NAME
 crowdvm snapshot unshare NAME SHARE_ID
 crowdvm snapshot latest ID             # newest automatic snapshot of a sandbox
 crowdvm snapshot tree SNAPSHOT_ID      # files and sizes
-crowdvm snapshot pull SNAPSHOT_ID -o DIR [--path P]...   # /home/user → DIR/home_user/, volumes → DIR/docker/
+crowdvm snapshot pull SNAPSHOT_ID|ID -o DIR [--path P]...   # works while stopped; /home/user → DIR/home_user/, volumes → DIR/docker/
 crowdvm snapshot delete SNAPSHOT_ID... [-y] | crowdvm snapshot delete --all SANDBOX_ID [-y]
 crowdvm snapshots [ID] [--all] [--limit N]   # snapshots of all sandboxes, or of one
 crowdvm new --from NAME|CODE [--count N]
@@ -190,7 +207,9 @@ crowdvm conversations [ID]          # alias convos
 (this machine's own Claude/ChatGPT login or API key for this turn; needs `--provider`;
 env `CROWDVM_LOCAL_LOGIN`). Without `--new`/`--resume` it continues
 this profile's current conversation on that sandbox. `--conversation` is an alias of
-`--convo`.
+`--convo`. `prompt` prints the agent's events until the turn ends (JSON Lines when
+piped, text with `--json=false`) and exits 1 when the turn failed, 130 when it was
+interrupted. Ending the CLI does not stop the turn; `crowdvm interrupt` does.
 
 AI credentials:
 
@@ -262,7 +281,9 @@ crowdvm data-retention [status | enable -y]
 crowdvm telemetry [set ENDPOINT [-H k=v]... | unset]
 crowdvm ci [connect|repos|job|logs|public|unlink]   # GitHub Actions on CrowdVM
 crowdvm feedback [MESSAGE]
-crowdvm agent-instructions          # alias agents-md; AGENTS.md section for agents
+crowdvm agent-instructions          # alias agents-md; short AGENTS.md / CLAUDE.md rule
+crowdvm skill install [--agent A]... [--project DIR]   # this skill, for claude, codex, opencode, cursor, agents
+crowdvm skill path                  # where it is (or would be) installed
 crowdvm shell-init bash|zsh|fish|powershell
 crowdvm completions [bash|zsh|fish|powershell]
 crowdvm self-update [--check] [--force]
