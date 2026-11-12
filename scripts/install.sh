@@ -3,6 +3,7 @@
 #   curl -fsSL http://<server>:8420/install | sh                 # CLI only
 #   curl -fsSL http://<server>:8420/install | sh -s -- --node    # CLI + node app
 # Options: --no-shell (do not add the shell function), --no-login (do not sign in).
+# CROWDVM_AGENT_SETUP=1/0 answers the coding-agent setup question without asking.
 # The server replaces __CROWDVM_SERVER__ with its public URL when serving.
 set -eu
 SERVER="${CROWDVM_SERVER:-__CROWDVM_SERVER__}"
@@ -66,9 +67,18 @@ if [ "$NO_SHELL" = 0 ]; then
 fi
 
 # Sign in when a person is at a terminal (curl | sh keeps stdin busy: use /dev/tty).
-if [ "$NO_LOGIN" = 0 ] && (: </dev/tty) 2>/dev/null; then
+TTY=/dev/null
+(: </dev/tty) 2>/dev/null && TTY=/dev/tty
+if [ "$NO_LOGIN" = 0 ] && [ "$TTY" = /dev/tty ]; then
   "$CLI" onboard </dev/tty || echo "Sign in later with: crowdvm login"
-  echo "Done. Open a new terminal to use the shell function."
+  next="Open a new terminal to use the shell function."
 else
-  echo "Done. Run: crowdvm onboard   (open a new terminal first to load the shell function)"
+  next="Run: crowdvm onboard   (open a new terminal first to load the shell function)"
 fi
+
+# Coding agents (Claude Code, Codex, OpenCode, Cursor): offer the crowdvm skill and
+# rule. Asks on the terminal; without one (or in CI) it prints the command.
+# CROWDVM_AGENT_SETUP=1 sets up without asking, CROWDVM_AGENT_SETUP=0 skips.
+echo
+"$CLI" skill setup --json=false <"$TTY" || echo "Set up coding agents later with: crowdvm skill setup"
+echo "Done. $next"
