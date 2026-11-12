@@ -119,6 +119,10 @@ func testDockerResume(t *testing.T, c *cluster) {
 	})
 	ps := c.sh(t, id, "docker ps --format '{{.Names}}'")
 	expect(t, !strings.Contains(ps, "stopped"), "a container stopped before the stop came back: %q", ps)
+	// A published port answers on the sandbox itself (docker-proxy dials the
+	// container: VM-internal traffic must not go out through the server).
+	pf := c.execR(t, id, "docker run -d --name web -p 18080:8080 busybox:1.36 httpd -f -p 8080 >/dev/null && sleep 2 && curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/")
+	expect(t, pf.code == 0 && strings.Contains(pf.out, "404"), "docker -p port forward: %q %q", pf.out, pf.err)
 	h := strings.TrimSpace(c.sh(t, id, "hostname"))
 	expect(t, h == "my-sandbox", "hostname after resume with Boat's set-hostname.service: %q", h)
 	imgs := c.sh(t, id, "docker image ls --format '{{.Repository}}:{{.Tag}}'")

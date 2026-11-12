@@ -121,32 +121,39 @@ func firstRule(table, chain string) string {
 // egressRules (re)builds the chains and puts their jumps first.
 func egressRules() error {
 	mark := "0x" + strconv.FormatInt(channelMark, 16)
-	// Private destinations are not internet: containers, docker bridges
-	// and pod networks live inside the VM, and anything else private ends
-	// at the node, which lets the VM reach only the server.
-	private := [][]string{}
-	for _, p := range []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"} {
-		private = append(private, []string{"-d", p, "-j", "RETURN"})
-	}
-	nat := append([][]string{
+	// Private destinations: UDP and DNS stay inside the VM (containers,
+	// docker bridges, pod networks, local resolvers; the node's kill switch
+	// stops anything else). Private TCP goes to the proxy, which connects
+	// directly within the VM's own networks and through the server otherwise
+	// (--egress-allow hosts on the server's networks).
+	private := []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"}
+	nat := [][]string{
 		{"-m", "mark", "--mark", mark, "-j", "RETURN"},
 		// the node's resolver (DHCP's DNS) answers through the server
 		{"-d", "10.0.2.0/24", "-p", "udp", "--dport", "53", "-j", "REDIRECT", "--to-ports", strconv.Itoa(egressDNSPort)},
 		{"-d", "10.0.2.0/24", "-p", "tcp", "--dport", "53", "-j", "REDIRECT", "--to-ports", strconv.Itoa(egressDNSPort)},
 		{"-m", "addrtype", "--dst-type", "LOCAL", "-j", "RETURN"},
 		{"-d", "127.0.0.0/8", "-j", "RETURN"},
-	}, append(private,
+		{"-d", "10.0.2.0/24", "-j", "RETURN"}, // the node's gateway: DHCP and the server pinhole
+	}
+	for _, p := range private {
+		nat = append(nat, []string{"-d", p, "-p", "udp", "-j", "RETURN"}, []string{"-d", p, "-p", "tcp", "--dport", "53", "-j", "RETURN"})
+	}
+	nat = append(nat,
 		[]string{"-p", "udp", "--dport", "53", "-j", "REDIRECT", "--to-ports", strconv.Itoa(egressDNSPort)},
 		[]string{"-p", "tcp", "--dport", "53", "-j", "REDIRECT", "--to-ports", strconv.Itoa(egressDNSPort)},
 		[]string{"-p", "tcp", "-j", "REDIRECT", "--to-ports", strconv.Itoa(egressProxyPort)},
-	)...)
-	filter := append([][]string{
+	)
+	filter := [][]string{
 		{"-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "RETURN"}, // e.g. the resolver's answers to containers
 		{"-m", "mark", "--mark", mark, "-j", "RETURN"},
 		{"-d", "127.0.0.0/8", "-j", "RETURN"},
-	}, append(private,
-		[]string{"-p", "udp", "-m", "addrtype", "!", "--dst-type", "LOCAL", "-j", "REJECT", "--reject-with", "icmp-port-unreachable"},
-	)...)
+		{"-d", "10.0.2.0/24", "-j", "RETURN"},
+	}
+	for _, p := range private {
+		filter = append(filter, []string{"-d", p, "-j", "RETURN"})
+	}
+	filter = append(filter, []string{"-p", "udp", "-m", "addrtype", "!", "--dst-type", "LOCAL", "-j", "REJECT", "--reject-with", "icmp-port-unreachable"})
 	// Redirected traffic of containers arrives on INPUT, which ufw drops by
 	// default: let it reach the proxy and the resolver. Never from the
 	// node's side of the NIC.
@@ -209,7 +216,14 @@ func (a *Agent) proxyEgress(c *net.TCPConn) {
 		c.Close()
 		return
 	}
-	up, err := a.channel.dialEgress(dst.String())
+	var up net.Conn
+	if inVMNetwork(dst.Addr()) {
+		// A container or pod of this VM (docker -p forwards, compose
+		// services): not internet. The mark keeps it out of the redirect.
+		up, err = (&net.Dialer{Timeout: 10 * time.Second, Control: markChannel}).Dial("tcp", dst.String())
+	} else {
+		up, err = a.channel.dialEgress(dst.String())
+	}
 	if err != nil {
 		_ = c.SetLinger(0) // reset: the program sees "connection refused/reset" at once
 		c.Close()
@@ -217,6 +231,27 @@ func (a *Agent) proxyEgress(c *net.TCPConn) {
 	}
 	_ = c.SetNoDelay(true)
 	mux.Join(c, up)
+}
+
+// inVMNetwork: a is on one of this VM's own networks (a docker bridge, a pod
+// network), not on the NIC to the node.
+func inVMNetwork(a netip.Addr) bool {
+	a = a.Unmap()
+	if !a.IsPrivate() || netip.MustParsePrefix("10.0.2.0/24").Contains(a) {
+		return false
+	}
+	addrs, _ := net.InterfaceAddrs()
+	for _, ad := range addrs {
+		if n, ok := ad.(*net.IPNet); ok {
+			if ip, ok := netip.AddrFromSlice(n.IP); ok {
+				ones, _ := n.Mask.Size()
+				if netip.PrefixFrom(ip.Unmap(), ones).Masked().Contains(a) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // egressFromNIC: a connection from the node's side of the NIC.

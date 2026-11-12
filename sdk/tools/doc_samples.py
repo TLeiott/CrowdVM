@@ -317,6 +317,9 @@ def run(base: Optional[str] = None, key: Optional[str] = None, lang: str = "all"
                     # Boat answers a steer after the turn ended with 409 no_running_turn; with the
                     # placeholder keys the turn fails at once, so this sample needs a real agent key.
                     err = "EXPECTED: 409 no_running_turn (the placeholder-key turn already ended; needs a real agent key)"
+                elif err and env.live and "snapshot_encrypted" in err:
+                    # Secure layer: the server cannot read a stopped sandbox's encrypted disk.
+                    err = "EXPECTED: 409 snapshot_encrypted (the sandbox's disk is encrypted; resume it to read files)"
                 results.append((s.name, err))
                 status = "PASS" if err is None else err.split(":")[0] if err.startswith(("SKIP", "EXPECTED")) else "FAIL"
                 report(f"{status} {s.name}")
