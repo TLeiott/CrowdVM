@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/crowdvm/crowdvm/internal/mux"
+	"github.com/hashicorp/yamux"
 )
 
 const (
@@ -291,7 +292,7 @@ func (c *Channel) resolve(q []byte) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "POST", "http://server/v1/egress/dns", bytes.NewReader(q))
-	resp, err := (&http.Client{Transport: mux.Transport(sess)}).Do(req)
+	resp, err := (&http.Client{Transport: c.dnsTransport(sess)}).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -301,6 +302,25 @@ func (c *Channel) resolve(q []byte) ([]byte, error) {
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 }
+
+// dnsTransport is one transport per channel session for DNS: a transport
+// per query left an idle stream open on both sides for a minute each
+// (bugs-r14-opus 3).
+func (c *Channel) dnsTransport(sess *yamux.Session) *http.Transport {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.dnsSess != sess || c.dnsTr == nil {
+		if c.dnsTr != nil {
+			c.dnsTr.CloseIdleConnections()
+		}
+		c.dnsSess, c.dnsTr = sess, mux.Transport(sess)
+	}
+	return c.dnsTr
+}
+
+// dnsInFlight caps the agent's DNS forwards: a flood is dropped (clients
+// retry) rather than turned into a goroutine and a stream per packet.
+var dnsInFlight = make(chan struct{}, 128)
 
 func (a *Agent) serveDNSUDP(pc net.PacketConn) {
 	uc := pc.(*net.UDPConn)
@@ -315,7 +335,13 @@ func (a *Agent) serveDNSUDP(pc net.PacketConn) {
 			continue
 		}
 		q, ctl := append([]byte(nil), buf[:n]...), replyOOB(oob[:oobn])
+		select {
+		case dnsInFlight <- struct{}{}:
+		default:
+			continue // bugs-r14-opus 3
+		}
 		go func() {
+			defer func() { <-dnsInFlight }()
 			if r, err := a.channel.resolve(q); err == nil {
 				_, _, _ = uc.WriteMsgUDP(r, ctl, from)
 			}

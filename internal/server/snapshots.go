@@ -192,6 +192,13 @@ WHERE s.id=? AND s.purged_at IS NULL AND (s.node_id=? OR b.node_id=?)`, nodeID, 
 	if err != nil {
 		return // unknown sandbox: its upload is refused (snapshotGone)
 	}
+	if ref.ParentID != "" && !s.onDiskOf(sb, ref.ParentID) {
+		// The node names the parent, and a layer's chain is what its node
+		// may fetch: a parent that is not on this sandbox's disk would let
+		// it read another account's layers (bugs-r14-sonnet 2).
+		s.Log.Warn("refusing a snapshot whose parent is not on its sandbox's disk", "snapshot", ref.ID, "sandbox", sb.ID, "parent", ref.ParentID, "node", nodeID)
+		return
+	}
 	now := store.Now()
 	var deleted any
 	switch {
@@ -226,6 +233,25 @@ WHERE s.id=? AND s.purged_at IS NULL AND (s.node_id=? OR b.node_id=?)`, nodeID, 
 	}
 	s.Bus.Publish(Event{Type: EvSnapshotCreated, SandboxID: sb.ID, SandboxName: sb.Name, OwnerID: sb.OwnerID, OrgID: sb.OrgID, NodeID: nodeID,
 		Data: map[string]any{"snapshotId": ref.ID, "kind": "periodic", "parentId": ref.ParentID}})
+}
+
+// onDiskOf: snapshot id is a layer of sb's disk: one of its own, or in the
+// chain it booted from (or of its head).
+func (s *Server) onDiskOf(sb *Sandbox, id string) bool {
+	var owner string
+	if s.DB.QueryRow(`SELECT sandbox_id FROM snapshots WHERE id=?`, id).Scan(&owner) != nil {
+		return false
+	}
+	if owner == sb.ID {
+		return true
+	}
+	bp, _ := sb.Extra["bootParent"].(string)
+	for _, from := range []string{bp, sb.HeadSnapshotID} {
+		if from != "" && slices.Contains(s.snapshotChain(from), id) {
+			return true
+		}
+	}
+	return false
 }
 
 // onSnapshotUploaded handles snapshot.uploaded (also for snapshots the node

@@ -4,6 +4,17 @@ import { GeneratedOperations } from "./operations.js";
 import type * as T from "./types.js";
 
 export const VERSION = "0.1.0";
+/** API generation this SDK speaks (internal/compat.APIGen on the server; a test keeps them equal). */
+export const API_GEN = 1;
+let warnedOutdated = false;
+/** Warns once per process when the server marks this SDK outdated (X-Crowdvm-Client-Status). */
+function noteClientStatus(res: Response): void {
+  const st = res.headers?.get?.("x-crowdvm-client-status");
+  if (!st || warnedOutdated) return;
+  warnedOutdated = true;
+  const latest = /latest=([^;\s]+)/.exec(st)?.[1];
+  console.warn(`@crowdvm/sdk ${VERSION} misses an update the server requires${latest ? ` (latest: ${latest})` : ""}; update @crowdvm/sdk.`);
+}
 export const DEFAULT_BASE_URL = "http://127.0.0.1:8420/api/v1";
 
 /** Boat SDK style configuration: `new CrowdVM(new Configuration({ basePath, accessToken }))`. */
@@ -163,7 +174,10 @@ export class CrowdVM extends GeneratedOperations {
     const qs = init.query ? encodeQuery(init.query) : "";
     if (qs) url += "?" + qs;
     const headers: Record<string, string> = { Accept: init.accept ?? "application/json" };
-    if (isNode) headers["User-Agent"] = `crowdvm-js/${VERSION}`;
+    if (isNode) { // browsers: a custom header would cost a CORS preflight
+      headers["User-Agent"] = `crowdvm-js/${VERSION}`;
+      headers["X-Crowdvm-Gen"] = String(API_GEN);
+    }
     if (this.apiKey) headers["Authorization"] = `Bearer ${this.apiKey}`;
     mergeHeaders(headers, this.headers);
     let body: string | undefined;
@@ -189,6 +203,7 @@ export class CrowdVM extends GeneratedOperations {
       try {
         const res = await this.fetchFn(url, { method, headers, body, signal: ctl.signal });
         if (stream && timer) clearTimeout(timer); // the timeout covers the headers only
+        noteClientStatus(res);
         if (res.status === 304) { cleanup(); return null; }
         if (!res.ok) throw await apiErrorFrom(res);
         return { res, cleanup };

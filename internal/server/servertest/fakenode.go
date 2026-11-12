@@ -21,6 +21,7 @@ import (
 	"github.com/hashicorp/yamux"
 
 	"github.com/crowdvm/crowdvm/internal/api"
+	"github.com/crowdvm/crowdvm/internal/compat"
 	"github.com/crowdvm/crowdvm/internal/mux"
 	"github.com/crowdvm/crowdvm/internal/proto"
 )
@@ -68,6 +69,9 @@ type NodeOptions struct {
 	// /v1/vms/{id}/direct-ports) as DirectHost:<port>; "" = only the fake
 	// ssh endpoint, and direct-ports answers 409 direct_disabled.
 	DirectHost string
+	// Gen: the generation the node reports (nil = compat.NodeGen; a pointer
+	// to 0 is a node older than generations: no header).
+	Gen *int
 }
 
 // FakeNode is an in-process node: it registers, connects over yamux like the
@@ -160,7 +164,11 @@ func StartFakeNode(serverURL string, o NodeOptions) (*FakeNode, error) {
 	for _, im := range o.Images {
 		n.images[im] = true
 	}
-	n.info = proto.NodeInfo{Name: o.Name, Version: "fake", OS: "linux", Arch: "amd64", Driver: "fake", Labels: o.Labels, Bench: bench, Capacity: o.Capacity, Images: o.Images, DirectHost: o.DirectHost, LazyChain: o.LazyChain, GPUs: o.PassthroughGPUs, Paused: o.Paused, GuestChannel: o.GuestChannel}
+	gen := compat.NodeGen
+	if o.Gen != nil {
+		gen = *o.Gen
+	}
+	n.info = proto.NodeInfo{Name: o.Name, Version: "fake", Gen: gen, OS: "linux", Arch: "amd64", Driver: "fake", Labels: o.Labels, Bench: bench, Capacity: o.Capacity, Images: o.Images, DirectHost: o.DirectHost, LazyChain: o.LazyChain, GPUs: o.PassthroughGPUs, Paused: o.Paused, GuestChannel: o.GuestChannel}
 	body, _ := json.Marshal(proto.RegisterRequest{JoinToken: o.JoinToken, Info: n.info})
 	resp, err := http.Post(n.server+"/node/v1/register", "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -180,10 +188,22 @@ func StartFakeNode(serverURL string, o NodeOptions) (*FakeNode, error) {
 	return n, n.Connect()
 }
 
+// SetGen changes the generation the node reports from its next Connect
+// (an update: Disconnect, SetGen, Connect).
+func (n *FakeNode) SetGen(g int) {
+	n.mu.Lock()
+	n.info.Gen = g
+	n.mu.Unlock()
+}
+
 // Connect (re)dials the server and serves the node API.
 func (n *FakeNode) Connect() error {
 	ws := "ws" + strings.TrimPrefix(n.server, "http") + "/node/v1/connect"
-	sess, err := mux.Dial(context.Background(), ws, http.Header{"Authorization": {"Bearer " + n.Token}})
+	hdr := http.Header{"Authorization": {"Bearer " + n.Token}}
+	if n.info.Gen != 0 {
+		hdr.Set(compat.Header, strconv.Itoa(n.info.Gen))
+	}
+	sess, err := mux.Dial(context.Background(), ws, hdr)
 	if err != nil {
 		return err
 	}

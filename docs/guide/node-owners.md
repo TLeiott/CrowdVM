@@ -75,8 +75,8 @@ to a default. Other settings (network, GPU, driver) apply after a restart: the l
 page shows a Restart button when the node runs as an installed service, or use
 `systemctl --user restart crowdvm-node` (on Windows, restart the service). Running
 sandboxes keep running through the restart; the node picks them up again when it is
-back. (A node installed before this behavior: run `crowdvm-node install-service` once
-to update its unit.)
+back. (A node installed before this behavior: `crowdvm-node update` brings its unit up
+to date.)
 
 Disks are thin: a sandbox only uses the space it wrote. The node therefore accepts
 sandbox disk sizes that add up to `disk × disk-overcommit` (default 4). It still
@@ -190,6 +190,28 @@ deadline.
 and after 3 minutes they are rebuilt elsewhere from their latest snapshot, losing up to
 about a minute of work.
 
+## Updating
+
+The node installs new releases from its server:
+
+```sh
+crowdvm-node update --check     # exit 1 when the server offers a newer release
+crowdvm-node update             # install it; the node restarts, its sandboxes keep running
+crowdvm-node update --rollback  # back to the files the last update replaced
+```
+
+`update` downloads `crowdvm-node`, plus `crowdvm-guest` and `crowdvm-linux-amd64` when
+they sit next to it (the `crowdvm` CLI updates itself with `crowdvm self-update`). It
+checks each file against the server's sha256 and runs the new node once before it swaps
+anything; the previous files stay next to them as `<name>.old`. Then it restarts a
+running node, and the new build brings the systemd unit up to date. An older or skipped
+release is only installed with `--force`. When the page knows of a newer release it
+shows an Update node button that does the same.
+
+When the server says the node misses a required update, a node that runs as a service
+updates itself (see [Updates and compatibility](updates.md) for what an outdated node
+may still do, the `auto-update` setting and when it is unavailable).
+
 ## Leaving the pool
 
 The page's "Leave the pool" box walks through it:
@@ -208,6 +230,7 @@ The page's "Leave the pool" box walks through it:
 | Drain / undrain | `crowdvm nodes drain <node>` / `crowdvm nodes undrain <node>`, or the dashboard |
 | Remove the node | see [Leaving the pool](#leaving-the-pool) |
 | Rename it | `crowdvm nodes update <node> --name lab-gpu` |
+| Update it | `crowdvm-node update`, or Update node on the page (see [Updates](updates.md)) |
 
 While it hosts sandboxes, a Linux node keeps the machine from going to sleep on its
 own (a systemd "sleep" inhibitor, listed by `systemd-inhibit --list`). Closing a

@@ -238,8 +238,8 @@ See [Node owner guide](node-owners.md#taking-the-machine-back).
   nginx with `proxy_set_header Upgrade $http_upgrade` do; Cloudflare's proxy does not).
   Nodes give their sandboxes the server URL they use themselves, so a node that joined
   through the LAN keeps working when the public URL sits behind a proxy.
-- Upgrading: nodes rerun `crowdvm-node install-service` once, so systemd keeps their
-  VMs' control sockets (systemd 254 or later). Once a sandbox on image v4 exists, do
+- Upgrading: `crowdvm-node update` also updates the node's systemd unit, so systemd
+  keeps its VMs' control sockets (systemd 254 or later). Once a sandbox on image v4 exists, do
   not go back to a server or node release without the secure layer: its disk can only
   be unlocked through the guest channel.
 - Without `--tls-cert`/`--tls-key` the API is plain HTTP. API keys and session cookies

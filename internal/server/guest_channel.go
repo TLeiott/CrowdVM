@@ -68,7 +68,8 @@ ALTER TABLE guest_channels ADD COLUMN data_key TEXT NOT NULL DEFAULT '';
 ALTER TABLE sandboxes ADD COLUMN data_key TEXT NOT NULL DEFAULT '';
 ALTER TABLE sandboxes ADD COLUMN disk TEXT NOT NULL DEFAULT '';
 ALTER TABLE snapshots ADD COLUMN data_key TEXT NOT NULL DEFAULT '';
-ALTER TABLE snapshots ADD COLUMN disk TEXT NOT NULL DEFAULT '';`})
+ALTER TABLE snapshots ADD COLUMN disk TEXT NOT NULL DEFAULT '';`}, store.Migration{Version: 3, SQL: `
+ALTER TABLE guest_channels ADD COLUMN hello_hash TEXT NOT NULL DEFAULT '';`})
 }
 
 // Encrypted data partition (secure-layer.md §5.4, one-disk variant). Image v4
@@ -146,6 +147,14 @@ func (r *guestRegistry) expectReboot(id string) {
 		r.expect = map[string]time.Time{}
 	}
 	r.expect[id] = time.Now()
+}
+
+// forgetExpected drops an announcement: a new boot was issued, and an
+// announcement belongs to the boot that made it (bugs-r14-sonnet 1).
+func (r *guestRegistry) forgetExpected(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.expect, id)
 }
 
 // takeExpected reports (and forgets) a reboot expected in the last 3 minutes.
@@ -301,8 +310,9 @@ func (s *Server) issueGuestChannel(sb *Sandbox, nodeID string, full proto.GuestC
 	ticket := randToken(40)
 	var key string
 	_ = s.DB.QueryRow(`SELECT data_key FROM sandboxes WHERE id=?`, sb.ID).Scan(&key)
-	if _, err := s.DB.Exec(`INSERT INTO guest_channels(sandbox_id,node_id,ticket_hash,session_hash,config,issued_at,redeemed_at,data_key) VALUES(?,?,?,'',?,?,NULL,?)
-ON CONFLICT(sandbox_id) DO UPDATE SET node_id=excluded.node_id, ticket_hash=excluded.ticket_hash, session_hash='', config=excluded.config, issued_at=excluded.issued_at, redeemed_at=NULL, data_key=excluded.data_key`,
+	s.guests.forgetExpected(sb.ID) // bugs-r14-sonnet 1
+	if _, err := s.DB.Exec(`INSERT INTO guest_channels(sandbox_id,node_id,ticket_hash,session_hash,config,issued_at,redeemed_at,data_key,hello_hash) VALUES(?,?,?,'',?,?,NULL,?,'')
+ON CONFLICT(sandbox_id) DO UPDATE SET node_id=excluded.node_id, ticket_hash=excluded.ticket_hash, session_hash='', config=excluded.config, issued_at=excluded.issued_at, redeemed_at=NULL, data_key=excluded.data_key, hello_hash=''`,
 		sb.ID, nodeID, hashToken(ticket), sealed, store.Now(), key); err != nil {
 		return proto.GuestConfig{}, err
 	}
@@ -356,6 +366,14 @@ func (s *Server) handleGuestReboot(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "guest_connected", 409)
 		return
 	}
+	if !sb.Usable() && sb.State != api.StateError && sb.State != api.StateProvisioned {
+		// Only a sandbox with a machine on this node reboots (running, or in
+		// error for a recover: bugs-r15-sonnet 1): a stopped one (its guest
+		// announced the shutdown) or one starting elsewhere gets no ticket
+		// (bugs-r14-sonnet 1).
+		http.Error(w, "not_running: the sandbox is not running", 404) // not 409: the node gives up
+		return
+	}
 	if !s.guests.takeExpected(sb.ID) {
 		// The machine went down without shutting down: a crash, a kernel
 		// panic, or its node killed it to get a ticket of its own. No
@@ -399,11 +417,11 @@ func (s *Server) redeemGuest(h proto.GuestHello) (string, *proto.GuestConfig, *S
 	fail := func(code string) (string, *proto.GuestConfig, *Sandbox, string, error) {
 		return "", nil, nil, "", errors.New(code)
 	}
-	var nodeID, ticketHash, sessionHash, sealed, sealedKey string
+	var nodeID, ticketHash, sessionHash, sealed, sealedKey, helloHash string
 	var issued int64
 	var redeemed sql.NullInt64
-	err := s.DB.QueryRow(`SELECT node_id,ticket_hash,session_hash,config,issued_at,redeemed_at,data_key FROM guest_channels WHERE sandbox_id=?`, h.SandboxID).
-		Scan(&nodeID, &ticketHash, &sessionHash, &sealed, &issued, &redeemed, &sealedKey)
+	err := s.DB.QueryRow(`SELECT node_id,ticket_hash,session_hash,config,issued_at,redeemed_at,data_key,hello_hash FROM guest_channels WHERE sandbox_id=?`, h.SandboxID).
+		Scan(&nodeID, &ticketHash, &sessionHash, &sealed, &issued, &redeemed, &sealedKey, &helloHash)
 	if err != nil {
 		return fail("unknown_sandbox")
 	}
@@ -420,6 +438,21 @@ func (s *Server) redeemGuest(h proto.GuestHello) (string, *proto.GuestConfig, *S
 		if hashToken(h.Ticket) != ticketHash {
 			return fail("ticket_invalid")
 		}
+		// The same guest retrying after its welcome was lost: its nonce
+		// travels inside TLS, so the node that relays (and can cut) the
+		// connection cannot know it. A new session replaces the first
+		// (bugs-r14-sonnet 3).
+		retry := redeemed.Valid && h.Nonce != "" && helloHash != "" && hashToken(h.Nonce) == helloHash &&
+			store.Now()-issued <= guestTicketTTL.Milliseconds()
+		if retry {
+			session = randToken(40)
+			if _, err := s.DB.Exec(`UPDATE guest_channels SET session_hash=? WHERE sandbox_id=? AND ticket_hash=? AND hello_hash=?`,
+				hashToken(session), sb.ID, ticketHash, helloHash); err != nil {
+				return fail("retry_later") // a database error: the guest tries again (bugs-r15-sonnet)
+			}
+			key = sealedKey
+			break
+		}
 		if redeemed.Valid {
 			s.Log.Warn("guest channel: boot ticket redeemed twice", "sandbox", sb.ID, "node", nodeID)
 			s.notifySandbox(sb, "security_ticket_reused", "warning", time.Hour, "Possible tampering on a node",
@@ -430,10 +463,14 @@ func (s *Server) redeemGuest(h proto.GuestHello) (string, *proto.GuestConfig, *S
 			return fail("ticket_expired")
 		}
 		session = randToken(40)
-		res, err := s.DB.Exec(`UPDATE guest_channels SET session_hash=?, redeemed_at=? WHERE sandbox_id=? AND ticket_hash=? AND redeemed_at IS NULL`,
-			hashToken(session), store.Now(), sb.ID, ticketHash)
+		nonceHash := ""
+		if h.Nonce != "" {
+			nonceHash = hashToken(h.Nonce)
+		}
+		res, err := s.DB.Exec(`UPDATE guest_channels SET session_hash=?, redeemed_at=?, hello_hash=? WHERE sandbox_id=? AND ticket_hash=? AND redeemed_at IS NULL`,
+			hashToken(session), store.Now(), nonceHash, sb.ID, ticketHash)
 		if err != nil {
-			return fail("config_unreadable")
+			return fail("retry_later") // a database error: the guest tries again (bugs-r15-sonnet)
 		}
 		if n, _ := res.RowsAffected(); n != 1 {
 			return fail("ticket_used")
@@ -503,7 +540,7 @@ func (s *Server) handleGuestConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = tc.SetDeadline(time.Time{})
-	sess, err := yamux.Server(&readerConn{Conn: tc, r: br}, mux.Config())
+	sess, err := yamux.Server(&readerConn{Conn: tc, r: br}, mux.GuestConfig())
 	if err != nil {
 		tc.Close()
 		return
@@ -525,7 +562,9 @@ func (s *Server) handleGuestConnect(w http.ResponseWriter, r *http.Request) {
 		_ = old.sess.Close()
 	}
 	s.Log.Info("guest channel connected", "sandbox", sb.ID, "node", sb.NodeID)
-	go func() { _ = mux.Serve(sess, s.guestStreams(g, welcome.Config.Egress == "server")) }()
+	go func() {
+		_ = mux.ServeLimit(sess, s.guestStreams(g, welcome.Config.Egress == "server"), maxGuestStreams)
+	}()
 	s.Go(func(ctx context.Context) { s.followGuestChannelEvents(ctx, g) })
 	s.Go(func(ctx context.Context) { s.pushGuestFirewall(ctx, g) })
 	select {

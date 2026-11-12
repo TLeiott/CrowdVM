@@ -350,7 +350,12 @@ func (s *Server) afterStopResume(id string) {
 // rebuildLost reschedules node_offline sandboxes whose latest snapshot (and
 // its whole chain) is on the server.
 func (s *Server) rebuildLost() {
+	// The grace counts from this server's start at the earliest: while it
+	// was down the node could not reconnect (bugs-r14-opus 4).
 	cut := store.Now() - s.Cfg.NodeLostGrace.Milliseconds()
+	if store.Now()-s.startedAt < s.Cfg.NodeLostGrace.Milliseconds() {
+		return
+	}
 	rows, err := s.DB.Query(`SELECT id FROM sandboxes WHERE deleted_at IS NULL AND state='error' AND error='node_offline' AND snapshots_enabled=1
 AND head_snapshot_id IS NOT NULL AND COALESCE(degraded_since,updated_at)<?`, cut)
 	if err != nil {

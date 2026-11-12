@@ -1551,6 +1551,17 @@ func (s *Server) handleResume(c *Ctx) error {
 	if !sb.SnapshotsEnabled && sb.FirstBootDone {
 		return Err(409, "snapshots_disabled", "This sandbox has snapshots off; its disk was not kept.")
 	}
+	// A machine that failed (a crash, an unannounced reboot) may have left
+	// a snapshot newer than the head that its node still uploads: boot from
+	// that one, not the older head (bugs-r14-opus 5). The boot waits for it.
+	// It is written with the other changes once the resume is accepted: a
+	// refused resume changes nothing (bugs-r15-sonnet 2).
+	newHead := ""
+	if sb.State == api.StateError && sb.NodeID != "" {
+		if snap, _ := s.newerSnapshotOn(sb, sb.NodeID); snap != "" {
+			newHead, sb.HeadSnapshotID = snap, snap
+		}
+	}
 	// Never boot a blank disk for a sandbox that already ran.
 	if sb.FirstBootDone && sb.HeadSnapshotID == "" {
 		if sb.State == api.StateError {
@@ -1605,6 +1616,9 @@ func (s *Server) handleResume(c *Ctx) error {
 	}
 	if req.Env != nil {
 		sets["env"] = mustJSON(*req.Env)
+	}
+	if newHead != "" {
+		sets["head_snapshot_id"] = newHead
 	}
 	ttl := sb.TTLSeconds
 	if req.TTLSeconds.Set {

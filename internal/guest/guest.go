@@ -202,6 +202,12 @@ func (a *Agent) updateConfig(f func(c *proto.GuestConfig)) {
 	a.cfgMu.Unlock()
 }
 
+// opsCallerKey marks a request of a channel guest's node (the ops subset):
+// its answers carry no sandbox content (bugs-r14-opus 6).
+type opsCallerKey struct{}
+
+func opsCaller(r *http.Request) bool { v, _ := r.Context().Value(opsCallerKey{}).(bool); return v }
+
 // Handler returns the full HTTP handler (auth applied to everything except
 // GET /v1/health). A channel guest's local listener serves only the node's
 // ops subset (opsPaths): the rest of the API is on the channel.
@@ -210,9 +216,12 @@ func (a *Agent) Handler() http.Handler {
 		if id := r.Header.Get("X-Request-Id"); id != "" {
 			w.Header().Set("X-Request-Id", id)
 		}
-		if a.cfg.Channel != nil && !opsPaths[r.Method+" "+r.URL.Path] {
-			writeErr(w, http.StatusForbidden, "channel_only", "this sandbox's API is served only on its guest channel to the server")
-			return
+		if a.cfg.Channel != nil {
+			if !opsPaths[r.Method+" "+r.URL.Path] {
+				writeErr(w, http.StatusForbidden, "channel_only", "this sandbox's API is served only on its guest channel to the server")
+				return
+			}
+			r = r.WithContext(context.WithValue(r.Context(), opsCallerKey{}, true))
 		}
 		if r.URL.Path != "/v1/health" && !a.authorized(r) {
 			writeErr(w, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token")

@@ -24,4 +24,17 @@ for target in linux/amd64 linux/arm64 windows/amd64 windows/arm64 darwin/amd64 d
   else tar -C dist -czf "$out.tar.gz" "$(basename "$out")"; fi
 done
 (cd dist && sha256sum ./*.tar.gz ./*.zip > SHA256SUMS)
+# manifest.json: the version and each binary's checksum in the downloads
+# layout (<os>/<arch>/<name>); `crowdvm-server downloads import` keeps it
+# and `crowdvm-node update` reads the version from it.
+{
+  printf '{"version": "%s", "files": {' "$VERSION"; sep=""
+  for f in dist/crowdvm_"$VERSION"_*/*; do
+    osarch=$(basename "$(dirname "$f")"); osarch=${osarch#crowdvm_"$VERSION"_}
+    printf '%s\n  "%s/%s/%s": {"sha256": "%s", "size": %s}' "$sep" "${osarch%_*}" "${osarch#*_}" "$(basename "$f")" \
+      "$(sha256sum "$f" | cut -d' ' -f1)" "$(wc -c < "$f" | tr -d ' ')"
+    sep=","
+  done
+  printf '\n}}\n'
+} > dist/manifest.json
 echo "built dist/ for $VERSION"

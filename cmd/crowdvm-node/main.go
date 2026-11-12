@@ -26,6 +26,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/crowdvm/crowdvm/internal/compat"
 	"github.com/crowdvm/crowdvm/internal/node"
 	"github.com/crowdvm/crowdvm/internal/node/bench"
 	"github.com/crowdvm/crowdvm/internal/node/service"
@@ -34,6 +35,10 @@ import (
 
 func main() {
 	if err := rootCmd().Execute(); err != nil {
+		var code exitCode
+		if errors.As(err, &code) {
+			os.Exit(int(code))
+		}
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
@@ -55,7 +60,7 @@ func rootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&g.dataDir, "data-dir", node.DefaultDataDir(), "node data directory (config, images, snapshots, VMs)")
 	root.PersistentFlags().BoolVarP(&g.verbose, "verbose", "v", false, "debug logging")
 	root.AddCommand(joinCmd(g), runCmd(g), benchCmd(g), statusCmd(g), openCmd(g), configCmd(g), imageCmd(g),
-		installServiceCmd(g), uninstallServiceCmd(), versionCmd())
+		installServiceCmd(g), uninstallServiceCmd(), updateCmd(g), versionCmd())
 	return root
 }
 
@@ -229,6 +234,26 @@ func runCmd(g *globals) *cobra.Command {
 				if err := node.NoDumps(); err != nil {
 					log.Warn("cannot disable core dumps", "err", err)
 				}
+				if supervised {
+					// The unit comes from this build, not from the one that
+					// downloaded it; a changed unit applies on a restart (the
+					// next start finds nothing to change).
+					var out strings.Builder
+					if changed, err := service.Refresh(&out); err != nil {
+						log.Warn("cannot update the service unit", "err", err)
+					} else if changed {
+						log.Info("service unit updated; restarting to apply it", "out", strings.TrimSpace(out.String()))
+						return service.ErrRestart
+					}
+					// Count this start of a new build, or roll back one that
+					// never reached the server.
+					if back, err := node.CheckUpdateStart(ctx, cfg, ""); err != nil {
+						log.Warn("pending update", "err", err)
+					} else if back {
+						log.Warn("rolled back the updated crowdvm-node: it did not reach the server; restarting into the previous build")
+						return service.ErrRestart
+					}
+				}
 				drv, err := newDriver(cfg, log)
 				if err != nil {
 					return err
@@ -240,7 +265,7 @@ func runCmd(g *globals) *cobra.Command {
 				var restart atomic.Bool
 				if supervised {
 					n.SetRestarter(func() {
-						log.Info("restart requested on the local page")
+						log.Info("restarting (asked on the local page, or after an update)")
 						restart.Store(true)
 						stop()
 					})
@@ -496,7 +521,7 @@ func printStatus(w io.Writer, s node.Status, running bool, ui string) {
 	if id == "" {
 		id = "(not joined)"
 	}
-	fmt.Fprintf(w, "Node      %s  %s  v%s  %s/%s  driver %s\n", s.Name, id, s.Version, s.OS, s.Arch, s.Driver)
+	fmt.Fprintf(w, "Node      %s  %s  v%s  %s/%s  driver %s\n", s.Name, id, strings.TrimPrefix(s.Version, "v"), s.OS, s.Arch, s.Driver)
 	switch {
 	case !running:
 		fmt.Fprintf(w, "Daemon    not running\n")
@@ -507,6 +532,9 @@ func printStatus(w io.Writer, s node.Status, running bool, ui string) {
 	}
 	if running {
 		fmt.Fprintf(w, "UI        %s\n", ui)
+	}
+	if l := updateLine(s); l != "" {
+		fmt.Fprintf(w, "Update    %s\n", l)
 	}
 	fmt.Fprintf(w, "Accepting %s\n", acceptLine(s))
 	if s.Schedule != "" {
@@ -541,10 +569,40 @@ func printStatus(w io.Writer, s node.Status, running bool, ui string) {
 	}
 }
 
+// updateLine says whether this build is current ("" when it is, or the
+// server has not said yet).
+func updateLine(s node.Status) string {
+	if s.ServerOutdated {
+		return "the server is older than this node supports: ask its operator to upgrade it"
+	}
+	u := s.Update
+	if u == nil || u.State == compat.StateCurrent {
+		return ""
+	}
+	cmd := u.Command
+	if cmd == "" {
+		cmd = "crowdvm-node update"
+	}
+	l := strings.ToUpper(u.State) + ": " + u.Message
+	if u.State == compat.StateAvailable {
+		l = fmt.Sprintf("%s is available (run %s)", u.Latest, cmd)
+	}
+	// Whether the daemon would install it by itself.
+	if a := s.AutoUpdate; a != nil && a.Unavailable != "" {
+		l += "; auto-update unavailable: " + a.Unavailable
+		if u.State != compat.StateAvailable {
+			l += "; run " + cmd
+		}
+	}
+	return l
+}
+
 // acceptLine says whether the node takes new sandboxes, and why not.
 func acceptLine(s node.Status) string {
 	clock := func(t time.Time) string { return t.Local().Format("Mon 15:04") }
 	switch {
+	case s.Update != nil && s.Update.State == compat.StateOutdated:
+		return "NO: crowdvm-node misses a required update (see Update)"
 	case s.Evacuation != nil:
 		return fmt.Sprintf("EVACUATING: sandboxes still here at %s are stopped and resumed on other nodes", clock(s.Evacuation.Deadline))
 	case s.Drained:

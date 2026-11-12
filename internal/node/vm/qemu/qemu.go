@@ -271,7 +271,7 @@ func New(opt Options) (*Driver, error) {
 		}
 		if runtime.GOOS == "linux" && os.Getenv("INVOCATION_ID") != "" {
 			opt.Logf("qemu: WARNING: running under systemd without the fd store, so VM control sockets are files a local user can connect to; " +
-				"rerun `crowdvm-node install-service` to update the unit (systemd 254+)")
+				"run `crowdvm-node update` to update the unit (systemd 254+)")
 		}
 	}
 	d.adoptAll()
@@ -958,9 +958,12 @@ func (d *Driver) remove(m *machine) {
 	if d.vms[m.id] == m {
 		delete(d.vms, m.id)
 	}
-	disk, qnet, qaddr, nsock := m.rec.Disk, m.rec.QMPNet, m.rec.QMPAddr, m.rec.NetSock
+	disk, qnet, qaddr, nsock, pid := m.rec.Disk, m.rec.QMPNet, m.rec.QMPAddr, m.rec.NetSock, m.rec.PID
 	m.rec.Disk = ""
 	d.mu.Unlock()
+	if pid > 0 {
+		d.forgetFDs(pid) // bugs-r15-sonnet 3
+	}
 	if disk != "" {
 		removeFile(d.store.abs(disk))
 	}
@@ -1424,6 +1427,9 @@ func (d *Driver) watch(m *machine, r *run) {
 		r.q.close()
 		if !d.closed.Load() {
 			r.closeNet()
+			if r.proc != nil {
+				d.forgetFDs(r.proc.Pid) // bugs-r15-sonnet 3
+			}
 		}
 		if r.intended.Load() || d.closed.Load() {
 			return
@@ -1473,6 +1479,18 @@ func (d *Driver) storeFD(name string, f *os.File) error {
 		return fmt.Errorf("fd store: %w", err)
 	}
 	return nil
+}
+
+// forgetFDs drops a qemu run's sockets and ticket from the fd store: named
+// by pid, nothing else replaces them, and the store holds 1024 at most
+// (bugs-r15-sonnet 3).
+func (d *Driver) forgetFDs(pid int) {
+	if d.fds == nil {
+		return
+	}
+	for _, k := range []string{"qmp", "net", "ticket"} {
+		_ = d.fds.remove(fmt.Sprintf("%s-%d", k, pid))
+	}
 }
 
 func (d *Driver) takeFD(name string) *os.File {

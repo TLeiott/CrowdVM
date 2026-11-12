@@ -95,6 +95,10 @@ type GuestHello struct {
 	// writes on the encrypted data partition, "plain" when it cannot
 	// (an older disk), "" from agents that do not know.
 	Disk string `json:"disk,omitempty"`
+	// Nonce (with a ticket): random per boot, kept in RAM. A retry with the
+	// same nonce after a lost welcome gets a new session instead of a
+	// "ticket used" refusal; the node never sees it (inside TLS).
+	Nonce string `json:"nonce,omitempty"`
 }
 
 // GuestWelcome is the server's answer: the session for reconnects and the
@@ -237,9 +241,12 @@ type RegisterResponse struct {
 }
 
 type NodeInfo struct {
-	NodeID   string            `json:"nodeId,omitempty"`
-	Name     string            `json:"name"`
-	Version  string            `json:"version"`
+	NodeID  string `json:"nodeId,omitempty"`
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	// Gen: the node's compatibility generation (internal/compat.NodeGen);
+	// 0 from nodes older than generations.
+	Gen      int               `json:"gen,omitempty"`
 	OS       string            `json:"os"`     // runtime.GOOS
 	Arch     string            `json:"arch"`   // runtime.GOARCH
 	Driver   string            `json:"driver"` // "qemu" | "process" (tests only)
@@ -600,6 +607,28 @@ type HeartbeatResponse struct {
 	// Evacuation: the owner or an admin is reclaiming this node: at Deadline
 	// its sandboxes are stopped and resumed on other nodes (node-ui design).
 	Evacuation *Evacuation `json:"evacuation,omitempty"`
+	// GuestChannel: the server boots this node's sandboxes with the guest
+	// channel, which never takes a warm pool VM (bugs-r15-opus 5).
+	GuestChannel bool `json:"guestChannel,omitempty"`
+	// Update: whether this node build is current, see NodeUpdate.
+	Update *NodeUpdate `json:"update,omitempty"`
+	// ServerGen: the server's generation (internal/compat.ServerGen); 0 from
+	// servers older than generations.
+	ServerGen int `json:"serverGen,omitempty"`
+}
+
+// NodeUpdate tells a node (and the dashboard) whether its build is current.
+// State is one of internal/compat's State* values.
+type NodeUpdate struct {
+	State string `json:"state"`
+	// Version and Latest: the node's release and the newest the server
+	// offers ("" when it offers no downloads).
+	Version string `json:"version,omitempty"`
+	Latest  string `json:"latest,omitempty"`
+	// Deadline (outdated): when sandboxes still on the node move elsewhere.
+	Deadline *time.Time `json:"deadline,omitempty"`
+	Command  string     `json:"command,omitempty"` // how to update
+	Message  string     `json:"message,omitempty"`
 }
 
 // Evacuation of a node: sandboxes still on it at Deadline are stopped (their
@@ -607,6 +636,9 @@ type HeartbeatResponse struct {
 type Evacuation struct {
 	StartedAt time.Time `json:"startedAt"`
 	Deadline  time.Time `json:"deadline"`
+	// Reason: "owner" (its owner or an admin) or "outdated" (the node
+	// misses a required update; it ends when the node is updated).
+	Reason string `json:"reason,omitempty"`
 }
 
 // GuestEvent is one line of the guest's GET /v1/internal/events/stream NDJSON.

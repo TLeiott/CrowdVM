@@ -34,6 +34,7 @@ type uiSessions struct {
 	path  string
 	token string
 	m     map[string]time.Time
+	used  map[string]time.Time // request signatures seen, until they expire
 }
 
 func newUISessions(dataDir, token string) *uiSessions {
@@ -95,14 +96,18 @@ func (s *uiSessions) create() string {
 // same port is the same origin and can still read localStorage.
 const uiReqSkew = 60 * time.Second
 
-func uiReqSig(key, method, uri, ms string) string {
+// uiReqSig signs a request. The body's sha256 is part of it, so a captured
+// header cannot carry another body (bugs-r14-sonnet 5).
+func uiReqSig(key, method, uri, ms string, body []byte) string {
+	bh := sha256.Sum256(body)
 	m := hmac.New(sha256.New, []byte(key))
-	m.Write([]byte("crowdvm-node-ui-req:" + method + " " + uri + " " + ms))
+	m.Write([]byte("crowdvm-node-ui-req:" + method + " " + uri + " " + ms + " " + hex.EncodeToString(bh[:])))
 	return hex.EncodeToString(m.Sum(nil))
 }
 
-// validRequest reports whether v is a live session's signature of this request.
-func (s *uiSessions) validRequest(v, method, uri string, now time.Time) bool {
+// validRequest reports whether v is a live session's signature of this
+// request, seen for the first time: a signature works once.
+func (s *uiSessions) validRequest(v, method, uri string, body []byte, now time.Time) bool {
 	parts := strings.Split(v, ".")
 	if len(parts) != 3 || s.token == "" {
 		return false
@@ -115,13 +120,30 @@ func (s *uiSessions) validRequest(v, method, uri string, now time.Time) bool {
 	if d := now.Sub(time.UnixMilli(t)); d > uiReqSkew || d < -uiReqSkew {
 		return false
 	}
-	if subtle.ConstantTimeCompare([]byte(sig), []byte(uiReqSig(s.sign(nonce), method, uri, ms))) != 1 {
+	if subtle.ConstantTimeCompare([]byte(sig), []byte(uiReqSig(s.sign(nonce), method, uri, ms, body))) != 1 {
 		return false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	exp, ok := s.m[nonce]
-	return ok && now.Before(exp)
+	if !ok || !now.Before(exp) {
+		return false
+	}
+	// One use per signature: a squatter that saw a request cannot send it
+	// again within the window (bugs-r14-sonnet 5).
+	if s.used == nil {
+		s.used = map[string]time.Time{}
+	}
+	for k, t := range s.used {
+		if now.After(t) {
+			delete(s.used, k)
+		}
+	}
+	if _, seen := s.used[sig]; seen {
+		return false
+	}
+	s.used[sig] = now.Add(2 * uiReqSkew)
+	return true
 }
 
 // revoke ends the session v.

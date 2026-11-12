@@ -7,8 +7,20 @@ $Server = if ($env:CROWDVM_SERVER) { $env:CROWDVM_SERVER } else { '__CROWDVM_SER
 $BinDir = if ($env:CROWDVM_BIN_DIR) { $env:CROWDVM_BIN_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\crowdvm' }
 $Arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
+$ProgressPreference = 'SilentlyContinue'  # Windows PowerShell 5.1 downloads far slower with the progress bar
+# Download next to the target, then swap: a running exe (the CLI, the node
+# service) cannot be overwritten but can be renamed away, and a dropped
+# download never leaves a cut binary.
 function Fetch($name) {
-  Invoke-WebRequest -UseBasicParsing "$Server/downloads/windows/$Arch/$name" -OutFile (Join-Path $BinDir $name)
+  $dest = Join-Path $BinDir $name
+  $tmp = "$dest.tmp"
+  Invoke-WebRequest -UseBasicParsing "$Server/downloads/windows/$Arch/$name" -OutFile $tmp
+  if (Test-Path $dest) {
+    Remove-Item -Force "$dest.old" -ErrorAction SilentlyContinue
+    Move-Item -Force $dest "$dest.old"
+  }
+  Move-Item -Force $tmp $dest
+  Remove-Item -Force "$dest.old" -ErrorAction SilentlyContinue  # still running: removed next time
 }
 Write-Host "Installing crowdvm from $Server into $BinDir"
 Fetch 'crowdvm.exe'

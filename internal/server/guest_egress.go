@@ -27,8 +27,11 @@ import (
 	"github.com/crowdvm/crowdvm/internal/mux"
 )
 
-// maxEgressFlows caps one sandbox's open egress connections.
-const maxEgressFlows = 1024
+// maxEgressFlows caps one sandbox's open egress connections. With the
+// guest channel's 1 MiB stream window, a sandbox holds at most this many
+// MiB of the server's memory in flows whose destination stops reading
+// (bugs-r15-opus 3).
+const maxEgressFlows = 256
 
 var (
 	// cgnat: outbound_guard.go
@@ -213,6 +216,9 @@ func ParseEgressAllow(list []string) ([]string, error) {
 // guestStreams serves what a guest opens on its channel.
 func (s *Server) guestStreams(g *GuestConn, egress bool) http.Handler {
 	var flows atomic.Int64
+	// DNS queries in flight per channel: a flood is answered 503 at once
+	// instead of piling up goroutines and streams (bugs-r14-opus 3).
+	dnsSlots := make(chan struct{}, maxEgressDNS)
 	m := http.NewServeMux()
 	m.HandleFunc("GET /v1/egress", func(w http.ResponseWriter, r *http.Request) {
 		if !egress {
@@ -259,6 +265,13 @@ func (s *Server) guestStreams(g *GuestConn, egress bool) http.Handler {
 			http.Error(w, "egress through the server is off for this sandbox", 403)
 			return
 		}
+		select {
+		case dnsSlots <- struct{}{}:
+			defer func() { <-dnsSlots }()
+		default:
+			http.Error(w, "too many dns queries in flight", 503)
+			return
+		}
 		q, err := io.ReadAll(io.LimitReader(r.Body, 64<<10))
 		if err != nil || len(q) < 12 {
 			http.Error(w, "bad query", 400)
@@ -274,6 +287,13 @@ func (s *Server) guestStreams(g *GuestConn, egress bool) http.Handler {
 	})
 	return m
 }
+
+// maxGuestStreams caps the streams a guest channel has served at once: TCP
+// flows (maxEgressFlows), DNS and its calls, with room to spare.
+const maxGuestStreams = 2 * maxEgressFlows
+
+// maxEgressDNS caps a channel's DNS queries in flight (bugs-r14-opus 3).
+const maxEgressDNS = 64
 
 var resolvers struct {
 	once sync.Once

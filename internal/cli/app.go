@@ -122,6 +122,7 @@ func (a *App) Execute(ctx context.Context, args []string) int {
 	root.SetOut(a.Out)
 	root.SetErr(a.Err)
 	c, err := root.ExecuteContextC(ctx)
+	defer a.outdatedNotice()
 	if err == nil {
 		if c != nil {
 			a.updateNotice(c.Name())
@@ -202,7 +203,9 @@ func (a *App) reportError(err error) int {
 			fmt.Fprintf(a.Err, ", HTTP %d", apiErr.Status)
 		}
 		fmt.Fprintln(a.Err, ")")
-		if h := hintFor(apiErr.Code); h != "" {
+		if apiErr.Code == "client_outdated" {
+			fmt.Fprintf(a.Err, "hint: update this CLI with `%s`\n", updateCommand())
+		} else if h := hintFor(apiErr.Code); h != "" {
 			fmt.Fprintln(a.Err, "hint:", h)
 		}
 		return 1

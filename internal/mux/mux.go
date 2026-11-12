@@ -30,6 +30,15 @@ func Config() *yamux.Config {
 	return c
 }
 
+// GuestConfig is the server side of a guest channel: a 1 MiB window per
+// stream, so an egress flow whose destination stops reading holds at most
+// that much of the server's memory, not 16 MiB (bugs-r15-opus 3).
+func GuestConfig() *yamux.Config {
+	c := Config()
+	c.MaxStreamWindowSize = 1 << 20
+	return c
+}
+
 // Accept upgrades an HTTP request to a websocket and returns the yamux server
 // session (server side of the node connection).
 func Accept(w http.ResponseWriter, r *http.Request) (*yamux.Session, error) {
@@ -45,8 +54,12 @@ func Accept(w http.ResponseWriter, r *http.Request) (*yamux.Session, error) {
 // Dial dials the websocket URL (ws:// or wss://) with headers and returns the
 // yamux client session (node side).
 func Dial(ctx context.Context, url string, header http.Header) (*yamux.Session, error) {
-	c, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: header})
+	c, resp, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: header})
 	if err != nil {
+		if resp != nil && resp.StatusCode != http.StatusSwitchingProtocols && resp.Body != nil {
+			b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024)) // all the library keeps
+			return nil, &RefusedError{Status: resp.StatusCode, Body: b, err: err}
+		}
 		return nil, err
 	}
 	c.SetReadLimit(-1)
@@ -54,15 +67,67 @@ func Dial(ctx context.Context, url string, header http.Header) (*yamux.Session, 
 	return yamux.Client(nc, Config())
 }
 
+// RefusedError: the server answered the upgrade with Status (e.g. 426 for
+// a node too old for it) and Body (the first 1 KiB).
+type RefusedError struct {
+	Status int
+	Body   []byte
+	err    error
+}
+
+func (e *RefusedError) Error() string { return e.err.Error() }
+func (e *RefusedError) Unwrap() error { return e.err }
+
 // Serve serves h on every stream the peer opens, until the session closes.
-func Serve(s *yamux.Session, h http.Handler) error {
-	srv := &http.Server{Handler: h, ReadHeaderTimeout: 30 * time.Second}
-	err := srv.Serve(s)
+func Serve(s *yamux.Session, h http.Handler) error { return ServeLimit(s, h, 0) }
+
+// ServeLimit is Serve with at most max streams served at once (0: no cap);
+// further streams wait in yamux's accept backlog, and past it are refused.
+// A hostile peer cannot pile up streams and goroutines (bugs-r14-opus 3).
+func ServeLimit(s *yamux.Session, h http.Handler, max int) error {
+	var l net.Listener = s
+	if max > 0 {
+		l = &limitListener{Listener: s, sem: make(chan struct{}, max)}
+	}
+	// IdleTimeout: a peer that keeps idle streams open (a transport per
+	// request) cannot pile them up for long (bugs-r14-opus 3).
+	srv := &http.Server{Handler: h, ReadHeaderTimeout: 30 * time.Second, IdleTimeout: 30 * time.Second}
+	err := srv.Serve(l)
 	if errors.Is(err, http.ErrServerClosed) || s.IsClosed() {
 		return nil
 	}
 	return err
 }
+
+type limitListener struct {
+	net.Listener
+	sem chan struct{}
+}
+
+func (l *limitListener) Accept() (net.Conn, error) {
+	l.sem <- struct{}{}
+	c, err := l.Listener.Accept()
+	if err != nil {
+		<-l.sem
+		return nil, err
+	}
+	return &limitConn{Conn: c, release: func() { <-l.sem }}, nil
+}
+
+type limitConn struct {
+	net.Conn
+	once    sync.Once
+	release func()
+}
+
+func (c *limitConn) Close() error {
+	err := c.Conn.Close()
+	c.once.Do(c.release)
+	return err
+}
+
+// CloseWrite keeps a stream's half-close (bugs-r14-sonnet 4).
+func (c *limitConn) CloseWrite() error { return CloseWrite(c.Conn) }
 
 // Client returns an http.Client whose connections are new streams on s.
 // Use any host in URLs, e.g. "http://peer/v1/info".
@@ -76,7 +141,7 @@ func Transport(s *yamux.Session) *http.Transport {
 			return s.Open()
 		},
 		MaxIdleConnsPerHost: 32,
-		IdleConnTimeout:     60 * time.Second,
+		IdleConnTimeout:     25 * time.Second, // below Serve's IdleTimeout: the client lets go first
 		DisableCompression:  true,
 	}
 }
@@ -141,6 +206,22 @@ type bufConn struct {
 }
 
 func (c *bufConn) Read(p []byte) (int, error) { return c.r.Read(p) }
+
+// CloseWrite half-closes, so Join still delivers the reply to a program that
+// ended its request with shutdown(SHUT_WR) (bugs-r14-sonnet 4).
+func (c *bufConn) CloseWrite() error { return CloseWrite(c.Conn) }
+
+// CloseWrite half-closes c: a TCP or TLS conn with its CloseWrite, a yamux
+// stream with Close (which only ends its write side).
+func CloseWrite(c net.Conn) error {
+	switch v := c.(type) {
+	case interface{ CloseWrite() error }:
+		return v.CloseWrite()
+	case *yamux.Stream:
+		return v.Close()
+	}
+	return errors.ErrUnsupported
+}
 
 // halfCloseIdle is how long the other direction may stay silent after one
 // direction ended with a half-close. A full close looks the same as a
