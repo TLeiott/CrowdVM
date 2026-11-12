@@ -5,6 +5,13 @@ a server and two QEMU/KVM nodes, imports the base image, and drives every major
 feature group of `docs/PARITY.md` through the `crowdvm` CLI (as a coding agent
 would), plus direct API and SDK calls where the CLI does not apply.
 
+The groups run in four **lanes** at the same time, each lane on a private
+cluster (server + 2 nodes) of its own; a lane runs its groups in order, each
+one alone on its cluster (`lanes` in `test/e2e/e2e_test.go`). Groups that
+depend on each other share a lane (`webhooks` → `lifecycle` → `otel`). A lane's
+cluster starts when its first selected group runs, so `-run` with one group
+starts one cluster.
+
 ## Run it
 
 ```sh
@@ -15,8 +22,10 @@ CROWDVM_E2E=1 go test -count=1 -timeout 30m -v -run 'TestE2E/(exec|files)$' ./te
 
 Needs `/dev/kvm`, `qemu-system-x86_64`, `qemu-img`, `git`, `python3`, `node`
 (with `sdk/typescript/node_modules` for the TypeScript SDK), internet access
-from guests (DNS/HTTPS checks and the OpenCode free model), and ~15 GB free on
-the disk holding the run directory.
+from guests (DNS/HTTPS checks and the OpenCode free model), and ~75 GB free on
+the disk holding the run directories (each cluster copies the base image to its
+server and both nodes, ~13 GB; `snapshots` writes ~11 GB more, stored twice).
+`CROWDVM_E2E_CLUSTERS=2` needs about half of that and takes about twice as long.
 
 | Variable | Meaning |
 |---|---|
@@ -24,13 +33,16 @@ the disk holding the run directory.
 | `CROWDVM_E2E_IMAGE` | base image qcow2 (default `~/.local/share/crowdvm-dev/images/ubuntu-24.04-crowdvm-v2.qcow2`) |
 | `CROWDVM_E2E_DIR` | parent of the per-run directory (default `~/.local/share/crowdvm-dev/e2e`; not tmpfs) |
 | `CROWDVM_E2E_KEEP=1` | keep the run directory (data dirs, logs) afterwards |
+| `CROWDVM_E2E_CLUSTERS=N` | run the lanes on N clusters (default 4, one per lane); lanes that share a cluster run one after the other, `1` runs every group on one cluster |
 | `CROWDVM_E2E_BOOTLOOP=N` | the opt-in `bootloop` group boots N VMs: create → live fork → stop → resume on the other node (lazy chain) → stop → fork, ≤ 4 VMs at a time; a failed boot's serial console, qemu log and disk layers go to `<CROWDVM_E2E_DIR>/bootloop-failed/` (`-run 'TestE2E/bootloop'`) |
 | `CROWDVM_E2E_BOOTLOOP_MODE=create` | `bootloop` with creates only (4 workers) |
 
 On failure the logs (`server.log`, `e2e-node-1.log`, `e2e-node-2.log`,
-`cli-*.log`) are copied to `$TMPDIR/crowdvm-e2e-logs-<run>`.
+`cli-*.log`) of the failing lane are copied to `$TMPDIR/crowdvm-e2e-logs-<run>`.
 
 ## What the harness does
+
+Per lane, in its own `<run>` directory (`run-<time>-l<lane>-*`):
 
 1. `go build` of `crowdvm`, `crowdvm-server`, `crowdvm-node` and `crowdvm-guest`
    (CGO off) into `<run>/bin`.
@@ -46,9 +58,15 @@ On failure the logs (`server.log`, `e2e-node-1.log`, `e2e-node-2.log`,
    (≤ 4 VMs at once). Node 2 allows this host's LAN address (`net.allow <ip>/32`)
    for the git-daemon repo; node 1 keeps the default egress policy.
 6. `crowdvm-node image import` + `image push` on node 1, `image pull` on node 2,
-   then `crowdvm-node run` for both.
+   then `crowdvm-node run` for both. The clusters take turns for this step, lane 1
+   first (four copies at once took 2.5 min for all, one at a time ~20 s each).
 
-Teardown (`t.Cleanup`, SIGINT/SIGTERM, and 45 s before the `go test` deadline):
+`snapshots` moves node 1 behind a TCP proxy to the server (`nodeLink`) and slows
+its uploads to 16 MB/s while it races a stop, a node restart or a fork against
+an upload, so that the race is the same however busy the disk is. Node 1 goes
+back to the server's address after the group.
+
+Teardown (when the lane ends, SIGINT/SIGTERM, and 45 s before the `go test` deadline):
 SIGTERM then SIGKILL each process group, then SIGKILL every process whose argv
 contains the run directory (QEMU runs in its own process group and outlives
 the node), then remove the run directory. A new run also kills leftovers of
@@ -57,7 +75,8 @@ crashed earlier runs; a run whose `go test` process is still alive (its
 
 ## Groups
 
-Sub-tests of `TestE2E`, in order (`-run 'TestE2E/<group>'`):
+Sub-tests of `TestE2E` (`-run 'TestE2E/<group>'`), in the order of the original
+single-cluster suite; the lanes are in `test/e2e/e2e_test.go`:
 
 | Group | Covers |
 |---|---|
@@ -90,6 +109,16 @@ Sub-tests of `TestE2E`, in order (`-run 'TestE2E/<group>'`):
 | process-history | eBPF output capture: `process` records for `ssh ID -- cmd` output, a pty inside an ssh session, and a background pipe writer the session left running; an `exec`'d command has no `process` record. `CROWDVM_E2E_OVERHEAD=1` also logs the cost of 2M one-byte pipe writes with the tracer on and off |
 
 ## Results
+
+**Parallel lanes, 2026-11-12** (same machine, other agents' clusters running too):
+13 m 41 s for the whole suite, all groups PASS. The free OpenCode model did not
+answer from the guests that day, so `agent` (8 m) and `process-history` (6 m)
+each waited out its 6 min timeout and skipped that row; without it the suite
+takes about 7–8 min (lane 4: setup 1 m 41 s + 5 m 35 s of groups; lane 1:
+setup 33 s + `snapshots` 5 m 53 s). The single-cluster suite took 17 min on
+2026-11-11, and would take ~29 min with the same OpenCode timeouts.
+
+Single cluster, earlier:
 
 Latest runs: 2026-11-08 evening, this machine (Ryzen 7 5700X, 16 threads, 62 GB,
 KVM, QEMU 11.1.3, image `ubuntu-24.04-crowdvm-v2`), after the fixes for the parity

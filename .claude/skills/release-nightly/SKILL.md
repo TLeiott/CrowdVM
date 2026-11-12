@@ -27,8 +27,8 @@ git fetch -q origin && git status --short && git rev-list --left-right --count m
 make release-nightly          # or: scripts/release/release.sh nightly --e2e
 ```
 
-Add `--e2e` only when the user asks for the VM e2e suite (about 20 minutes
-more). Run it in the background (Bash `run_in_background`) and wait for it
+Add `--e2e` only when the user asks for the VM e2e suite (about 8 minutes
+more, up to 14 when the free OpenCode model does not answer). Run it in the background (Bash `run_in_background`) and wait for it
 to finish; don't poll with `sleep` and don't start other work meanwhile.
 
 Never push `nightly` yourself: the pre-push hook refuses it, and only the
