@@ -30,6 +30,15 @@ func Config() *yamux.Config {
 	return c
 }
 
+// GuestConfig is the server side of a guest channel: a 1 MiB window per
+// stream, so an egress flow whose destination stops reading holds at most
+// that much of the server's memory, not 16 MiB (bugs-r15-opus 3).
+func GuestConfig() *yamux.Config {
+	c := Config()
+	c.MaxStreamWindowSize = 1 << 20
+	return c
+}
+
 // Accept upgrades an HTTP request to a websocket and returns the yamux server
 // session (server side of the node connection).
 func Accept(w http.ResponseWriter, r *http.Request) (*yamux.Session, error) {

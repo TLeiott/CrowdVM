@@ -27,8 +27,11 @@ import (
 	"github.com/crowdvm/crowdvm/internal/mux"
 )
 
-// maxEgressFlows caps one sandbox's open egress connections.
-const maxEgressFlows = 1024
+// maxEgressFlows caps one sandbox's open egress connections. With the
+// guest channel's 1 MiB stream window, a sandbox holds at most this many
+// MiB of the server's memory in flows whose destination stops reading
+// (bugs-r15-opus 3).
+const maxEgressFlows = 256
 
 var (
 	// cgnat: outbound_guard.go

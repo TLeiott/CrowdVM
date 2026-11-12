@@ -604,6 +604,9 @@ type HeartbeatResponse struct {
 	// Evacuation: the owner or an admin is reclaiming this node: at Deadline
 	// its sandboxes are stopped and resumed on other nodes (node-ui design).
 	Evacuation *Evacuation `json:"evacuation,omitempty"`
+	// GuestChannel: the server boots this node's sandboxes with the guest
+	// channel, which never takes a warm pool VM (bugs-r15-opus 5).
+	GuestChannel bool `json:"guestChannel,omitempty"`
 }
 
 // Evacuation of a node: sandboxes still on it at Deadline are stopped (their

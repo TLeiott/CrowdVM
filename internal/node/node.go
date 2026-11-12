@@ -558,6 +558,9 @@ func (n *Node) applyServerSettings(hr proto.HeartbeatResponse) {
 	n.drained.Store(hr.Drained)
 	n.mu.Lock()
 	n.earned, n.earned24h, n.evacuation = hr.EarnedCredits, hr.Earned24h, hr.Evacuation
+	if hr.GuestChannel {
+		n.clearWarmShapeLocked() // bugs-r15-opus 5: a saved shape from before would boot a VM no create takes
+	}
 	n.mu.Unlock()
 	switch {
 	case hr.SnapshotIntervalSec > 0:

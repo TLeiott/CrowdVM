@@ -366,9 +366,11 @@ func (s *Server) handleGuestReboot(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "guest_connected", 409)
 		return
 	}
-	if !sb.Usable() {
-		// Only a running sandbox reboots: a stopped one (its guest announced
-		// the shutdown) or one starting elsewhere gets no ticket (bugs-r14-sonnet 1).
+	if !sb.Usable() && sb.State != api.StateError && sb.State != api.StateProvisioned {
+		// Only a sandbox with a machine on this node reboots (running, or in
+		// error for a recover: bugs-r15-sonnet 1): a stopped one (its guest
+		// announced the shutdown) or one starting elsewhere gets no ticket
+		// (bugs-r14-sonnet 1).
 		http.Error(w, "not_running: the sandbox is not running", 404) // not 409: the node gives up
 		return
 	}
@@ -446,7 +448,7 @@ func (s *Server) redeemGuest(h proto.GuestHello) (string, *proto.GuestConfig, *S
 			session = randToken(40)
 			if _, err := s.DB.Exec(`UPDATE guest_channels SET session_hash=? WHERE sandbox_id=? AND ticket_hash=? AND hello_hash=?`,
 				hashToken(session), sb.ID, ticketHash, helloHash); err != nil {
-				return fail("config_unreadable")
+				return fail("retry_later") // a database error: the guest tries again (bugs-r15-sonnet)
 			}
 			key = sealedKey
 			break
@@ -468,7 +470,7 @@ func (s *Server) redeemGuest(h proto.GuestHello) (string, *proto.GuestConfig, *S
 		res, err := s.DB.Exec(`UPDATE guest_channels SET session_hash=?, redeemed_at=?, hello_hash=? WHERE sandbox_id=? AND ticket_hash=? AND redeemed_at IS NULL`,
 			hashToken(session), store.Now(), nonceHash, sb.ID, ticketHash)
 		if err != nil {
-			return fail("config_unreadable")
+			return fail("retry_later") // a database error: the guest tries again (bugs-r15-sonnet)
 		}
 		if n, _ := res.RowsAffected(); n != 1 {
 			return fail("ticket_used")
@@ -538,7 +540,7 @@ func (s *Server) handleGuestConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = tc.SetDeadline(time.Time{})
-	sess, err := yamux.Server(&readerConn{Conn: tc, r: br}, mux.Config())
+	sess, err := yamux.Server(&readerConn{Conn: tc, r: br}, mux.GuestConfig())
 	if err != nil {
 		tc.Close()
 		return

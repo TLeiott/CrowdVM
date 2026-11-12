@@ -625,6 +625,9 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	_ = s.DB.QueryRow(`SELECT disabled FROM nodes WHERE id=?`, c.ID).Scan(&resp.Drained)
 	resp.EarnedCredits, resp.Earned24h = s.nodeEarned(c.ID)
 	resp.Evacuation = s.evacuation(c.ID)
+	if n, err := s.NodeByID(c.ID); err == nil {
+		resp.GuestChannel = s.channelNode(n)
+	}
 	switch {
 	case s.Cfg.SnapshotInterval < 0:
 		resp.SnapshotIntervalSec = -1

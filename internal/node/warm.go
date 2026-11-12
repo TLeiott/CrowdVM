@@ -53,10 +53,7 @@ func (n *Node) noteWarmShapeLocked(spec proto.VMSpec) {
 		// A channel sandbox never takes a pool VM (its config must not pass
 		// through this node): while the server sends those, keep no pool
 		// (bugs-r14-opus 7).
-		if n.warmShape != nil {
-			n.warmShape = nil
-			_ = os.Remove(n.warmShapePath())
-		}
+		n.clearWarmShapeLocked()
 		return
 	}
 	if spec.ParentID != "" || spec.Net != nil || spec.GPU || spec.ImageID == "" || warmMatch(n.warmShape, spec) {
@@ -65,6 +62,15 @@ func (n *Node) noteWarmShapeLocked(spec proto.VMSpec) {
 	n.warmShape = &proto.VMSpec{ImageID: spec.ImageID, Size: spec.Size, Nested: spec.Nested}
 	b, _ := json.Marshal(n.warmShape)
 	_ = os.WriteFile(n.warmShapePath(), b, 0o644)
+}
+
+// clearWarmShapeLocked (n.mu held) forgets the pool's shape; the warm loop
+// then drops the pool's VMs.
+func (n *Node) clearWarmShapeLocked() {
+	if n.warmShape != nil {
+		n.warmShape = nil
+		_ = os.Remove(n.warmShapePath())
+	}
 }
 
 // takeWarmLocked (n.mu held) removes a ready pool VM that fits spec.

@@ -75,7 +75,13 @@ func Preinit() error {
 		return fmt.Errorf("partition table of %s: %w", disk, perr)
 	}
 	mode := "luks"
-	if part == "" {
+	if part == "" && bootedPlain("/etc/machine-id") {
+		// This root already ran as a plain system: its data is on it, so a
+		// new partition (after a type change made room) would only hide it
+		// below an "encrypted" overlay (bugs-r15-opus 4). It stays plain.
+		logger.Printf("no encrypted data partition: this disk already booted unencrypted (it stays unencrypted)")
+		mode = "plain"
+	} else if part == "" {
 		if part, err = addDataPartition(disk); errors.Is(err, errNoRoom) {
 			// An older disk (its root partition was grown): nothing was
 			// written, it stays unencrypted.
@@ -121,7 +127,7 @@ func redeem(stub proto.GuestConfig, mode string, logger *log.Logger) ([]byte, er
 			break
 		}
 		logger.Printf("guest channel: %v (retrying)", err)
-		if strings.Contains(err.Error(), "server refused") {
+		if strings.Contains(err.Error(), "server refused") && !strings.Contains(err.Error(), "retry_later") {
 			// ticket_used (someone else redeemed it), expired, unknown
 			// sandbox ...: no retry makes this boot valid.
 			return nil, err
@@ -145,7 +151,9 @@ func run(stdin []byte, name string, args ...string) error {
 	// No udevd runs this early. After an initramfs boot its database is
 	// still in /run, and libdevmapper would wait forever for udev to
 	// create /dev/mapper nodes: let it create them itself.
-	cmd.Env = append(os.Environ(), "DM_DISABLE_UDEV=1")
+	// TMPDIR: / is the image's read-only root here; growpart needs a
+	// temp dir (bugs-r15-opus 2).
+	cmd.Env = append(os.Environ(), "DM_DISABLE_UDEV=1", "TMPDIR=/run")
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
@@ -217,6 +225,14 @@ func sectors(disk string) (int64, error) {
 
 // addDataPartition puts the data partition into the free space behind the
 // image's partitions (the node grew the disk to the sandbox's size).
+// bootedPlain: the image ships an empty machine-id, and an encrypted
+// sandbox writes its own on the data partition, so a machine-id on the
+// image root means this disk ran unencrypted before.
+func bootedPlain(machineID string) bool {
+	b, _ := os.ReadFile(machineID)
+	return len(bytes.TrimSpace(b)) > 0
+}
+
 func addDataPartition(disk string) (string, error) {
 	t, err := readTable(disk)
 	if err != nil {
@@ -318,9 +334,11 @@ func openData(disk, part string, key []byte, logger *log.Logger) error {
 		// A larger sandbox disk: grow partition, LUKS and ext4 (offline).
 		_ = run(nil, "sfdisk", "--no-reread", "--no-tell-kernel", "--relocate", "gpt-bak-std", disk)
 		if n := strings.TrimPrefix(strings.TrimPrefix(part, disk), "p"); n != "" {
-			if run(nil, "growpart", disk, n) == nil {
+			if err := run(nil, "growpart", disk, n); err == nil {
 				_ = run(nil, "partx", "-u", "-n", n, disk)
 				_ = run(key, "cryptsetup", "resize", "--key-file=-", dataPartName)
+			} else if !strings.Contains(err.Error(), "NOCHANGE") {
+				logger.Printf("growing the data partition: %v", err) // bugs-r15-opus 2
 			}
 		}
 		if err := exec.Command("e2fsck", "-p", dev).Run(); err != nil {

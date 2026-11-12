@@ -27,3 +27,24 @@ func TestR14ChannelCreateEmptiesWarmPool(t *testing.T) {
 		return len(h.node.warm) == 0 && h.node.warmShape == nil
 	})
 }
+
+// bugs-r15-opus 5: a warm shape saved under --no-guest-channel kept booting
+// a pool VM after the server went back to the channel, until a channel
+// create came. The heartbeat now says so.
+func TestR15HeartbeatWithChannelEmptiesWarmPool(t *testing.T) {
+	h := start(t, func(c *Config) { c.WarmPool = 1 })
+	h.srv.putImage("img1", []byte("base"))
+	call(t, h.sess, "POST", "/v1/vms", spec("bx_q1")) // teaches the pool its shape
+	h.waitState(t, "bx_q1", proto.VMRunning)
+	waitFor(t, "pool vm ready", func() bool {
+		h.node.mu.Lock()
+		defer h.node.mu.Unlock()
+		return len(h.node.warm) == 1
+	})
+	h.node.applyServerSettings(proto.HeartbeatResponse{GuestChannel: true})
+	waitFor(t, "pool emptied", func() bool {
+		h.node.mu.Lock()
+		defer h.node.mu.Unlock()
+		return len(h.node.warm) == 0 && h.node.warmShape == nil
+	})
+}
