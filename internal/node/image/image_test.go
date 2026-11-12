@@ -128,7 +128,7 @@ func TestParseResultAndList(t *testing.T) {
 }
 
 func TestDefaults(t *testing.T) {
-	if DefaultID("full") != "ubuntu-24.04-crowdvm-v3" || DefaultID("minimal") != "ubuntu-24.04-crowdvm-minimal-v3" {
+	if DefaultID("full") != "ubuntu-24.04-crowdvm-v4" || DefaultID("minimal") != "ubuntu-24.04-crowdvm-minimal-v4" {
 		t.Fatal(DefaultID("full"), DefaultID("minimal"))
 	}
 	o := Options{Profile: "bogus", CloudImage: "x", OutDir: "y"}

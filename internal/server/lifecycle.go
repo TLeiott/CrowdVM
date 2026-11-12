@@ -412,6 +412,7 @@ func (s *Server) boot(ctx context.Context, id string, o bootOpts) (err error) {
 		// LIFE-013: a lazy-chain node boots at once and reads missing
 		// layers from the server; only their upload is awaited.
 		lazy := n != nil && n.Info.LazyChain
+		s.grantChain(node.ID, parent) // the node may download these layers (mayFetch)
 		if err := s.ensureChain(ctx, id, node, parent, lazy); err != nil {
 			return err
 		}
@@ -455,7 +456,27 @@ func (s *Server) boot(ctx context.Context, id string, o bootOpts) (err error) {
 	// Credentials of a previous owner (or withheld by the environment) go
 	// before the sandbox is reachable.
 	s.scrubForBoot(id, &g)
+	if s.channelNode(n) && !s.Cfg.NodeEgress {
+		// Internet through the server; the node's netstack lets the VM
+		// reach nothing but the server (a kill switch if the guest drops
+		// its egress rules).
+		g.Egress = "server"
+		vs.Net = &proto.NetPolicy{Deny: []string{"0.0.0.0/0"}, NoDNS: true}
+	}
 	vs.Guest = g
+	if s.channelNode(n) {
+		// Secure layer: the node gets a boot stub, the guest fetches the
+		// config from the server (guest_channel.go), and the key of its
+		// encrypted data partition.
+		if _, err := s.ensureDiskKey(sb.ID, parent); err != nil {
+			return fmt.Errorf("prepare_failed: disk key: %v", err)
+		}
+		if vs.Guest, err = s.issueGuestChannel(sb, node.ID, g); err != nil {
+			return fmt.Errorf("prepare_failed: guest channel: %v", err)
+		}
+	} else {
+		_, _ = s.DB.Exec(`DELETE FROM guest_channels WHERE sandbox_id=?`, id)
+	}
 	if _, err := s.DB.Exec(`UPDATE sandboxes SET guest_token=?, boot_kind=?, head_snapshot_id=COALESCE(head_snapshot_id, NULLIF(?,'')) WHERE id=?`, token, string(o.Kind), parent, id); err != nil {
 		return err
 	}
@@ -1872,6 +1893,7 @@ func (s *Server) handleRecover(c *Ctx) error {
 	}
 	rctx, rcancel := context.WithTimeout(c.R.Context(), 2*time.Minute)
 	defer rcancel()
+	s.guests.expectReboot(sb.ID) // the node's new-ticket request is ours
 	if err := node.Do(rctx, "POST", "/v1/vms/"+sb.ID+"/restart", map[string]any{}, nil); err != nil {
 		return Err(409, "reset_failed", "The power-cycle failed: "+err.Error())
 	}

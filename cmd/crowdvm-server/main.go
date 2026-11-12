@@ -128,6 +128,9 @@ func serve(args []string) error {
 	savedDaily := fl.Float64("saved-snapshot-daily-dollars", 0.056, "daily price of each saved snapshot above the included count, charged in credits")
 	outputCap := fl.Int64("output-cap-per-hour", server.DefaultOutputCapPerHour, "stored command output per wallet and hour, and again for other processes, bytes (-1 = no cap)")
 	minGuest := fl.String("min-guest-version", server.MinGuestVersion, "oldest guest agent version calls into a sandbox accept (older: 409 agent_outdated; dev builds always pass)")
+	noChannel := fl.Bool("no-guest-channel", false, "boot sandboxes the legacy way: the node gets their whole config (secrets included) and proxies their API (default: guests fetch their config from this server over a pinned channel)")
+	nodeEgress := fl.Bool("node-egress", false, "let sandboxes reach the internet through their node (default: through the guest channel and out of this server)")
+	egressAllow := fl.String("egress-allow", "", "comma-separated CIDRs or ip:port on this server's networks that sandboxes may reach through server egress (e.g. an internal git server); LAN, loopback and tailnet addresses are refused otherwise")
 	hooksLocal := fl.Bool("webhook-allow-local", false, "let webhook and OTel export URLs point at loopback, link-local and cloud metadata addresses (LAN and Tailscale addresses are always allowed)")
 	aiPrivate := fl.Bool("ai-custom-api-allow-private", os.Getenv("CROWDVM_AI_CUSTOM_API_ALLOW_PRIVATE") == "1", "let custom AI API base URLs use http://, ports, LAN hosts and IPs (or CROWDVM_AI_CUSTOM_API_ALLOW_PRIVATE=1)")
 	_ = fl.Parse(args)
@@ -156,6 +159,9 @@ func serve(args []string) error {
 		WebFS: webFS, Logger: log, TrustProxy: *trustProxy, DownloadsDir: *downloadsDir, MinGuestVersion: *minGuest,
 		SavedSnapshotsIncluded: *savedIncl, SavedSnapshotExtraDollarsPerDay: *savedDaily, OutputCapPerHour: *outputCap,
 		WebhookAllowLocal: *hooksLocal,
+		NoGuestChannel:    *noChannel,
+		NodeEgress:        *nodeEgress,
+		EgressAllow:       splitList(*egressAllow),
 	}
 	srv, err := server.New(cfg)
 	if err != nil {
@@ -511,4 +517,15 @@ func parseGrantFlags(fl *flag.FlagSet, args []string) error {
 		}
 	}
 	return fl.Parse(append(flags, positional...))
+}
+
+// splitList splits a comma-separated flag value, dropping empty items.
+func splitList(v string) []string {
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

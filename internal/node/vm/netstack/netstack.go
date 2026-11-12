@@ -66,6 +66,9 @@ type Config struct {
 	// GatewayForwards maps TCP ports on the gateway (10.0.2.2) to host:port
 	// targets the node dials, e.g. the CrowdVM server's port to the server.
 	GatewayForwards map[uint16]string
+	// GatewayServices: TCP ports on the gateway served inside the node
+	// process (nothing outside the VM's network reaches them).
+	GatewayServices map[uint16]func(net.Conn)
 	MTU             int // guest MTU (default DefaultMTU)
 	MaxFlows        int // concurrent TCP+UDP flows (default 2048)
 	Logf            func(format string, args ...any)
@@ -350,7 +353,7 @@ func (n *Network) tcpTargets(dst netip.AddrPort) []string {
 		}
 		return nil
 	case a == DNS:
-		if dst.Port() == 53 {
+		if dst.Port() == 53 && (n.cfg.Sandbox == nil || !n.cfg.Sandbox.NoDNS) {
 			return upstreams()
 		}
 		return nil
@@ -365,6 +368,23 @@ func (n *Network) tcpTargets(dst netip.AddrPort) []string {
 
 func (n *Network) handleTCP(r *tcp.ForwarderRequest) {
 	id := r.ID()
+	if fn := n.cfg.GatewayServices[id.LocalPort]; fn != nil && netAddr(id.LocalAddress) == Gateway {
+		if !n.acquire() {
+			r.Complete(true)
+			return
+		}
+		defer n.release()
+		var wq waiter.Queue
+		ep, terr := r.CreateEndpoint(&wq)
+		r.Complete(false)
+		if terr != nil {
+			return
+		}
+		c := gonet.NewTCPConn(&wq, ep)
+		defer c.Close()
+		fn(c)
+		return
+	}
 	targets := n.tcpTargets(netip.AddrPortFrom(netAddr(id.LocalAddress), id.LocalPort))
 	if len(targets) == 0 || !n.acquire() {
 		r.Complete(true)
@@ -396,6 +416,9 @@ func (n *Network) handleUDP(r *udp.ForwarderRequest) bool {
 	id := r.ID()
 	dst := netip.AddrPortFrom(netAddr(id.LocalAddress), id.LocalPort)
 	isDNS := dst.Addr() == DNS && dst.Port() == 53
+	if isDNS && n.cfg.Sandbox != nil && n.cfg.Sandbox.NoDNS {
+		return false
+	}
 	if !isDNS && (Subnet.Contains(dst.Addr()) || !n.check("udp", dst)) {
 		return false // ICMP port unreachable
 	}

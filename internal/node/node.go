@@ -155,10 +155,40 @@ func New(cfg *Config, drv vm.Driver, log *slog.Logger) *Node {
 			}
 		}()
 	}
+	if rt, ok := drv.(vm.Reticketer); ok {
+		rt.SetReticket(n.reticket)
+	}
 	if b, err := LoadBenchmark(cfg.DataDir); err == nil {
 		n.bench = b
 	}
 	return n
+}
+
+// reticket asks the server for a new boot ticket for a channel guest that
+// rebooted. The server answers 409 until the old boot's channel has closed.
+func (n *Node) reticket(ctx context.Context, id string) (*proto.GuestChannel, error) {
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	for {
+		resp, err := n.serverDo(ctx, "POST", "/node/v1/sandboxes/"+id+"/reboot", nil, nil)
+		if err == nil {
+			var ch proto.GuestChannel
+			err = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&ch)
+			resp.Body.Close()
+			if err == nil && ch.Ticket != "" {
+				return &ch, nil
+			}
+			return nil, fmt.Errorf("server: bad ticket answer: %v", err)
+		}
+		if !isStatus(err, 409) {
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("the previous boot's channel did not close: %w", err)
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
 }
 
 // LoadBenchmark reads <dataDir>/benchmark.json.
@@ -206,7 +236,11 @@ func (n *Node) Info() proto.NodeInfo {
 		Labels: c.Labels, Bench: b, Capacity: cp,
 		DirectHost: c.DirectHost, Images: imgs,
 		LazyChain: ok && lz.LazyChain() && !c.NoLazyChain,
-		GPUs:      gpus, VirGL: vg != nil && vg.VirGL(),
+		// Secure layer: guests fetch their config from the server over a
+		// pinned channel; this node never sees their secrets. Not for the
+		// process driver: its "guests" are host processes (tests only).
+		GuestChannel: n.drv.Name() != "process",
+		GPUs:         gpus, VirGL: vg != nil && vg.VirGL(),
 		Paused: ps.Paused, PauseReason: ps.Reason,
 	}
 }
@@ -300,7 +334,9 @@ func (n *Node) saveSpecsLocked() {
 	m := make(map[string]proto.VMSpec, len(n.vms))
 	for id, r := range n.vms {
 		if r.spec.SandboxID != "" {
-			m[id] = r.spec
+			sp := r.spec
+			sp.Guest = sp.Guest.WithoutTicket() // the boot ticket never goes to disk
+			m[id] = sp
 		}
 	}
 	b, _ := json.Marshal(m)

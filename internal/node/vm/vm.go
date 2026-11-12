@@ -124,6 +124,13 @@ type Notifier interface {
 	SetNotify(fn func(proto.VMStatus))
 }
 
+// Reticketer is implemented by drivers that relaunch a channel guest after
+// it rebooted. Its session lived in RAM, so the relaunch needs a new boot
+// ticket from the server; fn gets one. Set it before the first Start.
+type Reticketer interface {
+	SetReticket(fn func(ctx context.Context, sandboxID string) (*proto.GuestChannel, error))
+}
+
 type noQuiesceKey struct{}
 
 // WithoutQuiesce marks ctx: a live Snapshot skips the guest freeze and sync

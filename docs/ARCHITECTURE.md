@@ -321,6 +321,46 @@ per-command cgroups under the delegated transient unit
   driver): `--config FILE --home DIR --unprivileged` (no hostname/disk/user
   changes, commands run as the current user, home = DIR).
 
+### Guest channel (secure layer)
+
+Design and threat model: `docs/design/secure-layer.md`.
+
+* Nodes that advertise `NodeInfo.GuestChannel` (qemu driver) get a **boot stub** in
+  `VMSpec.Guest`: `sandboxId`, `boot`, `firstBoot`, `hostname`, `desktop`, `token`
+  (the node's **ops token**) and `channel {url, pin, ticket}`. No env, secrets, keys.
+  The server keeps the full `GuestConfig` sealed in `guest_channels` (`secret.key`).
+* The guest dials `GET <url>/guest/v1/connect` (`Upgrade: crowdvm-guest`), runs TLS
+  1.3 inside the upgraded connection, pinned to the SHA-256 of the server's
+  `guest-tls.pem` SPKI, sends `proto.GuestHello` (ticket on the first connect of a
+  boot, else the session from `/var/lib/crowdvm/channel.json`) and reads
+  `proto.GuestWelcome` (session + config). A ticket redeemed twice → 409-style refusal
+  and a `security_ticket_reused` owner notice. Then yamux over the TLS conn.
+* Server → guest: every `/v1/vms/{id}/guest/...` call and `DialTunnel` of a channel
+  sandbox goes over its channel (`routedTransport` in `NodeConn`); the server follows
+  the guest's event stream and sets its direct-port firewall itself.
+* Guest → server streams: `GET /v1/egress?addr=ip:port` (Upgrade) and `POST
+  /v1/egress/dns` when `GuestConfig.Egress == "server"`.
+* The guest's local listener (`:7070`, node loopback forward) serves only `GET
+  /v1/health` and `POST /v1/internal/{prepare-stop,sync,freeze,thaw,playbook/finish}`
+  with the ops token; everything else answers `403 channel_only`. Nodes do not adopt
+  warm-pool VMs, follow events or push firewall rules for channel guests.
+* Egress `server` (default; `--node-egress` off): the guest redirects TCP to a
+  transparent proxy (:15001) and DNS to a resolver (:15053) with iptables chains
+  `CROWDVM_EGRESS` (nat + filter) and `CROWDVM_EGRESS_IN`; the server dials out with
+  `egressBlocked` (no private/LAN/CGNAT/loopback/link-local/metadata, except its own
+  API). `VMSpec.Net = {deny: [0.0.0.0/0], noDns: true}` is the node-side kill switch.
+* Node blob downloads are scoped (`mayFetch`): granted chains (boots, inspectors),
+  layers the node holds, chains of sandboxes placed on it.
+* The session lives in `/run/crowdvm/channel.json` only. Channel guests run with
+  `-action reboot=shutdown`; the node relaunches them with a ticket from `POST
+  /node/v1/sandboxes/{id}/reboot`, which the server gives only for a reboot the guest
+  announced (`POST /v1/rebooting` on its channel) or a recover it started.
+* Encrypted data partition (image v4): `crowdvm-guest preinit` (PID 1) redeems the
+  ticket, receives `GuestWelcome.DataKey`, opens LUKS2 `crowdvm-data` behind the image
+  partitions and pivots to an overlay root. Keys: `sandboxes.data_key`, copied into
+  `snapshots.data_key` (with `disk`); `ensureDiskKey` takes the parent snapshot's.
+  The node writes `GuestChannel.Addr = 10.0.2.2:<server port>` so the guest needs no DNS.
+
 ### Networking (LAN / Tailscale)
 
 * Each VM's NIC is a QEMU `-netdev stream` unix socket served by a private

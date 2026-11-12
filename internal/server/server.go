@@ -99,6 +99,18 @@ type Config struct {
 	// loopback, link-local and cloud metadata addresses (outbound_guard.go;
 	// LAN and Tailscale addresses are always allowed).
 	WebhookAllowLocal bool
+	// NoGuestChannel: boot guests the legacy way (the node writes the whole
+	// guest config, secrets included, to the config drive and proxies the
+	// guest API) even on nodes that support the guest channel.
+	NoGuestChannel bool
+	// NodeEgress: channel sandboxes reach the internet through their node
+	// (as legacy ones do) instead of through the guest channel and out of
+	// this server.
+	NodeEgress bool
+	// EgressAllow: addresses on this server's networks that sandboxes may
+	// reach through server egress anyway: CIDRs ("10.0.5.0/24") or exact
+	// "ip:port" (an internal git server). Cloud metadata stays refused.
+	EgressAllow []string
 
 	// Loop intervals (tests shorten them). Zero = the package defaults
 	// (OTelMetricsInterval, WebhookBackoff, CIPollInterval, CIRetryInterval).
@@ -278,6 +290,8 @@ type Server struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 	start  sync.Once
+	guests guestRegistry // connected guest channels (guest_channel.go)
+	gkey   guestKey
 	// startedAt (ms): nodes cannot reconnect while the server is down, so
 	// their offline time counts from here (seenAt).
 	startedAt int64

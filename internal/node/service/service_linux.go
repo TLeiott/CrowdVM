@@ -44,6 +44,12 @@ RestartSec=5
 # KillMode=mixed killed every VM on "systemctl --user restart" (bugs-r8-opus 1).
 KillMode=process
 TimeoutStopSec=60
+# The VMs' QMP and NIC sockets live in systemd's fd store, not at paths
+# another process of this user could connect to; a restart gets them back.
+NotifyAccess=main
+FileDescriptorStoreMax=1024
+FileDescriptorStorePreserve=yes
+Environment=CROWDVM_FDSTORE=1
 
 [Install]
 WantedBy=default.target

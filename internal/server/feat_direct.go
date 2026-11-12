@@ -129,6 +129,9 @@ func (s *Server) syncDirect(ctx context.Context, sb *Sandbox) error {
 		_, _ = s.DB.Exec(`UPDATE sandboxes SET direct=? WHERE id=?`, mustJSON(st.Direct), sb.ID)
 		sb.Direct = st.Direct
 	}
+	if g := s.guests.get(sb.ID); g != nil { // the node may not touch a channel guest's firewall
+		s.pushGuestFirewall(ctx, g)
+	}
 	return nil
 }
 

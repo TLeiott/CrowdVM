@@ -45,6 +45,7 @@ type cluster struct {
 	repo     string
 	logs     string
 	port     int
+	gitPort  int    // the environments group's git daemon (allowed through server egress)
 	url      string // http://127.0.0.1:port
 	apiBase  string // url + /api/v1
 	cfgDir   string // CLI config dir of the admin user "e2e"
@@ -224,6 +225,11 @@ func (c *cluster) build(t *testing.T) {
 
 func (c *cluster) startServer(t *testing.T) {
 	c.port = freePort(t)
+	c.gitPort = freePort(t)
+	egressAllow := ""
+	if ip := lanIP(); ip != "" {
+		egressAllow = fmt.Sprintf("%s:%d", ip, c.gitPort) // a LAN git server the org allows (environments group)
+	}
 	c.url = fmt.Sprintf("http://127.0.0.1:%d", c.port)
 	c.apiBase = c.url + "/api/v1"
 	c.startEnv(t, "server", c.hooks.serverEnv(), c.serverBin(), "serve",
@@ -233,7 +239,8 @@ func (c *cluster) startServer(t *testing.T) {
 		"--public-domain", "localhost",
 		"--starts-per-minute", "0", "--starts-per-hour", "0", "--starts-per-day", "0",
 		"--ip-rate-limit", "0", "--signup-credits", "1000", "--log-level", "debug",
-		"--webhook-allow-local") // the webhook / OTLP receivers listen on 127.0.0.1
+		"--webhook-allow-local", // the webhook / OTLP receivers listen on 127.0.0.1
+		"--egress-allow", egressAllow)
 	waitFor(t, 30*time.Second, 200*time.Millisecond, "server up", func() (bool, string) {
 		resp, err := http.Get(c.apiBase + "/server")
 		if err != nil {

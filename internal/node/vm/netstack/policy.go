@@ -199,6 +199,7 @@ func (r *Rules) localAddrs() []netip.Addr {
 type Sandbox struct {
 	Allow []netip.Prefix // if non-empty, only these destinations are reachable
 	Deny  []netip.Prefix
+	NoDNS bool // the 10.0.2.3 resolver does not answer
 }
 
 // Check reports whether a guest may connect to dst, and why not.

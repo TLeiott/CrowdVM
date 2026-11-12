@@ -9,7 +9,7 @@ package images
 import "embed"
 
 // Version of the provisioning assets. Bump when the image content changes.
-const Version = "3"
+const Version = "4"
 
 // Profiles in build order: "full" = "minimal" + more.
 var Profiles = []string{"minimal", "full"}

@@ -25,6 +25,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -107,6 +108,8 @@ type Driver struct {
 	vms     map[string]*machine
 	changed chan struct{} // closed and replaced on every state change
 	notify  func(proto.VMStatus)
+	ticket  func(ctx context.Context, id string) (*proto.GuestChannel, error)
+	fds     *fdStore // nil: path sockets (no systemd fd store)
 }
 
 var (
@@ -118,6 +121,7 @@ var (
 	_ vm.NICDialer     = (*Driver)(nil)
 	_ vm.LazyStarter   = (*Driver)(nil)
 	_ vm.Renamer       = (*Driver)(nil)
+	_ vm.Reticketer    = (*Driver)(nil)
 )
 
 // vmRecord is persisted as vms/<id>/vm.json (0600: holds the guest token).
@@ -154,6 +158,8 @@ type machine struct {
 	// snapWr: guest disk write+discard ops counted when the current overlay
 	// started (-1 = unknown), for DiskChanged.
 	snapWr int64
+	resets []time.Time // guest reboots of a channel guest, for the loop breaker
+	ticket string      // the current boot's ticket: in RAM only, served on the VM's network
 }
 
 // run is one qemu process incarnation.
@@ -163,6 +169,7 @@ type run struct {
 	exited   chan struct{}
 	intended atomic.Bool // we asked it to exit: not an error
 	poweroff atomic.Bool // guest powered itself off
+	reset    atomic.Bool // channel guest rebooted (qemu exits instead): relaunch
 	launched time.Time
 	log      string
 	net      *netstack.Network // nil with slirp
@@ -248,6 +255,7 @@ func New(opt Options) (*Driver, error) {
 	d.lazyOK = detectLazy(qimg)
 	d.ctx, d.cancel = context.WithCancel(context.Background())
 	st.inUse = d.inUse
+	d.fds = openFDStore()
 	d.adoptAll()
 	st.gcOrphans(true)
 	return d, nil
@@ -259,6 +267,11 @@ func (d *Driver) Accel() string { return d.accel }
 func (d *Driver) Name() string                      { return "qemu" }
 func (d *Driver) Store() vm.Store                   { return d.store }
 func (d *Driver) SetNotify(fn func(proto.VMStatus)) { d.mu.Lock(); d.notify = fn; d.mu.Unlock() }
+func (d *Driver) SetReticket(fn func(context.Context, string) (*proto.GuestChannel, error)) {
+	d.mu.Lock()
+	d.ticket = fn
+	d.mu.Unlock()
+}
 
 // Close releases QMP connections. VMs keep running; a new Driver adopts them.
 func (d *Driver) Close() error {
@@ -340,6 +353,7 @@ func (d *Driver) create(m *machine, spec proto.VMSpec) error {
 	rel := "disks/" + m.id + "-" + randHex(4) + ".qcow2"
 	d.mu.Lock()
 	m.rec = vmRecord{Spec: spec, ImageID: base.imageID, Disk: rel, Parent: spec.ParentID}
+	m.rec.Spec.Guest = spec.Guest.WithoutTicket() // the ticket stays in RAM (launch)
 	d.mu.Unlock()
 	if err := d.store.run("create", "-q", "-f", "qcow2", "-u", "-b", base.path, "-F", base.format,
 		d.store.abs(rel), strconv.FormatInt(size, 10)); err != nil {
@@ -724,6 +738,10 @@ func (d *Driver) Restart(ctx context.Context, id string) error {
 	if r != nil {
 		d.kill(r)
 	}
+	if err := d.reticket(ctx, m, &cfg); err != nil {
+		d.setState(m, proto.VMError, err.Error())
+		return err
+	}
 	cfg.Boot, cfg.FirstBoot = proto.BootRecover, false
 	if err := d.launch(m, cfg); err != nil {
 		d.setState(m, proto.VMError, err.Error())
@@ -831,6 +849,7 @@ func (d *Driver) Rename(ctx context.Context, fromID string, spec proto.VMSpec) e
 	m.id = to
 	m.st.SandboxID = to
 	m.rec.Spec = spec
+	m.rec.Spec.Guest = spec.Guest.WithoutTicket()
 	m.rec.QMPAddr, m.rec.NetSock = move(m.rec.QMPAddr), move(m.rec.NetSock)
 	state, msg := m.st.State, m.st.Error
 	d.mu.Unlock()
@@ -972,6 +991,26 @@ func (d *Driver) setState(m *machine, state, msg string) {
 func (d *Driver) launch(m *machine, cfg proto.GuestConfig) error {
 	dir := d.vmDir(m.id)
 	cfg.ListenAddr = fmt.Sprintf(":%d", proto.GuestPort)
+	if cfg.Channel != nil && d.opt.Net == NetNetstack && d.opt.ServerAddr != "" {
+		// The guest dials the server through the gateway alias: no DNS
+		// before its channel (which carries its DNS) is up.
+		if _, port, err := net.SplitHostPort(d.opt.ServerAddr); err == nil {
+			ch := *cfg.Channel
+			ch.Addr = net.JoinHostPort(netstack.Gateway.String(), port)
+			cfg.Channel = &ch
+		}
+	}
+	if cfg.Channel != nil && cfg.Channel.Ticket != "" && d.opt.Net == NetNetstack {
+		// The ticket stays in this process: the guest reads it from its
+		// network (TicketPort), never from a file the node's user can read.
+		d.mu.Lock()
+		m.ticket = cfg.Channel.Ticket
+		d.mu.Unlock()
+		cfg = cfg.WithoutTicket()
+		ch := *cfg.Channel
+		ch.TicketFrom = net.JoinHostPort(netstack.Gateway.String(), strconv.Itoa(proto.TicketPort))
+		cfg.Channel = &ch
+	}
 	cfgJSON, err := json.Marshal(cfg)
 	if err != nil {
 		return err
@@ -992,13 +1031,46 @@ func (d *Driver) launch(m *machine, cfg proto.GuestConfig) error {
 }
 
 func (d *Driver) spawn(m *machine, dir string) (err error) {
-	qarg, qnet, qaddr, err := qmpEndpoint(dir)
-	if err != nil {
-		return err
-	}
 	d.mu.Lock()
 	rec := m.rec
 	d.mu.Unlock()
+	// QMP and the NIC: socketpairs kept in systemd's fd store when the node
+	// runs under it (no path anyone could connect to), else path sockets.
+	var qmpArgs []string
+	var qnet, qaddr string
+	var qmpNode, nicNode *os.File
+	var extra []*os.File
+	defer func() {
+		// qemu's ends (qemu has them now) and the node's (duplicated into
+		// the fd store and the connections).
+		for _, f := range append(extra, qmpNode, nicNode) {
+			if f != nil {
+				f.Close()
+			}
+		}
+	}()
+	if d.fds != nil {
+		a, b, err := socketPair()
+		if err != nil {
+			return err
+		}
+		qmpNode, extra = a, append(extra, b)
+		qmpArgs = []string{"-chardev", fmt.Sprintf("socket,id=qmp,fd=%d,server=off", 2+len(extra)), "-mon", "chardev=qmp,mode=control"}
+		qnet = "fd"
+		if d.opt.Net == NetNetstack {
+			a, b, err := socketPair()
+			if err != nil {
+				return err
+			}
+			nicNode, extra = a, append(extra, b)
+		}
+	} else {
+		qarg, n, a, err := qmpEndpoint(dir)
+		if err != nil {
+			return err
+		}
+		qmpArgs, qnet, qaddr = []string{"-qmp", qarg}, n, a
+	}
 	// netstack: the guest agent forward listens before qemu starts (no port
 	// race); slirp: qemu binds a port that was free a moment ago.
 	var port int
@@ -1014,12 +1086,16 @@ func (d *Driver) spawn(m *machine, dir string) (err error) {
 			}
 		}()
 		port = gl.Addr().(*net.TCPAddr).Port
-		nsock = unixSocket(dir, "net.sock")
-		os.Remove(nsock)
+		if nicNode != nil {
+			nsock = fmt.Sprintf("fd:%d", 2+len(extra))
+		} else {
+			nsock = unixSocket(dir, "net.sock")
+			os.Remove(nsock)
+		}
 	} else if port, err = freePort(); err != nil {
 		return err
 	}
-	args, err := d.args(rec, dir, port, nsock, qarg)
+	args, err := d.args(rec, dir, port, nsock, qmpArgs)
 	if err != nil {
 		return err
 	}
@@ -1029,9 +1105,13 @@ func (d *Driver) spawn(m *machine, dir string) (err error) {
 		return err
 	}
 	fmt.Fprintf(logf, "--- launch %s: %s %s\n", time.Now().Format(time.RFC3339), d.qemu, strings.Join(args, " "))
+	// The serial console carries the guest's boot and service output; keep
+	// only the tail across boots (secure layer: less on the node's disk).
+	trimTail(filepath.Join(d.vmDir(m.id), "console.log"), 256<<10)
 	cmd := exec.Command(d.qemu, args...)
 	cmd.Stdout, cmd.Stderr = logf, logf
 	cmd.SysProcAttr = sysProcAttr()
+	cmd.ExtraFiles = extra // fd 3 (QMP), fd 4 (NIC)
 	err = cmd.Start()
 	logf.Close()
 	if err != nil {
@@ -1042,6 +1122,18 @@ func (d *Driver) spawn(m *machine, dir string) (err error) {
 
 	ctx, cancel := context.WithTimeout(d.ctx, 30*time.Second)
 	defer cancel()
+	if qmpNode != nil {
+		if err = d.storeFD("qmp-"+m.id, qmpNode); err == nil {
+			var c net.Conn
+			if c, err = net.FileConn(qmpNode); err == nil {
+				r.q, err = startQMP(ctx, c, true)
+			}
+		}
+		if err != nil {
+			d.kill(r)
+			return fmt.Errorf("qemu: QMP: %w: %s", err, logTail(logPath))
+		}
+	}
 	for r.q == nil {
 		r.q, err = dialQMP(ctx, qnet, qaddr)
 		if err == nil {
@@ -1056,8 +1148,20 @@ func (d *Driver) spawn(m *machine, dir string) (err error) {
 		case <-time.After(20 * time.Millisecond):
 		}
 	}
-	if nsock != "" {
-		if r.net, err = d.attachNet(ctx, m.id, rec.Spec.Net, nsock, gl); err != nil {
+	if nicNode != nil {
+		var c net.Conn
+		if err = d.storeFD("net-"+m.id, nicNode); err == nil {
+			c, err = net.FileConn(nicNode)
+		}
+		if err == nil {
+			r.net, err = d.attachNet(ctx, m.id, rec.Spec.Net, "", c, gl)
+		}
+		if err != nil {
+			d.kill(r)
+			return fmt.Errorf("qemu: guest network: %w: %s", err, logTail(logPath))
+		}
+	} else if nsock != "" {
+		if r.net, err = d.attachNet(ctx, m.id, rec.Spec.Net, nsock, nil, gl); err != nil {
 			d.kill(r)
 			return fmt.Errorf("qemu: guest network: %w: %s", err, logTail(logPath))
 		}
@@ -1078,7 +1182,7 @@ func (d *Driver) spawn(m *machine, dir string) (err error) {
 
 // attachNet creates the VM's userspace network, connects it to qemu's
 // stream netdev socket and forwards gl to the guest agent.
-func (d *Driver) attachNet(ctx context.Context, id string, pol *proto.NetPolicy, sock string, gl net.Listener) (*netstack.Network, error) {
+func (d *Driver) attachNet(ctx context.Context, id string, pol *proto.NetPolicy, sock string, conn net.Conn, gl net.Listener) (*netstack.Network, error) {
 	sb, err := sandboxPolicy(pol)
 	if err != nil {
 		return nil, err
@@ -1089,10 +1193,26 @@ func (d *Driver) attachNet(ctx context.Context, id string, pol *proto.NetPolicy,
 			fwd[uint16(p)] = d.opt.ServerAddr // 10.0.2.2:<server port> -> server
 		}
 	}
-	n, err := netstack.New(netstack.Config{Rules: d.rules, Sandbox: sb, GatewayForwards: fwd,
+	svc := map[uint16]func(net.Conn){proto.TicketPort: func(c net.Conn) {
+		d.mu.Lock()
+		var t string
+		if m := d.vms[id]; m != nil {
+			t = m.ticket
+		}
+		d.mu.Unlock()
+		b, _ := json.Marshal(map[string]string{"ticket": t})
+		_ = c.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		_, _ = c.Write(append(b, '\n'))
+	}}
+	n, err := netstack.New(netstack.Config{Rules: d.rules, Sandbox: sb, GatewayForwards: fwd, GatewayServices: svc,
 		Logf: func(f string, a ...any) { d.opt.Logf("qemu: "+id+": "+f, a...) }})
 	if err != nil {
 		return nil, err
+	}
+	if conn != nil { // the node's end of the NIC socketpair
+		n.Attach(conn)
+		n.Forward(gl, proto.GuestPort)
+		return n, nil
 	}
 	var dl net.Dialer
 	for {
@@ -1124,10 +1244,10 @@ func sandboxPolicy(p *proto.NetPolicy) (*netstack.Sandbox, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sandbox net policy: %w", err)
 	}
-	return &netstack.Sandbox{Allow: allow, Deny: deny}, nil
+	return &netstack.Sandbox{Allow: allow, Deny: deny, NoDNS: p.NoDNS}, nil
 }
 
-func (d *Driver) args(rec vmRecord, dir string, port int, netSock, qmpArg string) ([]string, error) {
+func (d *Driver) args(rec vmRecord, dir string, port int, netSock string, qmpArgs []string) ([]string, error) {
 	esc := func(p string) string { return strings.ReplaceAll(p, ",", ",,") }
 	mem := rec.Spec.Size.MemoryMiB
 	if mem <= 0 {
@@ -1162,12 +1282,19 @@ func (d *Driver) args(rec vmRecord, dir string, port int, netSock, qmpArg string
 	if cpu == "" {
 		cpu = "max"
 	}
+	if rec.Spec.Guest.Channel != nil {
+		// A channel guest's reboot is a new boot with a new ticket (relaunch).
+		a = append(a, "-action", "reboot=shutdown")
+	}
 	if d.seccomp {
 		a = append(a, "-sandbox", "on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny")
 	}
 	netdev := fmt.Sprintf("user,id=net0,hostfwd=tcp:127.0.0.1:%d-:%d", port, proto.GuestPort)
 	nic := "virtio-net-pci,netdev=net0"
-	if netSock != "" {
+	if fd, ok := strings.CutPrefix(netSock, "fd:"); ok {
+		netdev = "stream,id=net0,server=off,addr.type=fd,addr.str=" + fd
+		nic += fmt.Sprintf(",mac=%s,host_mtu=%d", netstack.GuestMAC, netstack.DefaultMTU)
+	} else if netSock != "" {
 		netdev = "stream,id=net0,server=on,addr.type=unix,addr.path=" + esc(netSock)
 		nic += fmt.Sprintf(",mac=%s,host_mtu=%d", netstack.GuestMAC, netstack.DefaultMTU)
 	}
@@ -1199,11 +1326,11 @@ func (d *Driver) args(rec vmRecord, dir string, port int, netSock, qmpArg string
 	if d.virgl != "" {
 		a = append(a, "-device", "virtio-gpu-gl-pci")
 	}
-	return append(a,
+	a = append(a,
 		"-chardev", "file,id=con0,path="+esc(filepath.Join(dir, "console.log")),
 		"-serial", "chardev:con0",
-		"-qmp", qmpArg,
-	), nil
+	)
+	return append(a, qmpArgs...), nil
 }
 
 // createOverlayOn creates rel as an empty overlay backed by the file base
@@ -1222,9 +1349,14 @@ func (d *Driver) watch(m *machine, r *run) {
 	cancel := r.q.subscribe(func(e qmpEvent) {
 		switch e.Name {
 		case "SHUTDOWN":
-			var data struct{ Guest bool }
+			var data struct {
+				Guest  bool
+				Reason string
+			}
 			json.Unmarshal(e.Data, &data)
-			if data.Guest {
+			if data.Reason == "guest-reset" {
+				r.reset.Store(true)
+			} else if data.Guest {
 				r.poweroff.Store(true)
 			}
 		case "RESET": // guest reboot: the agent restarts too
@@ -1249,6 +1381,10 @@ func (d *Driver) watch(m *machine, r *run) {
 		if r.intended.Load() || d.closed.Load() {
 			return
 		}
+		if r.reset.Load() {
+			d.relaunch(m, r)
+			return
+		}
 		msg := "qemu exited unexpectedly"
 		if r.poweroff.Load() {
 			msg = "guest powered off"
@@ -1264,6 +1400,80 @@ func (d *Driver) watch(m *machine, r *run) {
 		}
 	}()
 	go d.waitBoot(m, r)
+}
+
+// storeFD keeps the node's end of a VM socket in systemd's fd store.
+func (d *Driver) storeFD(name string, f *os.File) error {
+	if err := d.fds.put(name, f); err != nil {
+		return fmt.Errorf("fd store: %w", err)
+	}
+	return nil
+}
+
+func (d *Driver) takeFD(name string) *os.File {
+	if d.fds == nil {
+		return nil
+	}
+	return d.fds.take(name)
+}
+
+// relaunch starts a channel guest again after it rebooted (qemu runs with
+// -action reboot=shutdown). Its channel session lived in RAM, so the new boot
+// gets a new ticket. A third reboot within 2 minutes is a boot loop: error.
+func (d *Driver) relaunch(m *machine, r *run) {
+	if _, err := d.lock(m.id); err != nil {
+		return
+	}
+	defer m.op.Unlock()
+	now := time.Now()
+	d.mu.Lock()
+	cur := m.run == r
+	cfg := m.rec.Spec.Guest
+	m.resets = append(slices.DeleteFunc(m.resets, func(t time.Time) bool { return now.Sub(t) > 2*time.Minute }), now)
+	loop := len(m.resets) > 2
+	d.mu.Unlock()
+	if !cur || d.closed.Load() {
+		return
+	}
+	if loop {
+		d.opt.Logf("qemu: %s: reboot loop; serial console tail:\n%s", m.id, consoleTail(filepath.Join(d.vmDir(m.id), "console.log"), 4000))
+		d.setState(m, proto.VMError, "the machine rebooted 3 times within 2 minutes")
+		return
+	}
+	d.opt.Logf("qemu: %s: guest rebooted, relaunching", m.id)
+	d.setState(m, proto.VMStarting, "")
+	if err := d.reticket(d.ctx, m, &cfg); err != nil {
+		d.setState(m, proto.VMError, err.Error())
+		return
+	}
+	cfg.Boot, cfg.FirstBoot = proto.BootRecover, false
+	if err := d.launch(m, cfg); err != nil {
+		d.setState(m, proto.VMError, err.Error())
+	}
+}
+
+// reticket gives a channel guest's next boot a new ticket (its session was
+// in the RAM of the previous boot). Legacy guests keep their config.
+func (d *Driver) reticket(ctx context.Context, m *machine, cfg *proto.GuestConfig) error {
+	if cfg.Channel == nil {
+		return nil
+	}
+	d.mu.Lock()
+	fn := d.ticket
+	d.mu.Unlock()
+	if fn == nil {
+		return errors.New("qemu: no way to get a new boot ticket")
+	}
+	ch, err := fn(ctx, m.id)
+	if err != nil {
+		return fmt.Errorf("new boot ticket: %w", err)
+	}
+	cfg.Channel = ch
+	d.mu.Lock()
+	m.rec.Spec.Guest = cfg.WithoutTicket()
+	d.mu.Unlock()
+	d.saveRec(m)
+	return nil
 }
 
 func (d *Driver) waitBoot(m *machine, r *run) {
@@ -1372,7 +1582,21 @@ func (d *Driver) adoptNet(m *machine, r *run) error {
 	}
 	ctx, cancel := context.WithTimeout(d.ctx, 5*time.Second)
 	defer cancel()
-	if r.net, err = d.attachNet(ctx, m.id, m.rec.Spec.Net, m.rec.NetSock, gl); err != nil {
+	var conn net.Conn
+	if strings.HasPrefix(m.rec.NetSock, "fd:") {
+		f := d.takeFD("net-" + m.id)
+		if f == nil {
+			gl.Close()
+			return errors.New("its NIC socket was not passed back (systemd fd store)")
+		}
+		conn, err = net.FileConn(f)
+		f.Close()
+		if err != nil {
+			gl.Close()
+			return err
+		}
+	}
+	if r.net, err = d.attachNet(ctx, m.id, m.rec.Spec.Net, m.rec.NetSock, conn, gl); err != nil {
 		gl.Close()
 		return err
 	}
@@ -1384,6 +1608,20 @@ func (d *Driver) adoptNet(m *machine, r *run) error {
 // dialAdopt connects to a surviving qemu's QMP socket. A qemu known to be
 // alive (ours) gets up to 10s, as a loaded host can be slow to answer.
 func (d *Driver) dialAdopt(rec vmRecord, ours bool) (*qmp, error) {
+	if rec.QMPNet == "fd" {
+		f := d.takeFD("qmp-" + rec.Spec.SandboxID)
+		if f == nil {
+			return nil, errors.New("its QMP socket was not passed back (systemd fd store)")
+		}
+		c, err := net.FileConn(f)
+		f.Close()
+		if err != nil {
+			return nil, err
+		}
+		ctx, cancel := context.WithTimeout(d.ctx, 10*time.Second)
+		defer cancel()
+		return startQMP(ctx, c, false)
+	}
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		ctx, cancel := context.WithTimeout(d.ctx, 3*time.Second)
@@ -1538,4 +1776,20 @@ func logTail(path string) string {
 		b = b[len(b)-800:]
 	}
 	return strings.TrimSpace(string(b))
+}
+
+// trimTail keeps only the last max bytes of file path.
+func trimTail(path string, max int64) {
+	st, err := os.Stat(path)
+	if err != nil || st.Size() <= max {
+		return
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	buf := make([]byte, max)
+	n, _ := f.ReadAt(buf, st.Size()-max)
+	f.Close()
+	_ = os.WriteFile(path, buf[:n], 0o600)
 }

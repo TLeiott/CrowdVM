@@ -255,6 +255,16 @@ func testSnapshots(t *testing.T, c *cluster) {
 		t.Fatalf("snapshot latest: %v", lt)
 	}
 
+	if enc, _ := get(c.sandbox(t, s), "storage.encrypted").(bool); enc {
+		// Secure layer: only the sandbox's own machine gets the disk key,
+		// so the server cannot read files of a stopped encrypted sandbox.
+		f := c.api(t, "GET", "/snapshots/"+snap+"/files?path=snapdir/a.txt", nil)
+		expect(t, f.status == 409 && strings.Contains(string(f.body), "snapshot_encrypted"), "encrypted snapshot file: %d %q", f.status, tail(string(f.body), 200))
+		dl := c.api(t, "GET", "/snapshots/"+snap+"/download", nil)
+		expect(t, dl.status == 409, "encrypted snapshot download: %v", dl.status)
+		c.cli(t, "snapshot", "delete", "--all", s, "--yes").ok(t)
+		return
+	}
 	tr := c.cliT(t, 5*time.Minute, "snapshot", "tree", snap).ok(t)
 	expectContains(t, tr.out, "snapdir/sub/b.txt", "snapshot tree")
 

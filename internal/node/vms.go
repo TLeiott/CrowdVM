@@ -153,7 +153,10 @@ func (n *Node) CreateVM(spec proto.VMSpec) (proto.VMStatus, error) {
 		return proto.VMStatus{}, fmt.Errorf("sandbox id %q is reserved", spec.SandboxID)
 	}
 	n.noteWarmShapeLocked(spec)
-	w := n.takeWarmLocked(spec) // SIZE-012: its resources become the sandbox's
+	var w *warmVM
+	if spec.Guest.Channel == nil { // adopting hands the guest its config through this node
+		w = n.takeWarmLocked(spec) // SIZE-012: its resources become the sandbox's
+	}
 	u := n.usageWithWarmLocked()
 	var why string
 	switch {
@@ -255,7 +258,9 @@ func (n *Node) startWatch(r *vmRec) {
 	ctx, cancel := context.WithCancel(n.ctx)
 	r.cancel = cancel
 	go n.watch(ctx, r)
-	go n.guestEvents(ctx, r)
+	if r.spec.Guest.Channel == nil { // channel guests send their events to the server themselves
+		go n.guestEvents(ctx, r)
+	}
 }
 
 func (n *Node) stopWatch(r *vmRec) {

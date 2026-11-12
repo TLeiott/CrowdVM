@@ -61,6 +61,9 @@ type NodeOptions struct {
 	// LazyChain: boot from a snapshot chain that is not local (VMStatus
 	// Hydrating) until the test calls FinishHydration (LIFE-013).
 	LazyChain bool
+	// GuestChannel: advertise guest-channel boots (the server then sends a
+	// boot stub; a test runs the guest side itself).
+	GuestChannel bool
 	// DirectHost: publish direct ports (ssh, VMSpec.DirectPorts, PUT
 	// /v1/vms/{id}/direct-ports) as DirectHost:<port>; "" = only the fake
 	// ssh endpoint, and direct-ports answers 409 direct_disabled.
@@ -157,7 +160,7 @@ func StartFakeNode(serverURL string, o NodeOptions) (*FakeNode, error) {
 	for _, im := range o.Images {
 		n.images[im] = true
 	}
-	n.info = proto.NodeInfo{Name: o.Name, Version: "fake", OS: "linux", Arch: "amd64", Driver: "fake", Labels: o.Labels, Bench: bench, Capacity: o.Capacity, Images: o.Images, DirectHost: o.DirectHost, LazyChain: o.LazyChain, GPUs: o.PassthroughGPUs, Paused: o.Paused}
+	n.info = proto.NodeInfo{Name: o.Name, Version: "fake", OS: "linux", Arch: "amd64", Driver: "fake", Labels: o.Labels, Bench: bench, Capacity: o.Capacity, Images: o.Images, DirectHost: o.DirectHost, LazyChain: o.LazyChain, GPUs: o.PassthroughGPUs, Paused: o.Paused, GuestChannel: o.GuestChannel}
 	body, _ := json.Marshal(proto.RegisterRequest{JoinToken: o.JoinToken, Info: n.info})
 	resp, err := http.Post(n.server+"/node/v1/register", "application/json", bytes.NewReader(body))
 	if err != nil {

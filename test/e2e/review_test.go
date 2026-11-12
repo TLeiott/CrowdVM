@@ -103,9 +103,15 @@ func testDockerResume(t *testing.T, c *cluster) {
 		"sudo tee /etc/systemd/system/set-hostname.service >/dev/null && sudo systemctl enable --now set-hostname.service >/dev/null 2>&1")
 	c.cliT(t, 6*time.Minute, "stop", id, "--wait").ok(t)
 	out := t.TempDir()
-	c.cliT(t, 5*time.Minute, "snapshot", "pull", id, "-o", out).ok(t)
-	vb, err := os.ReadFile(filepath.Join(out, "docker", "cvol", "v.txt"))
-	expect(t, err == nil && strings.TrimSpace(string(vb)) == "volfile", "snapshot pull docker/cvol/v.txt: %v %q", err, vb)
+	if enc, _ := get(c.sandbox(t, id), "storage.encrypted").(bool); enc {
+		// Secure layer: the server cannot read a stopped encrypted disk.
+		r := c.cliT(t, time.Minute, "snapshot", "pull", id, "-o", out)
+		expect(t, strings.Contains(r.out, "snapshot_encrypted"), "snapshot pull of an encrypted sandbox: %s", r.out)
+	} else {
+		c.cliT(t, 5*time.Minute, "snapshot", "pull", id, "-o", out).ok(t)
+		vb, err := os.ReadFile(filepath.Join(out, "docker", "cvol", "v.txt"))
+		expect(t, err == nil && strings.TrimSpace(string(vb)) == "volfile", "snapshot pull docker/cvol/v.txt: %v %q", err, vb)
+	}
 	c.cliT(t, 6*time.Minute, "resume", id).ok(t)
 	eventually(t, 2*time.Minute, 3*time.Second, "containers running again after resume", func() (bool, string) {
 		r := c.execR(t, id, "docker ps --format '{{.Names}}' | sort | tr '\\n' ' '")

@@ -54,6 +54,60 @@ const (
 	BootWarm BootKind = "warm"
 )
 
+// GuestChannel is how a guest reaches the server's guest channel
+// (GET /guest/v1/connect, Upgrade: crowdvm-guest, then TLS and a JSON hello).
+type GuestChannel struct {
+	URL    string `json:"url"`    // server base URL as the guest reaches it
+	Pin    string `json:"pin"`    // base64 SHA-256 of the server's channel certificate SPKI
+	Ticket string `json:"ticket"` // one-time boot ticket
+	// Addr is where the guest dials (host:port), set by the node to its
+	// gateway alias of the server (10.0.2.2:<port>): no DNS before the
+	// channel is up. "" = the URL's host. TLS and Host still use the URL.
+	Addr string `json:"addr,omitempty"`
+	// TicketFrom: the ticket is not on the config drive; the guest reads it
+	// from this address, a service of its node's network that keeps it in
+	// RAM (a file would let the node's user redeem it first).
+	TicketFrom string `json:"ticketFrom,omitempty"`
+}
+
+// TicketPort is the gateway port (10.0.2.2) where a node serves its VM's
+// boot ticket.
+const TicketPort = 7072
+
+// WithoutTicket returns g with the boot ticket removed (for anything written
+// to the node's disk).
+func (g GuestConfig) WithoutTicket() GuestConfig {
+	if g.Channel != nil && g.Channel.Ticket != "" {
+		ch := *g.Channel
+		ch.Ticket = ""
+		g.Channel = &ch
+	}
+	return g
+}
+
+// GuestHello is the guest's first line on the channel (inside TLS).
+type GuestHello struct {
+	SandboxID string `json:"sandboxId"`
+	Ticket    string `json:"ticket,omitempty"`  // first connect of a boot
+	Session   string `json:"session,omitempty"` // reconnects (agent restart, reboot, network blip)
+	Version   string `json:"version,omitempty"`
+	// Disk (ticket redemption at boot): "luks" when the guest keeps its
+	// writes on the encrypted data partition, "plain" when it cannot
+	// (an older disk), "" from agents that do not know.
+	Disk string `json:"disk,omitempty"`
+}
+
+// GuestWelcome is the server's answer: the session for reconnects and the
+// full guest config (Token and Channel unset).
+type GuestWelcome struct {
+	Error   string       `json:"error,omitempty"`
+	Session string       `json:"session,omitempty"`
+	Config  *GuestConfig `json:"config,omitempty"`
+	// DataKey (base64, 64 bytes) unlocks the sandbox's encrypted data
+	// partition. Sent only on ticket redemption, never on reconnects.
+	DataKey string `json:"dataKey,omitempty"`
+}
+
 type GuestConfig struct {
 	SandboxID  string   `json:"sandboxId"`
 	Token      string   `json:"token"`      // bearer token required on every guest API call
@@ -86,6 +140,16 @@ type GuestConfig struct {
 	// (LIFE-018): a saved snapshot's learned startup playbook. Merged ahead
 	// of the disk's own ~/.crowdvm/playbook.json. Optional.
 	Playbook []string `json:"playbook,omitempty"`
+	// Channel (secure layer): this config is a boot stub. The guest fetches
+	// the real config (env, secrets, keys, ...) from the server over TLS
+	// pinned to Channel.Pin and serves its API only on that channel; Token
+	// then authorizes only the node's ops subset (health, prepare-stop,
+	// sync, freeze, thaw, playbook/finish). nil = legacy config drive.
+	Channel *GuestChannel `json:"channel,omitempty"`
+	// Egress (channel guests): "server" sends the sandbox's TCP and DNS
+	// through the guest channel and out of the server; the node's netstack
+	// then lets the VM reach only the server. "" = out through the node.
+	Egress string `json:"egress,omitempty"`
 	// ZeroDataRetention: the owner's account has zero data retention on.
 	// Implies NoMonitoring (the server sets both); in addition the guest
 	// keeps no prompt transcripts/events on disk after a turn ends.
@@ -197,6 +261,10 @@ type NodeInfo struct {
 	// need not pull the chain (POST /v1/snapshots/{id}/fetch) before
 	// POST /v1/vms; the node needs only the base image.
 	LazyChain bool `json:"lazyChain,omitempty"`
+	// GuestChannel: the node boots guests that fetch their config from the
+	// server over the pinned guest channel (GuestConfig.Channel) and do not
+	// follow guest events or push guest firewall rules for them.
+	GuestChannel bool `json:"guestChannel,omitempty"`
 	// GPUs: the GPUs this node passes through to sandboxes (VFIO; node
 	// config gpu.passthrough, validated when the node starts). Only these
 	// make a node eligible for placement gpu, and only while one is free
@@ -365,6 +433,9 @@ type DirectPortsRequest struct {
 type NetPolicy struct {
 	Allow []string `json:"allow,omitempty"` // if set, only these destinations are reachable
 	Deny  []string `json:"deny,omitempty"`
+	// NoDNS: the node's resolver (10.0.2.3) does not answer this VM (its
+	// DNS goes through the server; a node resolver would be a side channel).
+	NoDNS bool `json:"noDns,omitempty"`
 }
 
 type VMStatus struct {

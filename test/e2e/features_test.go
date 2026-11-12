@@ -62,7 +62,7 @@ func testEnvironments(t *testing.T, c *cluster) {
 	gitRun(t, work, "add", ".")
 	gitRun(t, work, "-c", "user.email=e2e@x", "-c", "user.name=e2e", "commit", "-qm", "init")
 	gitRun(t, gd, "clone", "-q", "--bare", work, filepath.Join(gd, "proj.git"))
-	port := freePort(t)
+	port := c.gitPort
 	daemon := exec.Command("git", "daemon", "--reuseaddr", "--export-all", "--base-path="+gd, "--listen="+ip, fmt.Sprintf("--port=%d", port), gd)
 	daemon.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
 	must(t, daemon.Start())

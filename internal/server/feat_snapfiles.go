@@ -170,6 +170,11 @@ func (f *snapFiles) drop(snapID string, in *snapInsp) {
 
 func (f *snapFiles) boot(sn *Snapshot, in *snapInsp) {
 	defer close(in.done)
+	if f.s.encryptedChain(sn.ID) {
+		// The inspector VM has no guest channel to fetch the disk key over.
+		in.err = Err(409, "snapshot_encrypted", "This snapshot's disk is encrypted, and only the sandbox's own machine gets its key. Resume the sandbox (or fork it) to read its files.")
+		return
+	}
 	ctx, cancel := context.WithTimeout(f.s.ctx, 30*time.Minute)
 	defer cancel()
 	conn, err := f.pickNode(sn)
@@ -180,6 +185,7 @@ func (f *snapFiles) boot(sn *Snapshot, in *snapInsp) {
 	var st struct {
 		ID string `json:"id"`
 	}
+	f.s.grantChain(conn.ID, sn.ID)
 	err = conn.Do(ctx, "POST", "/v1/inspect", map[string]any{"snapshotId": sn.ID, "imageId": sn.ImageID, "token": randToken(32)}, &st)
 	if err != nil {
 		var ne *NodeError

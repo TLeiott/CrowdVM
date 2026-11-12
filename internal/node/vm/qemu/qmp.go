@@ -48,17 +48,32 @@ func dialQMP(ctx context.Context, network, addr string) (*qmp, error) {
 	if err != nil {
 		return nil, err
 	}
-	c.SetDeadline(time.Now().Add(5 * time.Second))
+	return startQMP(ctx, c, true)
+}
+
+// startQMP runs the client on c. fresh: a new monitor connection (greeting,
+// then capabilities); otherwise one a previous node process already set up
+// (passed back from systemd's fd store).
+func startQMP(ctx context.Context, c net.Conn, fresh bool) (*qmp, error) {
 	dec := json.NewDecoder(c)
-	var greet qmpMsg
-	if err := dec.Decode(&greet); err != nil || greet.QMP == nil {
-		c.Close()
-		return nil, fmt.Errorf("qmp greeting: %v", err)
+	if fresh {
+		c.SetDeadline(time.Now().Add(5 * time.Second))
+		var greet qmpMsg
+		if err := dec.Decode(&greet); err != nil || greet.QMP == nil {
+			c.Close()
+			return nil, fmt.Errorf("qmp greeting: %v", err)
+		}
+		c.SetDeadline(time.Time{})
 	}
-	c.SetDeadline(time.Time{})
-	q := &qmp{c: c, resp: make(chan qmpMsg, 16), subs: map[int]func(qmpEvent){}, done: make(chan struct{})}
+	// Ids start somewhere new: a reply the previous node process left
+	// unread must not match a command of this one.
+	q := &qmp{c: c, id: int(time.Now().UnixNano() % 1e9), resp: make(chan qmpMsg, 16), subs: map[int]func(qmpEvent){}, done: make(chan struct{})}
 	go q.read(dec)
-	if err := q.cmd(ctx, "qmp_capabilities", nil, nil); err != nil {
+	cmd := "qmp_capabilities"
+	if !fresh {
+		cmd = "query-status" // capabilities were negotiated already
+	}
+	if err := q.cmd(ctx, cmd, nil, nil); err != nil {
 		c.Close()
 		return nil, err
 	}
