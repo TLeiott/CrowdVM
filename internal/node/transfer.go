@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/crowdvm/crowdvm/internal/node/vm"
 	"github.com/crowdvm/crowdvm/internal/proto"
 )
 
@@ -416,6 +417,15 @@ func (n *Node) UploadSnapshot(ctx context.Context, sandboxID, id string) error {
 		path, err := n.drv.Store().SnapshotPath(id)
 		if err != nil {
 			return err
+		}
+		// A sparse layer goes up as a copy of its allocated data only (bugs-r18-opus 2).
+		if c, ok := n.drv.Store().(vm.Compactor); ok {
+			if cp, err := c.CompactSnapshot(id, filepath.Join(n.cfg.DataDir, "tmp")); err != nil {
+				n.log.Warn("could not compact a sparse snapshot; uploading it as is", "snapshot", id, "err", err)
+			} else if cp != "" {
+				defer os.Remove(cp)
+				path = cp
+			}
 		}
 		sum, size, err := fileSHA256(path)
 		if err != nil {

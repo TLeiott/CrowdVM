@@ -153,13 +153,13 @@ Deleted every sandbox (`s1`, `s2`, `c1`–`c3`, `f1`, `f3`, `d2`, `k1`, `k2`, `x
 
 ## Fixes
 
-4 of 7 fixed; bug 1 by the same change as bugs-r18-sonnet 1. Tests: `internal/server/bughunt_r18_test.go` (1), `internal/server/fix_r18_test.go` (4), `internal/node/vm/qemu/fix_r18_test.go` (3), `cmd/crowdvm-node/fix_r18_test.go` (5).
+5 of 7 fixed; bug 1 by the same change as bugs-r18-sonnet 1. Tests: `internal/server/bughunt_r18_test.go` (1), `internal/server/fix_r18_test.go` (4), `internal/node/vm/qemu/fix_r18_test.go` (2, 3), `cmd/crowdvm-node/fix_r18_test.go` (5).
 
 1. **Copy of a copy cut off mid re-encryption**: no copy of a sandbox or snapshot that still waits for its own key (409 `disk_rekey_pending`, retryable).
+2. **Sparse first snapshot uploaded at full size** (`transfer.go` `UploadSnapshot`, qemu `store.CompactSnapshot`): a layer whose file is less than half allocated is copied with `qemu-img convert -O qcow2 -B <its backing>` into the node's `tmp/` and that copy is hashed and uploaded. Same backing reference and guest view, only the allocated clusters; the copy is deterministic, so a retried upload has the same sha256. If the copy fails (e.g. a lazy chain not yet local), the layer goes up as before. Live: a `--new-key` `small` copy's first layer, 52 620 820 480 bytes apparent and 1.53 GB allocated, went up and is stored as 1 530 789 888 bytes.
 3. **Boot timeout kills a re-encryption** (`qemu.go` `waitBoot`, `rekeyProgressing`): while the serial console shows preinit's re-encryption progress (written in the last minute), the boot gets another boot timeout, up to 2 hours in total.
 4. **A queued deploy loses its parent** (`stranded.go` `snapshotsNeeded`): the parent of a boot still waiting for a node (`extra.pendingBoot.parent`) is kept, like a head.
 5. **A bad build crash-loops** (`cmd/crowdvm-node/main.go`): a supervised `run` counts the start of an updated build (and rolls it back after the limit) first, with only the data dir, before reading its config or anything else it could fail at.
 
 Not fixed:
-2. **Sparse first snapshot uploaded at full size**: needs a sparse-aware snapshot upload (or compacting the layer against its backing file before the upload); a change in the node's transfer path, kept for a separate piece of work. Until then a `--new-key` copy's first snapshot costs about its disk size in transfer and server storage.
 6. **`update` says up to date before the restart** and 7. **pinned to an outdated node, told "no room"**: cosmetic messages, kept for later.
