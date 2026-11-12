@@ -49,10 +49,19 @@ func (s *Server) handleLimits(c *Ctx) error {
 		}
 	}
 	avail := s.sizeAvailability()
+	fits := s.fitsNow()
 	var types []map[string]any
 	for _, sz := range api.Sizes {
 		r := avail[sz.Name]
-		types = append(types, map[string]any{"type": sz.Name, "available": r == "", "reason": nz(r)})
+		// fitsNow: how many of this size this caller can start right now
+		// (pool room capped by the account's limits; an estimate).
+		n := fits[sz.Name]
+		if !canStart || r != "" {
+			n = 0
+		} else if maxActive > 0 {
+			n = min(n, maxActive-active)
+		}
+		types = append(types, map[string]any{"type": sz.Name, "available": r == "", "reason": nz(r), "fitsNow": n})
 	}
 	nullLimit := func(v int) any {
 		if v <= 0 {

@@ -2029,7 +2029,11 @@ Flags:
 ## crowdvm limits
 
 ```text
-Show start limits, active sandboxes and credits
+Show start limits, active sandboxes, credits and the sizes you can start.
+"N fit now" per size is how many sandboxes of that size you could start right
+now: free room in the pool, capped by your account limits. It is an estimate
+(others start sandboxes too); --json has it as machineTypes[].fitsNow. Start
+with --fail-fast to learn at once when there is no room after all.
 
 Usage:
   crowdvm limits [flags]

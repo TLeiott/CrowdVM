@@ -28,6 +28,7 @@ commands local. Details: the ` + "`" + `crowdvm` + "`" + ` skill (` + "`" + `cro
 - Files: ` + "`" + `crowdvm push "$id" .` + "`" + ` sends git-tracked and new, not-ignored files one way; ` + "`" + `crowdvm scp -r "$id":/home/user/<folder>/dist ./dist` + "`" + ` copies results back
 - URL for a port: ` + "`" + `crowdvm host "$id" 3000` + "`" + ` (opens on the team's LAN or Tailscale)
 - Untrusted code or other people's work: add ` + "`" + `--no-env` + "`" + `; one sandbox per end user
+- As availability allows: ` + "`" + `crowdvm limits --json` + "`" + ` gives ` + "`" + `machineTypes[].fitsNow` + "`" + ` (how many of each size you can start now); send out at most that many pieces, start each with ` + "`" + `--fail-fast` + "`" + `, and run a piece locally on ` + "`" + `no_ready_machine` + "`" + ` instead of waiting
 - Always pass the sandbox id. When done: ` + "`" + `crowdvm stop "$id"` + "`" + ` (keeps the disk; ` + "`" + `crowdvm resume "$id"` + "`" + ` later) or ` + "`" + `crowdvm delete "$id" --yes` + "`" + ` (erases it)
 `
 

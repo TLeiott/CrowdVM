@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/crowdvm/crowdvm/internal/proto"
@@ -186,5 +187,42 @@ func TestSchedulerHotNodeKeepsLocality(t *testing.T) {
 	// A new sandbox has no snapshot anywhere: the cool node gets it.
 	if r := env.Do(key, "POST", "/api/v1/sandboxes", map[string]any{"type": "small"}); r.Status != 202 || r.Str("sandbox.nodeId") != b.ID {
 		t.Fatalf("new sandbox on the hot node: %s", r)
+	}
+}
+
+// fitsNow tells an agent how many sandboxes of each size it can start now.
+func TestLimitsFitsNow(t *testing.T) {
+	env := servertest.New(t)
+	key := env.AdminKey
+	fits := func() map[string]string {
+		t.Helper()
+		r := env.Do(key, "GET", "/api/v1/limits", nil)
+		out := map[string]string{}
+		for _, ty := range []string{"small", "default", "large", "xlarge"} {
+			for i := 0; i < 4; i++ {
+				if r.Str(fmt.Sprintf("machineTypes.%d.type", i)) == ty {
+					out[ty] = r.Str(fmt.Sprintf("machineTypes.%d.fitsNow", i))
+				}
+			}
+		}
+		return out
+	}
+	if f := fits(); f["small"] != "0" || f["xlarge"] != "0" {
+		t.Fatalf("no nodes: %v", f)
+	}
+	n := env.StartNode(servertest.NodeOptions{Name: "n", Capacity: proto.Capacity{VCPU: 16, MemoryMiB: 65536, DiskGiB: 1000, MaxSandboxes: 20}})
+	if f := fits(); f["small"] != "8" || f["default"] != "4" || f["large"] != "2" || f["xlarge"] != "1" {
+		t.Fatalf("empty node: %v", f)
+	}
+	if r := env.Do(key, "POST", "/api/v1/sandboxes", map[string]any{"type": "large"}); r.Status != 202 {
+		t.Fatalf("create: %s", r)
+	}
+	if f := fits(); f["small"] != "4" || f["large"] != "1" || f["xlarge"] != "0" {
+		t.Fatalf("after a large: %v", f)
+	}
+	// A host short of memory takes nothing new.
+	n.SetLoad(&proto.HostLoad{CPUBusy: 0.1, MemTotalMiB: 65536, MemAvailMiB: 600})
+	if f := fits(); f["small"] != "0" {
+		t.Fatalf("host low on memory: %v", f)
 	}
 }

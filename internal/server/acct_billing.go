@@ -975,7 +975,7 @@ func (s *Server) limitsPolicy(wallet string, out map[string]any) {
 		if types, ok := out["machineTypes"].([]map[string]any); ok {
 			for _, t := range types {
 				if !slices.Contains(p.AllowedSizes, t["type"].(string)) {
-					t["available"], t["reason"] = false, "not_allowed_by_policy"
+					t["available"], t["reason"], t["fitsNow"] = false, "not_allowed_by_policy", 0
 				}
 			}
 		}

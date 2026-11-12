@@ -549,7 +549,12 @@ func (a *App) limitsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "limits",
 		Short: "Show start limits, active sandboxes and credits",
-		Args:  cobra.NoArgs,
+		Long: `Show start limits, active sandboxes, credits and the sizes you can start.
+"N fit now" per size is how many sandboxes of that size you could start right
+now: free room in the pool, capped by your account limits. It is an estimate
+(others start sandboxes too); --json has it as machineTypes[].fitsNow. Start
+with --fail-fast to learn at once when there is no room after all.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := a.client()
 			if err != nil {
@@ -581,7 +586,11 @@ func (a *App) limitsCmd() *cobra.Command {
 					for _, t := range mt {
 						m, _ := t.(map[string]any)
 						if m["available"] == true {
-							ok2 = append(ok2, fmt.Sprint(m["type"]))
+							name := fmt.Sprint(m["type"])
+							if n, ok := m["fitsNow"]; ok { // older servers omit it
+								name += fmt.Sprintf(" (%v fit now)", n)
+							}
+							ok2 = append(ok2, name)
 						} else {
 							blocked = append(blocked, fmt.Sprintf("  %v: %v", m["type"], m["reason"]))
 						}

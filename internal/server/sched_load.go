@@ -142,3 +142,41 @@ func assess(c proto.Capacity, used proto.Usage, sz api.SizeSpec, ll *liveLoad) (
 	cpu, mem = min(max(cpu, 0), 1), min(max(mem, 0), 1)
 	return 100*(1-max(cpu, mem)) + 50*(1-(cpu+mem)/2), hot, ""
 }
+
+// fitsNow counts per size how many more sandboxes of that size the pool
+// could place right now: each usable node is filled with that size by the
+// same checks pickNode runs (reservations, then a host short of memory) for
+// a request without placement rules. An estimate for agents deciding how
+// much work to send out: other users start sandboxes too.
+func (s *Server) fitsNow() map[string]int {
+	out := map[string]int{}
+	for _, sz := range api.Sizes {
+		out[sz.Name] = 0
+	}
+	nodes, err := s.Nodes()
+	if err != nil {
+		return out
+	}
+	online := s.nodes.online()
+	reserved := s.reservations("")
+	haveCurrent := s.currentNodeOnline()
+	now := time.Now()
+	for _, n := range nodes {
+		conn := online[n.ID]
+		if conn == nil || n.Disabled || n.Info.Paused || (haveCurrent && nodeOutdated(n)) {
+			continue
+		}
+		ll := conn.liveLoad(now)
+		for _, sz := range api.Sizes {
+			used := reserved[n.ID]
+			for {
+				if _, _, why := assess(n.Info.Capacity, used, sz, ll); why != "" {
+					break
+				}
+				out[sz.Name]++
+				used.VCPU, used.MemoryMiB, used.DiskGiB, used.VMs = used.VCPU+sz.VCPU, used.MemoryMiB+sz.MemoryMiB, used.DiskGiB+sz.DiskGiB, used.VMs+1
+			}
+		}
+	}
+	return out
+}

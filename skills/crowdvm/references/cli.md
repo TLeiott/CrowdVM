@@ -266,7 +266,7 @@ crowdvm login [--server URL] [--api-key K | --key-stdin | --email E [--code C] |
 crowdvm login --json                # no terminal: prints URL and code, then: crowdvm login --wait
 crowdvm logout
 crowdvm onboard [--for own|others] [--email E] [--server URL]
-crowdvm limits [--all]              # start limits, active sandboxes, credits
+crowdvm limits [--all]              # start limits, active sandboxes, credits, fitsNow per size
 crowdvm credits                     # alias wallet
 crowdvm credits transfer --to WALLET --amount N [--from WALLET]
 crowdvm billing [--all] | billing plan | billing extra-starts on|off [--monthly-cap N]
