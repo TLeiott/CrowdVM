@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/crowdvm/crowdvm/internal/client"
+	"github.com/crowdvm/crowdvm/internal/version"
 	"github.com/spf13/cobra"
 )
 
@@ -243,7 +245,14 @@ available. It never installs anything on its own. Turn the check off with
 			}
 			ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Minute)
 			defer cancel()
-			body, err := a.newClient(srv, "").DownloadBinary(ctx, runtime.GOOS, runtime.GOARCH, name)
+			cl := a.newClient(srv, "")
+			// The list's checksum catches a damaged or cut-off download.
+			// Servers before checksums list none: rely on --version below.
+			var want client.DownloadFile
+			if l, err := cl.Downloads(ctx); err == nil {
+				want, _ = l.Find(runtime.GOOS, runtime.GOARCH, name)
+			}
+			body, err := cl.DownloadBinary(ctx, runtime.GOOS, runtime.GOARCH, name)
 			if err != nil {
 				return err
 			}
@@ -261,6 +270,9 @@ available. It never installs anything on its own. Turn the check off with
 			if err == nil && n < 1<<20 {
 				err = fmt.Errorf("the download is only %d bytes; not a crowdvm binary", n)
 			}
+			if got := hex.EncodeToString(h.Sum(nil)); err == nil && want.SHA256 != "" && (got != want.SHA256 || n != want.Size) {
+				err = fmt.Errorf("the download does not match the server's checksum (sha256 %s, %d bytes; want %s, %d bytes); keeping %s", got, n, want.SHA256, want.Size, exe)
+			}
 			if err != nil {
 				return err
 			}
@@ -271,7 +283,7 @@ available. It never installs anything on its own. Turn the check off with
 				// damaged): never replace a working CLI with it (bugs-r8-sonnet).
 				return fmt.Errorf("the binary from %s does not run on this machine (crowdvm --version failed); keeping %s", srv, exe)
 			}
-			cmpV, comparable := compareVersions(offered, client.Version)
+			cmpV, comparable := version.Compare(offered, client.Version)
 			available := !sameHash(exe, h.Sum(nil))
 			if comparable {
 				available = cmpV > 0

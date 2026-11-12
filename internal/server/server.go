@@ -90,6 +90,10 @@ type Config struct {
 	// reads it from guest /v1/health) get 409 agent_outdated on calls into
 	// the sandbox (CMD-012). "" = MinGuestVersion; "dev" builds always pass.
 	MinGuestVersion string
+	// NodeUpdateGrace: an outdated node (below compat.RequiredNodeGen)
+	// keeps its running sandboxes this long before they move to other
+	// nodes (0 = DefaultNodeUpdateGrace).
+	NodeUpdateGrace time.Duration
 	// OutputCapPerHour: stored command output per wallet and hour, and the
 	// same again for other processes (CMD-020; 0 = 10 MiB, <0 = no cap).
 	// Output beyond it is not kept and the record says outputTruncated.
@@ -178,6 +182,9 @@ func (c *Config) defaults() {
 	}
 	if c.CIRetryInterval == 0 {
 		c.CIRetryInterval = CIRetryInterval
+	}
+	if c.NodeUpdateGrace == 0 {
+		c.NodeUpdateGrace = DefaultNodeUpdateGrace
 	}
 	if c.MinGuestVersion == "" {
 		c.MinGuestVersion = MinGuestVersion
@@ -283,9 +290,10 @@ type Server struct {
 
 	hist *histState // coordinator copy of command history (feat_history.go)
 
-	earnMu      sync.Mutex
-	evacUploads map[string]time.Time    // node -> last evacuation upload round (zero: running), guarded by earnMu
-	earned      map[string]nodeEarnings // node id -> cached earnings (nodes_evacuate.go)
+	earnMu        sync.Mutex
+	evacUploads   map[string]time.Time    // node -> last evacuation upload round (zero: running), guarded by earnMu
+	outdatedSteps map[string]time.Time    // node -> last outdated evacuation step (compat.go), guarded by earnMu
+	earned        map[string]nodeEarnings // node id -> cached earnings (nodes_evacuate.go)
 
 	ctx    context.Context
 	cancel context.CancelFunc

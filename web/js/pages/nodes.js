@@ -85,7 +85,7 @@ export default async function (ctx) {
         : n.disabled ? { label: 'Resume scheduling', ico: 'play', onClick: () => update(n, { disabled: false }, `${n.name} takes new sandboxes again`) }
           : { label: 'Drain (no new sandboxes)', ico: 'pause', onClick: () => update(n, { disabled: true }, `${n.name} takes no new sandboxes`) },
       !evacuating(n) ? { label: 'Evacuate…', ico: 'upload', onClick: () => evacuate(n) }
-        : inGrace(n) ? { label: 'Cancel evacuation', ico: 'x', onClick: () => cancelEvacuation(n) } : null,
+        : inGrace(n) && n.evacuation?.reason !== 'outdated' ? { label: 'Cancel evacuation', ico: 'x', onClick: () => cancelEvacuation(n) } : null,
       { label: 'Rename…', ico: 'edit', onClick: () => editNode(n, 'name') },
       { label: 'Labels…', ico: 'edit', onClick: () => editNode(n, 'labels') },
       '-',
@@ -197,12 +197,17 @@ const PAUSED = { owner: 'paused by its owner', schedule: 'outside its schedule',
 // stateChips: drained, evacuating (with Cancel during the grace period) and
 // paused by the node's owner.
 function stateChips(n, manage) {
-  const ev = n.evacuation, grace = inGrace(n);
+  const ev = n.evacuation, grace = inGrace(n), up = n.update || {};
+  const outdated = ev?.reason === 'outdated';
   return [
+    up.state === 'outdated' || up.state === 'incompatible'
+      ? h('span.chip.warn', { title: `${up.message || 'This node misses a required update.'} On the machine: ${up.command || 'crowdvm-node update'}` },
+        outdated && grace ? `update required · by ${hhmm(ev.deadline)}` : 'update required')
+      : up.state === 'available' ? h('span.chip.plain', { title: `${up.latest} is available. On the machine: ${up.command || 'crowdvm-node update'}` }, 'update available') : null,
     n.disabled && !ev ? h('span.chip.warn.plain', { title: 'Drained: takes no new sandboxes' }, 'drained') : null,
-    ev ? h('span.chip.warn', { title: grace ? 'Its sandboxes are stopped and moved to other nodes at this time' : 'Moving its sandboxes and their snapshots off this node' },
+    ev && !outdated ? h('span.chip.warn', { title: grace ? 'Its sandboxes are stopped and moved to other nodes at this time' : 'Moving its sandboxes and their snapshots off this node' },
       grace ? `evacuating · until ${hhmm(ev.deadline)}` : 'evacuating') : null,
-    ev && grace && manage ? btn('Cancel', { size: 'sm', kind: 'ghost', title: 'Cancel the evacuation (the node stays drained)', onClick: manage.cancelEvac }) : null,
+    ev && !outdated && grace && manage ? btn('Cancel', { size: 'sm', kind: 'ghost', title: 'Cancel the evacuation (the node stays drained)', onClick: manage.cancelEvac }) : null,
     n.paused || n.info?.paused ? h('span.chip.plain', { title: 'Takes no new sandboxes until its owner resumes it; running ones continue' }, PAUSED[n.pauseReason || n.info?.pauseReason] || 'paused') : null,
   ];
 }

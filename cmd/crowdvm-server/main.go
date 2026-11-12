@@ -127,6 +127,7 @@ func serve(args []string) error {
 	savedIncl := fl.Int("saved-snapshots-included", 10, "saved snapshots included per account or organization (an admin wallet policy overrides it)")
 	savedDaily := fl.Float64("saved-snapshot-daily-dollars", 0.056, "daily price of each saved snapshot above the included count, charged in credits")
 	outputCap := fl.Int64("output-cap-per-hour", server.DefaultOutputCapPerHour, "stored command output per wallet and hour, and again for other processes, bytes (-1 = no cap)")
+	nodeGrace := fl.Duration("node-update-grace", server.DefaultNodeUpdateGrace, "how long a node that misses a required update keeps its running sandboxes before they move to other nodes (it gets no new ones at once)")
 	minGuest := fl.String("min-guest-version", server.MinGuestVersion, "oldest guest agent version calls into a sandbox accept (older: 409 agent_outdated; dev builds always pass)")
 	noChannel := fl.Bool("no-guest-channel", false, "boot sandboxes the legacy way: the node gets their whole config (secrets included) and proxies their API (default: guests fetch their config from this server over a pinned channel)")
 	nodeEgress := fl.Bool("node-egress", false, "let sandboxes reach the internet through their node (default: through the guest channel and out of this server)")
@@ -156,7 +157,7 @@ func serve(args []string) error {
 		StartsPerMinute: *perMin, StartsPerHour: *perHour, StartsPerDay: *perDay, MaxActive: *maxActive, IPRateLimit: *ipLimit,
 		SnapshotInterval: time.Duration(*snapSec) * time.Second, DefaultImage: *image, StartWait: *startWait,
 		SMTP:  server.SMTPConfig{Addr: *smtpAddr, From: *smtpFrom, Username: *smtpUser, Password: *smtpPass},
-		WebFS: webFS, Logger: log, TrustProxy: *trustProxy, DownloadsDir: *downloadsDir, MinGuestVersion: *minGuest,
+		WebFS: webFS, Logger: log, TrustProxy: *trustProxy, DownloadsDir: *downloadsDir, MinGuestVersion: *minGuest, NodeUpdateGrace: *nodeGrace,
 		SavedSnapshotsIncluded: *savedIncl, SavedSnapshotExtraDollarsPerDay: *savedDaily, OutputCapPerHour: *outputCap,
 		WebhookAllowLocal: *hooksLocal,
 		NoGuestChannel:    *noChannel,

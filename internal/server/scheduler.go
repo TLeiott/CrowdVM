@@ -193,6 +193,7 @@ func (s *Server) pickNode(req schedReq) (*Node, error) {
 	var reasons []string
 	matching := 0
 	encrypted := req.encrypted(s)
+	haveCurrent := s.currentNodeOnline() // else outdated nodes still serve (compat.go)
 	for id := range online {
 		n, err := s.NodeByID(id)
 		if err != nil || n.Disabled {
@@ -210,6 +211,10 @@ func (s *Server) pickNode(req schedReq) (*Node, error) {
 		}
 		if why := matchReason(n, req.Placement, req.Owners); why != "" {
 			reasons = append(reasons, n.Name+": "+why)
+			continue
+		}
+		if nodeOutdated(n) && haveCurrent { // like a pause: it can come back once updated
+			reasons = append(reasons, n.Name+": crowdvm-node misses a required update")
 			continue
 		}
 		if encrypted && !n.Info.GuestChannel {
@@ -299,11 +304,12 @@ func (s *Server) placeSandbox(sbID, state string, req schedReq) (*Node, error) {
 func (s *Server) sizeAvailability() map[string]string {
 	out := map[string]string{}
 	online := s.nodes.online()
+	haveCurrent := s.currentNodeOnline()
 	for _, sz := range api.Sizes {
 		reason := "no node is online"
 		for id := range online {
 			n, err := s.NodeByID(id)
-			if err != nil || n.Disabled {
+			if err != nil || n.Disabled || (haveCurrent && nodeOutdated(n)) {
 				continue
 			}
 			c := n.Info.Capacity

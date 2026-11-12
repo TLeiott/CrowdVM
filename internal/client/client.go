@@ -27,6 +27,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/crowdvm/crowdvm/internal/compat"
 )
 
 // Version is sent in the User-Agent. The CLI sets it at build time.
@@ -303,6 +305,9 @@ func (c *Client) send(ctx context.Context, req *Request) (*http.Response, error)
 			hr.Header[k] = vs
 		}
 		resp, err := c.HTTP.Do(hr)
+		if err == nil {
+			noteClientStatus(resp)
+		}
 		var wait time.Duration
 		if err != nil {
 			if ctx.Err() != nil || !idempotent || attempt >= retries {
@@ -374,6 +379,7 @@ func (c *Client) setHeaders(h http.Header) {
 		h.Set("User-Agent", c.UserAgent)
 	}
 	h.Set("Accept", "application/json, application/x-ndjson")
+	h.Set(compat.Header, strconv.Itoa(compat.APIGen))
 }
 
 func (c *Client) url(req *Request) string {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/crowdvm/crowdvm/internal/api"
+	"github.com/crowdvm/crowdvm/internal/compat"
 	"github.com/crowdvm/crowdvm/internal/server/store"
 )
 
@@ -112,6 +113,10 @@ func (s *Server) handleServerInfo(c *Ctx) error {
 		"version": Version, "publicUrl": s.Cfg.PublicURL, "signupOpen": s.Cfg.OpenSignup, "openNodes": s.Cfg.OpenNodes,
 		"creditsEnforced": s.Cfg.EnforceCredits, "nodesOnline": len(nodes), "defaultImage": nz(s.defaultImage()),
 		"sizes": api.Sizes, "snapshotIntervalSeconds": int(s.Cfg.SnapshotInterval.Seconds()),
+		// Compatibility (internal/compat): the client generations this
+		// server accepts, and the release its downloads offer.
+		"gen": compat.ServerGen, "apiGen": compat.APIGen, "minApiGen": compat.MinAPIGen, "requiredApiGen": compat.RequiredAPIGen,
+		"latest": nz(s.latestRelease()),
 	})
 }
 

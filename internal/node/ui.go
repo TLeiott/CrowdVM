@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/crowdvm/crowdvm/internal/api"
+	"github.com/crowdvm/crowdvm/internal/compat"
 	"github.com/crowdvm/crowdvm/internal/node/bench"
 	"github.com/crowdvm/crowdvm/internal/proto"
 )
@@ -64,22 +65,28 @@ var liveKeys = []string{"cpus", "memory", "disk", "max-sandboxes", "disk-overcom
 
 // Status is the local status document (GET /api/status).
 type Status struct {
-	NodeID              string                   `json:"nodeId"`
-	Name                string                   `json:"name"`
-	Version             string                   `json:"version"`
-	Server              string                   `json:"server"`
-	Driver              string                   `json:"driver"`
-	OS                  string                   `json:"os"`
-	Arch                string                   `json:"arch"`
-	DataDir             string                   `json:"dataDir"`
-	DirectHost          string                   `json:"directHost,omitempty"`
-	Connection          connState                `json:"connection"`
-	Paused              bool                     `json:"paused"` // the owner's master switch
-	Pause               PauseState               `json:"pause"`  // effective: switch, hold or schedule
-	Schedule            string                   `json:"schedule,omitempty"`
-	ScheduleHold        *ScheduleHold            `json:"scheduleHold,omitempty"`
-	Drained             bool                     `json:"drained"` // by the owner or an admin, on the server
-	Evacuation          *proto.Evacuation        `json:"evacuation,omitempty"`
+	NodeID       string            `json:"nodeId"`
+	Name         string            `json:"name"`
+	Version      string            `json:"version"`
+	Server       string            `json:"server"`
+	Driver       string            `json:"driver"`
+	OS           string            `json:"os"`
+	Arch         string            `json:"arch"`
+	DataDir      string            `json:"dataDir"`
+	DirectHost   string            `json:"directHost,omitempty"`
+	Connection   connState         `json:"connection"`
+	Paused       bool              `json:"paused"` // the owner's master switch
+	Pause        PauseState        `json:"pause"`  // effective: switch, hold or schedule
+	Schedule     string            `json:"schedule,omitempty"`
+	ScheduleHold *ScheduleHold     `json:"scheduleHold,omitempty"`
+	Drained      bool              `json:"drained"` // by the owner or an admin, on the server
+	Evacuation   *proto.Evacuation `json:"evacuation,omitempty"`
+	// Update: whether this build is current (from the server); nil until
+	// the server said. ServerOutdated: the server is older than this node
+	// supports (upgrade the server first).
+	Update              *proto.NodeUpdate        `json:"update,omitempty"`
+	ServerOutdated      bool                     `json:"serverOutdated,omitempty"`
+	AutoUpdate          *AutoUpdateStatus        `json:"autoUpdate,omitempty"` // nil when the daemon is not running
 	EarnedCredits       float64                  `json:"earnedCredits"`
 	Earned24h           float64                  `json:"earned24h"`
 	Benchmark           proto.Benchmark          `json:"benchmark"`
@@ -119,7 +126,8 @@ func (n *Node) Status() Status {
 	for _, r := range n.vms {
 		vms = append(vms, VMView{VMStatus: r.status, Size: r.spec.Size})
 	}
-	earned, earned24h, evac := n.earned, n.earned24h, n.evacuation
+	earned, earned24h, evac, upd := n.earned, n.earned24h, n.evacuation, n.update
+	serverOld := cs.Connected && !cs.LastHeartbeat.IsZero() && n.serverGen < compat.MinServerGen
 	var pending []string
 	for k := range n.restartKeys {
 		pending = append(pending, k)
@@ -134,12 +142,19 @@ func (n *Node) Status() Status {
 		OS: info.OS, Arch: info.Arch, DataDir: c.DataDir, DirectHost: c.DirectHost,
 		Connection: cs, Paused: c.Paused, Pause: c.EffectivePause(time.Now()), Schedule: c.Schedule,
 		Drained: n.drained.Load(), Evacuation: evac, EarnedCredits: earned, Earned24h: earned24h,
+		Update: upd, ServerOutdated: serverOld,
 		Benchmark: info.Bench, BenchmarkRunning: n.benching.Load(),
 		Capacity: info.Capacity, Usage: n.Usage(), VMs: vms, Transfers: n.Transfers(), Images: info.Images,
 		SnapshotIntervalSec: int(max(n.snapshotInterval(), 0) / time.Second), Disk: n.Disk(),
 		CanRestart: canRestart, RestartPending: pending,
 		Host: HostInfo{CPUs: runtime.NumCPU(), MemoryMiB: int(total >> 20)},
 	}
+	var latest string
+	if upd != nil {
+		latest = upd.Latest
+	}
+	au := n.autoUpdateStatus(latest)
+	st.AutoUpdate = &au
 	if h := c.ScheduleHold; h != nil && time.Now().Before(h.Until) {
 		st.ScheduleHold = h
 	}
@@ -301,7 +316,7 @@ location.replace("/");
 	ctl := http.NewServeMux()
 	// browserOK: routes the page uses; everything else needs the Bearer token.
 	browserOK := map[string]bool{"/api/pause": true, "/api/config": true, "/api/restart": true, "/api/bench": true,
-		"/api/logout": true} // bugs-r12-opus 1
+		"/api/logout": true, "/api/update": true} // bugs-r12-opus 1
 	m.Handle("POST /api/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		a := access(r)
 		if a == accessNone || (a == accessBrowser && !browserOK[r.URL.Path]) {
@@ -376,6 +391,7 @@ location.replace("/");
 		api.WriteJSON(w, 202, map[string]bool{"ok": true})
 		go func() { time.Sleep(300 * time.Millisecond); fn() }() // let the reply go out
 	})
+	n.updateRoutes(m, ctl, func(r *http.Request) bool { return access(r) != accessNone })
 	ctl.HandleFunc("POST /api/bench", func(w http.ResponseWriter, r *http.Request) {
 		quick := r.URL.Query().Get("quick") != ""
 		if r.URL.Query().Get("wait") == "" {
