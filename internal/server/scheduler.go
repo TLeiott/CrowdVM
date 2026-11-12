@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/crowdvm/crowdvm/internal/api"
 	"github.com/crowdvm/crowdvm/internal/proto"
@@ -97,33 +98,51 @@ func (s *Server) snapshotDiskGiB(id string) int {
 	return d
 }
 
+// liveStates: the sandbox states that hold room on their node.
+const liveStates = `state IN ('provisioning','provisioned','cloning','ready','idle','running','archiving')`
+
 // reservedOn sums the sizes of the sandboxes the server placed on a node.
 func (s *Server) reservedOn(nodeID string) proto.Usage {
-	var u proto.Usage
-	rows, err := s.DB.Query(`SELECT size, COALESCE(json_extract(extra,'$.diskGiB'),0) FROM sandboxes WHERE node_id=? AND deleted_at IS NULL AND state IN ('provisioning','provisioned','cloning','ready','idle','running','archiving')`, nodeID)
+	return s.reservations(nodeID)[nodeID]
+}
+
+// reservations sums placed sandbox sizes per node, for one node or (nodeID
+// "") all of them, in one query. A sandbox's disk counts at the largest it
+// booted with (bugs-r17-opus 9).
+func (s *Server) reservations(nodeID string) map[string]proto.Usage {
+	out := map[string]proto.Usage{}
+	q := `SELECT node_id, size, COALESCE(json_extract(extra,'$.diskGiB'),0) AS disk, COUNT(*) FROM sandboxes WHERE node_id IS NOT NULL AND deleted_at IS NULL AND ` + liveStates
+	args := []any{}
+	if nodeID != "" {
+		q += ` AND node_id=?`
+		args = append(args, nodeID)
+	}
+	rows, err := s.DB.Query(q+` GROUP BY node_id, size, disk`, args...)
 	if err != nil {
-		return u
+		return out
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var sz string
-		var disk int
-		if rows.Scan(&sz, &disk) != nil {
+		var id, sz string
+		var disk, n int
+		if rows.Scan(&id, &sz, &disk, &n) != nil {
 			continue
 		}
 		spec, _ := api.SizeByName(sz)
-		u.VCPU += spec.VCPU
-		u.MemoryMiB += spec.MemoryMiB
-		u.DiskGiB += max(spec.DiskGiB, disk) // bugs-r17-opus 9
-		u.VMs++
+		u := out[id]
+		u.VCPU += n * spec.VCPU
+		u.MemoryMiB += n * spec.MemoryMiB
+		u.DiskGiB += n * max(spec.DiskGiB, disk)
+		u.VMs += n
+		out[id] = u
 	}
-	return u
+	return out
 }
 
 type candidate struct {
-	node   *Node
-	score  float64
-	reason string
+	node  *Node
+	score float64
+	hot   bool // its host is busy (score includes -hotPenalty)
 }
 
 // matchReason returns "" when n satisfies the placement, else why not.
@@ -167,26 +186,6 @@ func matchReason(n *Node, p Placement, owners []string) string {
 	return ""
 }
 
-// fits reports whether size fits into the node's shared capacity.
-func fits(n *Node, used proto.Usage, sz api.SizeSpec) (bool, float64) {
-	c := n.Info.Capacity
-	if c.VCPU <= 0 || c.MemoryMiB <= 0 {
-		return false, 0
-	}
-	if used.VCPU+sz.VCPU > c.VCPU || used.MemoryMiB+sz.MemoryMiB > c.MemoryMiB {
-		return false, 0
-	}
-	if c.DiskGiB > 0 && used.DiskGiB+sz.DiskGiB > c.DiskGiB {
-		return false, 0
-	}
-	if c.MaxSandboxes > 0 && used.VMs+1 > c.MaxSandboxes {
-		return false, 0
-	}
-	freeMem := float64(c.MemoryMiB-used.MemoryMiB-sz.MemoryMiB) / float64(c.MemoryMiB)
-	freeCPU := float64(c.VCPU-used.VCPU-sz.VCPU) / float64(c.VCPU)
-	return true, freeMem*100 + freeCPU*50
-}
-
 // pickNode chooses the best online node for req (caller holds schedMu).
 func (s *Server) pickNode(req schedReq) (*Node, error) {
 	online := s.nodes.online()
@@ -195,30 +194,45 @@ func (s *Server) pickNode(req schedReq) (*Node, error) {
 	}
 	located := map[string]int{} // node -> best chain depth
 	if len(req.Chain) > 0 {
-		for depth, id := range req.Chain {
-			rows, err := s.DB.Query(`SELECT node_id FROM snapshot_locations WHERE snapshot_id=?`, id)
-			if err != nil {
-				continue
+		depth := map[string]int{}
+		for d, id := range req.Chain {
+			if _, ok := depth[id]; !ok {
+				depth[id] = d
 			}
+		}
+		args := make([]any, len(req.Chain))
+		for i, id := range req.Chain {
+			args[i] = id
+		}
+		ph := strings.TrimSuffix(strings.Repeat("?,", len(args)), ",")
+		rows, err := s.DB.Query(`SELECT snapshot_id, node_id FROM snapshot_locations WHERE snapshot_id IN (`+ph+`)`, args...)
+		if err == nil {
 			for rows.Next() {
-				var nid string
-				if rows.Scan(&nid) == nil {
-					if _, ok := located[nid]; !ok {
-						located[nid] = depth
+				var sn, nid string
+				if rows.Scan(&sn, &nid) == nil {
+					if d, ok := located[nid]; !ok || depth[sn] < d {
+						located[nid] = depth[sn]
 					}
 				}
 			}
 			rows.Close()
 		}
 	}
+	nodes, err := s.Nodes() // one query for the pool, not one per node
+	if err != nil {
+		return nil, err
+	}
+	reserved := s.reservations("")
+	now := time.Now()
 	var cands []candidate
 	var reasons []string
 	matching := 0
 	encrypted := req.encrypted(s)
 	haveCurrent := s.currentNodeOnline() // else outdated nodes still serve (compat.go)
-	for id := range online {
-		n, err := s.NodeByID(id)
-		if err != nil || n.Disabled {
+	for _, n := range nodes {
+		id := n.ID
+		conn := online[id]
+		if conn == nil || n.Disabled {
 			continue
 		}
 		if req.Only != "" && id != req.Only {
@@ -252,12 +266,15 @@ func (s *Server) pickNode(req schedReq) (*Node, error) {
 			reasons = append(reasons, n.Name+": all GPUs in use")
 			continue
 		}
-		ok, spread := fits(n, s.reservedOn(id), req.Size)
-		if !ok {
-			reasons = append(reasons, n.Name+": full")
+		load, hot, why := assess(n.Info.Capacity, reserved[id], req.Size, conn.liveLoad(now))
+		if why != "" {
+			reasons = append(reasons, n.Name+": "+why)
 			continue
 		}
-		score := spread + float64(n.Info.Bench.Score)/20
+		score := load + float64(n.Info.Bench.Score)/20
+		if hot {
+			score -= hotPenalty
+		}
 		if d, ok := located[id]; ok {
 			if d == 0 {
 				score += 1000
@@ -268,7 +285,7 @@ func (s *Server) pickNode(req schedReq) (*Node, error) {
 		if req.ImageID != "" && slices.Contains(n.Info.Images, req.ImageID) {
 			score += 50
 		}
-		cands = append(cands, candidate{node: n, score: score})
+		cands = append(cands, candidate{node: n, score: score, hot: hot})
 	}
 	if len(cands) == 0 {
 		sort.Strings(reasons)
@@ -289,7 +306,9 @@ func (s *Server) pickNode(req schedReq) (*Node, error) {
 		}
 		return cands[i].node.ID < cands[j].node.ID
 	})
-	return cands[0].node, nil
+	best := cands[0]
+	s.Log.Debug("placement", "node", best.node.Name, "score", int(best.score), "hot", best.hot, "candidates", len(cands), "size", req.Size.Name)
+	return best.node, nil
 }
 
 // ownersFor lists the users whose nodes are "own" for a sandbox of
@@ -393,7 +412,7 @@ func (s *Server) defaultImage() string {
 func (s *Server) gpusInUse(nodeID string) int {
 	var n int
 	_ = s.DB.QueryRow(`SELECT COUNT(*) FROM sandboxes WHERE node_id=? AND deleted_at IS NULL
-		AND state IN ('provisioning','provisioned','cloning','ready','idle','running','archiving')
+		AND `+liveStates+`
 		AND json_extract(placement,'$.gpu')=1`, nodeID).Scan(&n)
 	return n
 }

@@ -127,6 +127,9 @@ type NodeConn struct {
 	lastSeen    time.Time
 	mu          sync.Mutex
 	vms         map[string]proto.VMStatus
+	load        nodeLoad    // live host load (scheduler.go)
+	dbUsage     proto.Usage // usage last written to the nodes row
+	dbAt        time.Time   // when the row was last written
 }
 
 func newNodeConn(id string, sess *yamux.Session) *NodeConn {
@@ -611,6 +614,14 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	for _, vm := range hb.VMs {
 		c.vms[vm.SandboxID] = vm
 	}
+	c.load.observe(hb.Load, c.lastSeen)
+	// Light on the database: the row is written when something changed, and
+	// otherwise once a minute (last_seen_at only matters once the node is
+	// gone, and a disconnect writes it).
+	write := hb.Info != nil || hb.Usage != c.dbUsage || c.lastSeen.Sub(c.dbAt) >= heartbeatWriteEvery
+	if write {
+		c.dbUsage, c.dbAt = hb.Usage, c.lastSeen
+	}
 	c.mu.Unlock()
 	if hb.Info != nil {
 		info := *hb.Info
@@ -620,7 +631,7 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		_, _ = s.DB.Exec(`UPDATE nodes SET usage=?, info=?, name=CASE WHEN ?<>'' THEN ? ELSE name END, last_seen_at=? WHERE id=?`, mustJSON(hb.Usage), mustJSON(info), name, name, now, c.ID)
 		nodeNameMu.Unlock()
 		s.syncOutdated(c.ID)
-	} else {
+	} else if write {
 		_, _ = s.DB.Exec(`UPDATE nodes SET usage=?, last_seen_at=? WHERE id=?`, mustJSON(hb.Usage), now, c.ID)
 	}
 	for _, vm := range hb.VMs {
@@ -1050,7 +1061,7 @@ func (s *Server) nodeJSON(n *Node, detail bool) map[string]any {
 		"directHost": nz(n.Info.DirectHost), "images": n.Info.Images,
 		"createdAt": ts(n.CreatedAt), "lastSeenAt": nil, "connectedAt": nil, "sandboxes": reserved.VMs,
 		"info": n.Info, "owner": nil, "paused": n.Info.Paused, "pauseReason": nil, "evacuation": nil,
-		"gen": n.Info.Gen, "update": s.nodeUpdate(n),
+		"gen": n.Info.Gen, "update": s.nodeUpdate(n), "load": c.loadJSON(),
 	}
 	if n.Info.Paused {
 		m["pauseReason"] = nz(n.Info.PauseReason)

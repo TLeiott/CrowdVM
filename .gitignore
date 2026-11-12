@@ -16,3 +16,4 @@ __pycache__/
 /crowdvm-server
 /gendocs
 *.exe
+.env

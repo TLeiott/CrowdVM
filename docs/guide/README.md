@@ -13,6 +13,7 @@ dashboard, the HTTP API or the SDKs.
 | [Public URLs](public-urls.md) | You want to open a web app that runs in a sandbox, incl. Vite |
 | [Security model](security.md) | You lend a machine, or you put other people's work into sandboxes |
 | [Node owner guide](node-owners.md) | You run a node: benchmark, tiers, capacity, network policy, credits |
+| [Running the server on a Raspberry Pi](server-on-a-pi.md) | You host `crowdvm-server` on a small machine, with Docker, and want to know what loads it |
 | [Updates and compatibility](updates.md) | You update a node, the CLI or the server, or one is marked outdated |
 | [API and SDKs](api-and-sdks.md) | You call the API from code |
 | [Troubleshooting](troubleshooting.md) | Something does not start, connect or load |

@@ -50,7 +50,7 @@ type docsState struct {
 }
 
 // docOrder is the reading order; pages not listed follow alphabetically.
-var docOrder = []string{"index", "getting-started", "cli-for-agents", "sandboxes", "public-urls", "security", "node-owners", "updates",
+var docOrder = []string{"index", "getting-started", "cli-for-agents", "sandboxes", "public-urls", "security", "node-owners", "server-on-a-pi", "updates",
 	"api-and-sdks", "troubleshooting", "migrating-from-boat", "cli-reference", "api-reference"}
 
 var docAliases = map[string]string{"readme": "index", "quickstart": "getting-started", "cli": "cli-reference", "api": "api-reference",
