@@ -19,6 +19,22 @@ import (
 	"github.com/crowdvm/crowdvm/internal/proto"
 )
 
+// oneShotHandler serves h without the machine routes (/v1/vms...): a CLI
+// command's short-lived session (WithSession) runs no machines. The server
+// must not start one in a process that exits after its command; and a
+// machine of the stopped daemon may still run (QEMU outlives it), so "not
+// found" would be false. out_of_capacity makes the server place a boot
+// elsewhere; other machine requests fail and are retried later.
+func oneShotHandler(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/vms" || strings.HasPrefix(r.URL.Path, "/v1/vms/") {
+			api.WriteError(w, api.NewError(503, "out_of_capacity", "this node runs no machines: only a CLI command of it is connected", nil))
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
+}
+
 // Handler is the node API served to the server on yamux streams.
 func (n *Node) Handler() http.Handler {
 	m := http.NewServeMux()

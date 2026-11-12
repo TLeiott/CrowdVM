@@ -86,7 +86,7 @@ go test -count=1 ./...
 (cd sdk/typescript && npm ci --no-audit --no-fund --silent && npm test --silent)
 (cd sdk/python && python3 -m unittest -q)
 if [ "$e2e" = 1 ]; then
-  say "VM e2e suite (about 20 minutes)"
+  say "VM e2e suite (about 8 minutes)"
   CROWDVM_E2E=1 go test -count=1 -timeout 120m ./test/e2e/
 fi
 

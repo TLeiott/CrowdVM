@@ -1125,3 +1125,42 @@ func TestSetPausedKeepsOtherConfigEdits(t *testing.T) {
 		t.Fatalf("config.json after pause: cpus=%d paused=%v, want cpus=7 paused=true", got.CPUs, got.Paused)
 	}
 }
+
+// A short-lived session (crowdvm-node image push/pull while no daemon runs)
+// heartbeats, so a transfer longer than the server's node timeout keeps it,
+// and it runs no machines.
+func TestWithSessionHeartbeats(t *testing.T) {
+	srv := newFakeServer(t)
+	cfg, err := LoadConfig(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := New(cfg, newFakeDriver(t, newFakeGuest(t)), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	n.bench = proto.Benchmark{RanAt: time.Now(), Tier: "gold", Score: 600}
+	if err := Join(context.Background(), cfg, srv.srv.URL, "join-tok", n.Info()); err != nil {
+		t.Fatal(err)
+	}
+	beats := func() int { srv.mu.Lock(); defer srv.mu.Unlock(); return len(srv.beats) }
+	err = n.WithSession(context.Background(), func(ctx context.Context) error {
+		sess := srv.nextSession()
+		for _, rq := range [][2]string{{"POST", "/v1/vms"}, {"GET", "/v1/vms/bx_x"}, {"POST", "/v1/vms/bx_x/stop"}} {
+			resp, body := call(t, sess, rq[0], rq[1], nil)
+			if resp.StatusCode != 503 || !strings.Contains(string(body), "out_of_capacity") {
+				t.Errorf("%s %s on a one-shot session: %d %s", rq[0], rq[1], resp.StatusCode, body)
+			}
+		}
+		if resp, _ := call(t, sess, "GET", "/v1/info", nil); resp.StatusCode != 200 {
+			t.Errorf("GET /v1/info on a one-shot session: %d", resp.StatusCode)
+		}
+		waitFor(t, "heartbeats during the session", func() bool { return beats() >= 3 })
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := beats()
+	time.Sleep(5 * HeartbeatInterval)
+	if beats() > after+1 { // one cancelled in flight may still be recorded
+		t.Fatalf("heartbeats went on after the session ended (%d → %d)", after, beats())
+	}
+}

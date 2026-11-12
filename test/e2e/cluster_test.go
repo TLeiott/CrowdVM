@@ -38,9 +38,11 @@ import (
 	"time"
 )
 
-// cluster is one server, two nodes and a signed-in CLI, all private to this run.
+// cluster is one server, two nodes and a signed-in CLI, all private to one
+// lane of this run (e2e_test.go).
 type cluster struct {
-	root     string // per-run directory; every process we start has it in its argv
+	lane     int
+	root     string // per-cluster run directory; every process we start has it in its argv
 	bin      string
 	repo     string
 	logs     string
@@ -60,7 +62,11 @@ type cluster struct {
 	sharedID   string
 	sharedErr  error
 
+	bobOnce sync.Once
+	bob     *account // second account (features_test.go)
+
 	hooks *receivers // webhook / OTLP / AI vendor receivers
+	link  *nodeLink  // node 1's slowable link to the server (snapshots group)
 }
 
 type node struct {
@@ -116,10 +122,15 @@ func runsRoot() string {
 	return filepath.Join(h, ".local/share/crowdvm-dev/e2e")
 }
 
-// startCluster builds the binaries and starts server + 2 nodes. Teardown is
-// registered on t (the top-level test) and on SIGINT/SIGTERM and shortly
-// before the go test deadline, so no VM, node or server outlives the run.
-func startCluster(t *testing.T) *cluster {
+// clusters lists every cluster of this run for the watchdog.
+var clusters struct {
+	sync.Mutex
+	all []*cluster
+}
+
+// newCluster makes the run directory of lane's cluster and registers it for
+// the watchdog; the caller tears it down. setup starts it.
+func newCluster(t *testing.T, lane int) *cluster {
 	t.Helper()
 	img := baseImage()
 	if _, err := os.Stat(img); err != nil {
@@ -129,24 +140,32 @@ func startCluster(t *testing.T) *cluster {
 		t.Fatalf("/dev/kvm: %v", err)
 	}
 	parent := runsRoot()
-	killStale(t, parent)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	root, err := os.MkdirTemp(parent, "run-"+time.Now().Format("0102-150405")+"-")
+	root, err := os.MkdirTemp(parent, fmt.Sprintf("run-%s-l%d-", time.Now().Format("0102-150405"), lane))
 	if err != nil {
 		t.Fatal(err)
 	}
 	must(t, os.WriteFile(filepath.Join(root, "owner.pid"), []byte(strconv.Itoa(os.Getpid())), 0o644))
-	c := &cluster{root: root, repo: repoRoot(t), bin: filepath.Join(root, "bin"), logs: filepath.Join(root, "logs"),
+	c := &cluster{lane: lane, root: root, repo: repoRoot(t), bin: filepath.Join(root, "bin"), logs: filepath.Join(root, "logs"),
 		cfgDir: filepath.Join(root, "cli"), home: filepath.Join(root, "home"), image: strings.TrimSuffix(filepath.Base(img), filepath.Ext(img))}
+	clusters.Lock()
+	clusters.all = append(clusters.all, c)
+	clusters.Unlock()
+	t.Logf("lane %d: run dir %s", lane, root)
+	return c
+}
+
+// setup builds the binaries and starts server + 2 nodes; the base image is
+// copied in turn (see imageTurn).
+func (c *cluster) setup(t *testing.T, turn *imageTurn) {
+	t.Helper()
+	defer turn.end()
+	img := baseImage()
 	for _, d := range []string{c.bin, c.logs, c.home} {
 		must(t, os.MkdirAll(d, 0o755))
 	}
-	t.Logf("run dir %s", root)
-	t.Cleanup(func() { c.teardown(t) })
-	c.watchdog(t)
-
 	step := func(name string, f func()) {
 		t0 := time.Now()
 		f()
@@ -161,11 +180,13 @@ func startCluster(t *testing.T) *cluster {
 			c.joinNode(t, i)
 		}
 	})
+	step("wait for the image turn", turn.wait)
 	step("image import + push (node 1)", func() {
 		c.nodeCmd(t, c.nodes[0], 2*time.Minute, "image", "import", img)
 		c.nodeCmd(t, c.nodes[0], 10*time.Minute, "image", "push", c.image)
 	})
 	step("image pull (node 2)", func() { c.nodeCmd(t, c.nodes[1], 10*time.Minute, "image", "pull", c.image) })
+	turn.end()
 	step("nodes run", func() {
 		for _, n := range c.nodes {
 			n.proc = c.start(t, n.name, c.nodeBin(), "run", "--data-dir", n.dir)
@@ -201,7 +222,6 @@ func startCluster(t *testing.T) *cluster {
 			c.cli(t, "nodes", "update", n.id, "--label", "zone="+string(rune('a'+i))).ok(t)
 		}
 	})
-	return c
 }
 
 func (c *cluster) serverBin() string { return filepath.Join(c.bin, "crowdvm-server") }
@@ -277,7 +297,7 @@ func (c *cluster) joinNode(t *testing.T, i int) {
 	if !strings.HasPrefix(tok, "cvj_") {
 		t.Fatalf("join-token: %s", r.out)
 	}
-	// 8 vCPU / 18 GiB / 2 sandboxes per node: at most 4 VMs on this machine.
+	// 8 vCPU / 18 GiB / 2 sandboxes per node: at most 4 VMs per cluster.
 	c.nodeCmd(t, n, 3*time.Minute, "join", "--server", c.url, "--token", tok, "--name", n.name,
 		"--driver", "qemu", "--guest-binary", filepath.Join(c.bin, "crowdvm-guest"),
 		"--ui-addr", n.uiAddr, "--cpus", "8", "--memory", "18G", "--disk", "80G", "--max-sandboxes", "2",
@@ -349,9 +369,9 @@ func (c *cluster) baseEnv() []string {
 	return append(env, "HOME="+c.home, "CROWDVM_CONFIG_DIR="+c.cfgDir, "CROWDVM_NO_UPDATE_CHECK=1")
 }
 
-// watchdog tears the cluster down on SIGINT/SIGTERM and 45 s before the go
+// watchdog tears every cluster down on SIGINT/SIGTERM and 45 s before the go
 // test deadline (a timeout panic would skip t.Cleanup and leak VMs).
-func (c *cluster) watchdog(t *testing.T) {
+func watchdog(t *testing.T) {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	var timer <-chan time.Time
@@ -361,19 +381,36 @@ func (c *cluster) watchdog(t *testing.T) {
 	go func() {
 		select {
 		case s := <-sig:
-			fmt.Fprintf(os.Stderr, "e2e: %v: tearing the cluster down\n", s)
-			c.teardown(nil)
+			fmt.Fprintf(os.Stderr, "e2e: %v: tearing the clusters down\n", s)
+			teardownAll(nil, false)
 			os.Exit(2)
 		case <-timer:
-			fmt.Fprintln(os.Stderr, "e2e: go test deadline close: tearing the cluster down")
-			c.teardown(nil)
+			fmt.Fprintln(os.Stderr, "e2e: go test deadline close: tearing the clusters down")
+			teardownAll(nil, true) // every lane still running is about to fail
 		}
 	}()
 }
 
-func (c *cluster) teardown(t *testing.T) {
+// teardownAll tears every cluster of the run down at once; a lane's cluster
+// already torn down when its lane ended is skipped (stopOnce).
+func teardownAll(t *testing.T, failed bool) {
+	clusters.Lock()
+	cs := append([]*cluster(nil), clusters.all...)
+	clusters.Unlock()
+	var wg sync.WaitGroup
+	for _, c := range cs {
+		wg.Add(1)
+		go func() { defer wg.Done(); c.teardown(t, failed) }()
+	}
+	wg.Wait()
+}
+
+// teardown stops the cluster and removes its run directory; failed keeps a
+// copy of its logs. t (nil from the watchdog) gets the log lines.
+func (c *cluster) teardown(t *testing.T, failed bool) {
 	c.stopOnce.Do(func() {
 		logf := func(f string, a ...any) {
+			f = fmt.Sprintf("lane %d: %s", c.lane, f)
 			if t != nil {
 				t.Logf(f, a...)
 			} else {
@@ -384,6 +421,9 @@ func (c *cluster) teardown(t *testing.T) {
 			c.hooks.close()
 		}
 		c.mu.Lock()
+		if c.link != nil {
+			c.link.l.Close()
+		}
 		procs := append([]*proc(nil), c.procs...)
 		c.mu.Unlock()
 		// Nodes first (they own the VMs), then the server.
@@ -407,7 +447,6 @@ func (c *cluster) teardown(t *testing.T) {
 		if n := killMatching(c.root); n > 0 {
 			logf("teardown: killed %d leftover process(es) (qemu)", n)
 		}
-		failed := t != nil && t.Failed()
 		if failed {
 			dst := filepath.Join(os.TempDir(), "crowdvm-e2e-logs-"+filepath.Base(c.root))
 			if err := exec.Command("cp", "-r", c.logs, dst).Run(); err == nil {
@@ -444,8 +483,7 @@ func killMatching(dir string) int {
 	return n
 }
 
-// killStale removes processes and directories left by crashed earlier runs.
-// killStale cleans up after crashed earlier runs. A run whose go test process
+// killStale cleans up after crashed earlier runs (once, before any cluster of this run starts). A run whose go test process
 // still lives (owner.pid) is a concurrent run, e.g. of another checkout or
 // agent, and is left alone.
 func killStale(t *testing.T, parent string) {

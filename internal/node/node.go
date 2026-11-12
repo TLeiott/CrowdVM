@@ -356,9 +356,9 @@ func (n *Node) dial(ctx context.Context) (*yamux.Session, error) {
 // ErrNotJoined is returned when the config has no server/node token.
 var ErrNotJoined = errors.New("node is not joined: run `crowdvm-node join --server URL --token T` first")
 
-// WithSession connects once (no reconnect, no heartbeats), serves the node
-// API, runs fn while connected and disconnects. For CLI commands that need
-// the server while the daemon is not running.
+// WithSession connects once (no reconnect), serves the node API without its
+// machines (oneShotHandler), runs fn while connected and disconnects. For CLI
+// commands that need the server while the daemon is not running.
 func (n *Node) WithSession(ctx context.Context, fn func(context.Context) error) error {
 	c := n.config()
 	if c.Server == "" || c.NodeToken == "" {
@@ -375,7 +375,13 @@ func (n *Node) WithSession(ctx context.Context, fn func(context.Context) error) 
 	n.connState.Connected = true
 	close(n.connected)
 	n.mu.Unlock()
-	go mux.Serve(sess, n.Handler())
+	go mux.Serve(sess, oneShotHandler(n.Handler()))
+	// Heartbeats keep the session past the server's node timeout: an image
+	// push or pull of GiBs over a slow link or a busy disk outlasts it.
+	hctx, stop := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { defer close(done); n.heartbeatLoop(hctx) }()
+	defer func() { stop(); <-done }()
 	return fn(ctx)
 }
 
@@ -427,6 +433,9 @@ func (n *Node) heartbeatLoop(ctx context.Context) {
 	defer t.Stop()
 	for {
 		if err := n.heartbeat(ctx, first); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			n.log.Warn("heartbeat failed", "err", err)
 		} else {
 			first = false
