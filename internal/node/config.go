@@ -70,6 +70,10 @@ type Config struct {
 	// NoKeepAwake: let the machine idle-suspend while it hosts sandboxes
 	// (default: a logind sleep inhibitor holds it awake; awake.go).
 	NoKeepAwake bool `json:"noKeepAwake,omitempty"`
+	// AutoUpdate: when the daemon installs updates by itself (autoupdate.go):
+	// "required" ("" too) only those the server requires, "always" every
+	// newer release, "off" none.
+	AutoUpdate string `json:"autoUpdate,omitempty"`
 	// SnapshotInterval overrides the server-provided periodic live snapshot
 	// interval (Go duration, "0" = use server/default 60s, "off" = disabled).
 	SnapshotInterval string `json:"snapshotInterval,omitempty"`
@@ -283,7 +287,7 @@ func (c Config) SnapshotEvery() (d time.Duration, ok bool) {
 
 // ConfigKeys lists the keys accepted by Get/Set (CLI `config get/set`).
 var ConfigKeys = []string{"server", "name", "driver", "cpus", "memory", "disk", "disk-overcommit", "disk-reserve",
-	"max-sandboxes", "direct-host", "guest-binary", "cli-binary", "nested", "lazy-chain", "warm-pool", "ui-addr", "paused", "keep-awake", "schedule", "schedule-hold", "snapshot-interval", "node-id",
+	"max-sandboxes", "direct-host", "guest-binary", "cli-binary", "nested", "lazy-chain", "warm-pool", "ui-addr", "paused", "keep-awake", "auto-update", "schedule", "schedule-hold", "snapshot-interval", "node-id",
 	"net", "net.allow-lan", "net.allow", "net.deny", "gpu.passthrough", "gpu.virgl"}
 
 // Get returns a config value by CLI key.
@@ -328,6 +332,8 @@ func (c Config) Get(key string) (string, error) {
 		return strconv.FormatBool(c.Paused), nil
 	case "keep-awake":
 		return strconv.FormatBool(!c.NoKeepAwake), nil
+	case "auto-update":
+		return firstNonEmpty(c.AutoUpdate, AutoUpdateRequired), nil
 	case "schedule":
 		return c.Schedule, nil
 	case "schedule-hold":
@@ -477,6 +483,15 @@ func (c *Config) Set(key, val string) error {
 		c.UIAddr = val
 	case "paused":
 		c.Paused, err = strconv.ParseBool(val)
+	case "auto-update":
+		switch val {
+		case "", AutoUpdateRequired:
+			c.AutoUpdate = ""
+		case AutoUpdateAlways, AutoUpdateOff:
+			c.AutoUpdate = val
+		default:
+			return fmt.Errorf("auto-update must be required, always or off")
+		}
 	case "keep-awake":
 		on := true
 		if val != "" {

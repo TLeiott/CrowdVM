@@ -21,7 +21,6 @@ import (
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -113,12 +112,6 @@ func (s *Server) serveDownload(w http.ResponseWriter, r *http.Request) {
 // stale checksum from the manifest.
 func (s *Server) serveDownloadList(w http.ResponseWriter, r *http.Request) {
 	base := strings.TrimRight(s.Cfg.PublicURL, "/")
-	var man struct {
-		Version string `json:"version"`
-	}
-	if b, err := os.ReadFile(filepath.Join(s.DownloadsDir(), manifestName)); err == nil {
-		_ = json.Unmarshal(b, &man)
-	}
 	out := []map[string]any{}
 	for _, goos := range installOS {
 		for _, arch := range installArch {
@@ -140,7 +133,7 @@ func (s *Server) serveDownloadList(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	api.WriteOK(w, 200, "download.list", map[string]any{"version": man.Version, "downloads": out})
+	api.WriteOK(w, 200, "download.list", map[string]any{"version": s.latestRelease(), "downloads": out})
 }
 
 // shaCache keeps checksums by path, size and mtime: only the first list

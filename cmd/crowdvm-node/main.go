@@ -245,7 +245,7 @@ func runCmd(g *globals) *cobra.Command {
 				var restart atomic.Bool
 				if supervised {
 					n.SetRestarter(func() {
-						log.Info("restart requested on the local page")
+						log.Info("restarting (asked on the local page, or after an update)")
 						restart.Store(true)
 						stop()
 					})

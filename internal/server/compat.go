@@ -29,6 +29,7 @@ import (
 	"github.com/crowdvm/crowdvm/internal/compat"
 	"github.com/crowdvm/crowdvm/internal/proto"
 	"github.com/crowdvm/crowdvm/internal/server/store"
+	"github.com/crowdvm/crowdvm/internal/version"
 )
 
 // NodeUpdateCommand is what a node owner runs to update.
@@ -175,7 +176,7 @@ func ownClientUA(ua string) bool {
 // (manifest.json written by scripts/dist.sh), "" when there is none. Read
 // again only when the file changes.
 func (s *Server) latestRelease() string {
-	p := filepath.Join(s.DownloadsDir(), "manifest.json")
+	p := filepath.Join(s.DownloadsDir(), manifestName)
 	st, err := os.Stat(p)
 	if err != nil {
 		return ""
@@ -206,9 +207,9 @@ var (
 	latestCache = map[string]latestEntry{}
 )
 
-// newerRelease: latest is a release newer than have.
+// newerRelease: latest is a release newer than have (nightlies ordered;
+// "dev" and other non-releases never are).
 func newerRelease(latest, have string) bool {
-	l, ok1 := parseSemver(latest)
-	h, ok2 := parseSemver(have)
-	return ok1 && ok2 && semverLess(h, l)
+	c, ok := version.Compare(latest, have)
+	return ok && c > 0
 }

@@ -109,6 +109,7 @@ type Node struct {
 	evacuation        *proto.Evacuation
 	update            *proto.NodeUpdate // from the server: is this build current
 	serverGen         int
+	autoUpdateAt      time.Time // last auto-update attempt
 
 	// Local control (ui.go): settings saved but only applied on restart,
 	// and how to restart the daemon (nil: nothing would bring it back).
@@ -393,6 +394,7 @@ func (n *Node) connectLoop(ctx context.Context) {
 				n.mu.Lock()
 				n.update = u
 				n.mu.Unlock()
+				n.maybeAutoUpdate(u)
 				err = errors.New(u.Message)
 				backoff = ReconnectMax
 			}
@@ -596,6 +598,7 @@ func (n *Node) applyServerSettings(hr proto.HeartbeatResponse) {
 		n.clearWarmShapeLocked() // bugs-r15-opus 5: a saved shape from before would boot a VM no create takes
 	}
 	n.update, n.serverGen = hr.Update, hr.ServerGen
+	defer n.maybeAutoUpdate(hr.Update) // after the unlock below
 	n.mu.Unlock()
 	switch {
 	case hr.SnapshotIntervalSec > 0:
