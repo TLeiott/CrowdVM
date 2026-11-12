@@ -262,8 +262,10 @@ func testSnapshots(t *testing.T, c *cluster) {
 		// so the server cannot read files of a stopped encrypted sandbox.
 		f := c.api(t, "GET", "/snapshots/"+snap+"/files?path=snapdir/a.txt", nil)
 		expect(t, f.status == 409 && strings.Contains(string(f.body), "snapshot_encrypted"), "encrypted snapshot file: %d %q", f.status, tail(string(f.body), 200))
+		// The raw layers stay downloadable: they hold ciphertext (409
+		// snapshot_compacted while a layer is still uploading).
 		dl := c.api(t, "GET", "/snapshots/"+snap+"/download", nil)
-		expect(t, dl.status == 409, "encrypted snapshot download: %v", dl.status)
+		expect(t, dl.status == 200 || (dl.status == 409 && strings.Contains(string(dl.body), "snapshot_compacted")), "encrypted snapshot download: %v %s", dl.status, tail(string(dl.body), 200))
 		c.cli(t, "snapshot", "delete", "--all", s, "--yes").ok(t)
 		return
 	}
