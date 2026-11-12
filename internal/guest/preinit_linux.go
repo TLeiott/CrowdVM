@@ -92,12 +92,14 @@ func Preinit() error {
 	if len(key) < 32 {
 		return errors.New("the server sent no disk key")
 	}
+	logger.Printf("boot ticket redeemed; opening the encrypted data partition %s", part)
 	if err := openData(disk, part, key, logger); err != nil {
 		return err
 	}
 	if err := overlayRoot(); err != nil {
 		return err
 	}
+	logger.Printf("starting systemd on the encrypted overlay root")
 	return switchRoot()
 }
 
@@ -131,6 +133,10 @@ func redeem(stub proto.GuestConfig, mode string, logger *log.Logger) ([]byte, er
 
 func run(stdin []byte, name string, args ...string) error {
 	cmd := exec.Command(name, args...)
+	// No udevd runs this early. After an initramfs boot its database is
+	// still in /run, and libdevmapper would wait forever for udev to
+	// create /dev/mapper nodes: let it create them itself.
+	cmd.Env = append(os.Environ(), "DM_DISABLE_UDEV=1")
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
@@ -324,28 +330,25 @@ func blank(part string) error {
 	return nil
 }
 
+// dataBinds: directories on the encrypted ext4 itself, not on the overlay
+// (Docker's and containerd's overlay snapshotters refuse an overlayfs below).
+var dataBinds = []string{"home", "var/lib/docker", "var/lib/containerd", "var/lib/containers"}
+
 // overlayRoot mounts the new root at /mnt: the image below (read-only), the
-// encrypted partition above, /home and /var/lib/docker on its ext4.
+// encrypted partition above, dataBinds on its ext4.
 func overlayRoot() error {
-	for _, d := range []string{"upper", "work", "home", "docker"} {
+	for _, d := range []string{"upper", "work", "binds"} {
 		if err := os.MkdirAll(filepath.Join(dataMount, d), 0o755); err != nil {
 			return err
 		}
 	}
-	marker := filepath.Join(dataMount, ".seeded")
-	if _, err := os.Stat(marker); err != nil {
-		// First boot: the image's /home and /var/lib/docker move onto the
-		// encrypted file system.
-		if err := run(nil, "cp", "-a", "/home/.", filepath.Join(dataMount, "home")); err != nil {
-			return err
-		}
-		if _, err := os.Stat("/var/lib/docker"); err == nil {
-			if err := run(nil, "cp", "-a", "/var/lib/docker/.", filepath.Join(dataMount, "docker")); err != nil {
-				return err
+	// Layout of the first v4 builds: home and docker next to upper/.
+	for old, rel := range map[string]string{"home": "home", "docker": "var/lib/docker"} {
+		o, n := filepath.Join(dataMount, old), filepath.Join(dataMount, "binds", strings.ReplaceAll(rel, "/", "_"))
+		if _, err := os.Stat(o); err == nil {
+			if _, err := os.Stat(n); err != nil {
+				_ = os.Rename(o, n)
 			}
-		}
-		if err := os.WriteFile(marker, nil, 0o600); err != nil {
-			return err
 		}
 	}
 	_ = run(nil, "modprobe", "overlay")
@@ -353,14 +356,30 @@ func overlayRoot() error {
 	if err := unix.Mount("overlay", newRootDir, "overlay", 0, opts); err != nil {
 		return fmt.Errorf("overlay root: %w", err)
 	}
-	if err := unix.Mount(filepath.Join(dataMount, "home"), newRootDir+"/home", "", unix.MS_BIND, ""); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(newRootDir+"/var/lib/docker", 0o710); err != nil {
-		return err
-	}
-	if err := unix.Mount(filepath.Join(dataMount, "docker"), newRootDir+"/var/lib/docker", "", unix.MS_BIND, ""); err != nil {
-		return err
+	for _, rel := range dataBinds {
+		src := filepath.Join(dataMount, "binds", strings.ReplaceAll(rel, "/", "_"))
+		dst := filepath.Join(newRootDir, rel)
+		if err := os.MkdirAll(dst, 0o755); err != nil {
+			return err
+		}
+		if _, err := os.Stat(src); err != nil {
+			// First time: move what the root has there (the image's
+			// /home, or what an earlier version kept on the overlay).
+			tmp := src + ".new"
+			_ = os.RemoveAll(tmp)
+			if err := os.MkdirAll(tmp, 0o755); err != nil {
+				return err
+			}
+			if err := run(nil, "cp", "-a", dst+"/.", tmp); err != nil {
+				return err
+			}
+			if err := os.Rename(tmp, src); err != nil {
+				return err
+			}
+		}
+		if err := unix.Mount(src, dst, "", unix.MS_BIND, ""); err != nil {
+			return fmt.Errorf("bind %s: %w", rel, err)
+		}
 	}
 	return dropRootFromFstab(newRootDir + "/etc/fstab")
 }
@@ -406,6 +425,9 @@ func switchRoot() error {
 		return err
 	}
 	_ = unix.Unmount("/mnt", unix.MNT_DETACH) // the image root stays as the overlay's lower
+	// The overlay and the binds hold the data file system; its own mount
+	// would only show the upper layer twice (fstrim reaches it via /home).
+	_ = unix.Unmount(dataMount, unix.MNT_DETACH)
 	return execInit()
 }
 
