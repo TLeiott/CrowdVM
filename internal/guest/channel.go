@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -278,6 +279,9 @@ func (c *Channel) Serve(ctx context.Context, h http.Handler) {
 			go func() {
 				select {
 				case <-ctx.Done():
+					if systemStopping() {
+						announceReboot(sess)
+					}
 					_ = sess.Close()
 				case <-done:
 				}
@@ -304,6 +308,25 @@ func (c *Channel) Serve(ctx context.Context, h http.Handler) {
 			c.sess = nil
 			c.mu.Unlock()
 		}
+	}
+}
+
+// systemStopping: the machine is shutting down or rebooting (not just the
+// agent restarting).
+func systemStopping() bool {
+	out, _ := exec.Command("systemctl", "is-system-running").Output()
+	return strings.TrimSpace(string(out)) == "stopping"
+}
+
+// announceReboot tells the server that this machine is going down by its own
+// choice, so the new boot ticket its node asks for next is expected. A node
+// that kills the VM to get a ticket of its own cannot announce.
+func announceReboot(sess *yamux.Session) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "POST", "http://server/v1/rebooting", nil)
+	if resp, err := (&http.Client{Transport: mux.Transport(sess)}).Do(req); err == nil {
+		resp.Body.Close()
 	}
 }
 

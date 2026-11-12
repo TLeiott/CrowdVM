@@ -149,6 +149,22 @@ func TestGuestChannelKeepsSecretsFromTheNode(t *testing.T) {
 		code, _ := reboot(other.Token)
 		return code == http.StatusNotFound
 	})
+	// That machine went down without announcing it (a crash, or a node
+	// that killed it for a ticket): no ticket, and the owner is told.
+	env.Eventually("unannounced reboot refused", func() bool {
+		code, _ := reboot(node.Token)
+		return code == http.StatusForbidden
+	})
+	env.Eventually("unannounced reboot notice", func() bool {
+		return strings.Contains(string(env.Do(key, "GET", "/api/v1/notices", nil).Body), "security_unannounced_reboot")
+	})
+	// The node reports the machine down; the owner recovers it, and the
+	// server expects the node's request.
+	node.SetVMState(id, proto.VMError, false, "new boot ticket: unannounced_reboot")
+	env.WaitState(key, id, "error")
+	if r := env.Do(key, "POST", "/api/v1/sandboxes/"+id+"/recover", nil); r.Status != 200 {
+		t.Fatalf("recover: %s", r)
+	}
 	var ch proto.GuestChannel
 	env.Eventually("new ticket", func() bool {
 		var code int
@@ -169,4 +185,5 @@ func TestGuestChannelKeepsSecretsFromTheNode(t *testing.T) {
 	if k := ch3.TakeDataKey(); string(k) != string(diskKey) {
 		t.Fatal("the disk key changed across a reboot")
 	}
+
 }

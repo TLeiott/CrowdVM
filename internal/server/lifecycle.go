@@ -1890,6 +1890,7 @@ func (s *Server) handleRecover(c *Ctx) error {
 	}
 	rctx, rcancel := context.WithTimeout(c.R.Context(), 2*time.Minute)
 	defer rcancel()
+	s.guests.expectReboot(sb.ID) // the node's new-ticket request is ours
 	if err := node.Do(rctx, "POST", "/v1/vms/"+sb.ID+"/restart", map[string]any{}, nil); err != nil {
 		return Err(409, "reset_failed", "The power-cycle failed: "+err.Error())
 	}

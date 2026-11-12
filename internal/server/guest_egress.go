@@ -130,6 +130,10 @@ func (s *Server) guestStreams(g *GuestConn, egress bool) http.Handler {
 		}
 		mux.Join(&readerConn{Conn: conn, r: rw.Reader}, out)
 	})
+	m.HandleFunc("POST /v1/rebooting", func(w http.ResponseWriter, r *http.Request) {
+		s.guests.expectReboot(g.SandboxID) // see handleGuestReboot
+		w.WriteHeader(http.StatusNoContent)
+	})
 	m.HandleFunc("POST /v1/egress/dns", func(w http.ResponseWriter, r *http.Request) {
 		if !egress {
 			http.Error(w, "egress through the server is off for this sandbox", 403)

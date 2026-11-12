@@ -295,8 +295,11 @@ func (a *Agent) Run(ctx context.Context) error {
 			go a.tracer.run(a.stopCh)
 		}
 	}
+	chDone := make(chan struct{})
 	if a.channel != nil {
-		go a.channel.Serve(ctx, a.channelHandler())
+		go func() { a.channel.Serve(ctx, a.channelHandler()); close(chDone) }()
+	} else {
+		close(chDone)
 	}
 	srv := &http.Server{Handler: a.Handler(), ReadHeaderTimeout: 30 * time.Second}
 	go func() {
@@ -307,6 +310,10 @@ func (a *Agent) Run(ctx context.Context) error {
 	}()
 	err = srv.Serve(ln)
 	a.desk.shutdown()
+	select { // the channel announces a shutdown to the server first
+	case <-chDone:
+	case <-time.After(4 * time.Second):
+	}
 	syscall.Sync()
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil

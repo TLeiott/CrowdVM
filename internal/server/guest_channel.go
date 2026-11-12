@@ -132,6 +132,26 @@ type guestRegistry struct {
 	mu      sync.Mutex
 	m       map[string]*GuestConn
 	reboots map[string][]time.Time // re-tickets per sandbox, last 10 minutes
+	expect  map[string]time.Time   // announced reboots and server-side recovers
+}
+
+// expectReboot: the guest announced a reboot, or the server power-cycles it.
+func (r *guestRegistry) expectReboot(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.expect == nil {
+		r.expect = map[string]time.Time{}
+	}
+	r.expect[id] = time.Now()
+}
+
+// takeExpected reports (and forgets) a reboot expected in the last 3 minutes.
+func (r *guestRegistry) takeExpected(id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t, ok := r.expect[id]
+	delete(r.expect, id)
+	return ok && time.Since(t) < 3*time.Minute
 }
 
 // rebooted records a re-ticket and returns how many happened in the last
@@ -314,9 +334,10 @@ func (s *Server) dropGuestChannel(id string) {
 // keeps its session in RAM only (a session on the disk would let the node
 // read it and fetch the config), so after a reboot it needs a new one-time
 // ticket. Its node asks for one once the old boot's channel has closed; while
-// the guest is connected the answer is 409 and the node retries. A node can
-// fake reboots to get tickets of its own; every re-ticket is logged and
-// frequent ones are reported to the owner.
+// the guest is connected the answer is 409 and the node retries. Only a
+// reboot the guest announced on its channel before going down (or a recover
+// the server started) gets a ticket: a node that kills its VM to get one of
+// its own gets 403, and the sandbox waits for its owner.
 func (s *Server) handleGuestReboot(w http.ResponseWriter, r *http.Request) {
 	n := nodeFrom(r)
 	sb, err := s.SandboxByID(r.PathValue("id"))
@@ -330,6 +351,16 @@ func (s *Server) handleGuestReboot(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.guests.get(sb.ID) != nil {
 		http.Error(w, "guest_connected", 409)
+		return
+	}
+	if !s.guests.takeExpected(sb.ID) {
+		// The machine went down without shutting down: a crash, a kernel
+		// panic, or its node killed it to get a ticket of its own. No
+		// ticket: the sandbox stops until its owner recovers it.
+		s.Log.Warn("guest channel: unannounced reboot, no new ticket", "sandbox", sb.ID, "node", n.ID)
+		s.notifySandbox(sb, "security_unannounced_reboot", "warning", time.Minute, "Stopped after an unexpected restart",
+			sb.Name+" went down without shutting down, so it was not started again: a crash or kernel panic does this, and so does a node that tries to read the sandbox's configuration and disk key. Run `crowdvm resume "+sb.ID+"` (or `crowdvm recover`) to start it again.")
+		http.Error(w, "unannounced_reboot: the machine went down without shutting down; recover the sandbox to start it again", 403)
 		return
 	}
 	plain, err := s.openSecret(sealed)
