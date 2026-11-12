@@ -163,6 +163,11 @@ func (s *Server) handleAuditEvents(c *Ctx) error {
 	}
 	where, args := "1=1", []any{}
 	if !c.P.IsAdmin() || !strings.HasPrefix(c.R.URL.Path, "/api/v1/admin/") {
+		// A key limited to some sandboxes sees no account-wide log
+		// (bugs-r13-sonnet 4).
+		if k := c.P.Key; k != nil && k.Restricted() {
+			return Err(403, "api_key_restricted", "Restricted keys cannot read the audit log.")
+		}
 		where, args = "actor_id=?", []any{c.P.User.ID}
 	}
 	for _, f := range []struct{ q, col string }{{"actor", "actor_id"}, {"target", "target"}, {"action", "action"}} {

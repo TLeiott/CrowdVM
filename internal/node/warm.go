@@ -119,6 +119,7 @@ func (n *Node) warmLoop(ctx context.Context) {
 				delete(n.warm, id)
 			}
 		}
+		drop = append(drop, n.warmOverCapacityLocked()...) // bugs-r13-opus 8
 		var add *warmVM
 		if shape != nil && len(n.warm) < want && time.Now().After(backoff) && n.warmFitsLocked(*shape) {
 			id := warmPrefix + api.NewID("", 12)
@@ -147,6 +148,30 @@ func (n *Node) warmLoop(ctx context.Context) {
 			return
 		}
 	}
+}
+
+// warmOverCapacityLocked (n.mu held) removes pool VMs, unready ones first,
+// until real usage plus the pool fits the current cpus, memory and
+// max-sandboxes (the owner may have lowered them) and returns them.
+// bugs-r13-opus 8
+func (n *Node) warmOverCapacityLocked() []*warmVM {
+	cp := n.config().Capacity()
+	var drop []*warmVM
+	for len(n.warm) > 0 {
+		u := n.usageWithWarmLocked()
+		if u.VCPU <= cp.VCPU && u.MemoryMiB <= cp.MemoryMiB && u.VMs <= cp.MaxSandboxes {
+			break
+		}
+		var victim *warmVM
+		for _, w := range n.warm {
+			if victim == nil || (victim.ready && !w.ready) {
+				victim = w
+			}
+		}
+		delete(n.warm, victim.id)
+		drop = append(drop, victim)
+	}
+	return drop
 }
 
 // warmFitsLocked: one more pool VM leaves room (and real disk) for a create.

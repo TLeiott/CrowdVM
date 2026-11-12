@@ -68,6 +68,8 @@ func main() {
 		if *listen != "" {
 			cfg.ListenAddr = *listen
 		}
+	} else if err := guest.ClearAdopted(*dataDir); err != nil { // bugs-r13-opus 1
+		logger.Fatalf("remove the warm pool config: %v", err)
 	}
 	var ch *guest.Channel
 	if cfg.Channel != nil {

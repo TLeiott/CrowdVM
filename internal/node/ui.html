@@ -249,12 +249,27 @@ let state = null, schedMode = null, limitsDirty = false;
 function say(id, text, ok) { const e = $(id); e.textContent = text || ""; e.className = "msg " + (ok ? "ok" : "bad"); }
 // bugs-r12-opus 1: the login session lives in localStorage (per origin, so per
 // port; a cookie would go to every local port) and goes out in a header.
-function sessHeaders(h) {
-  try { const v = localStorage.getItem("crowdvm_node_session"); if (v) h["X-Crowdvm-Ui-Session"] = v; } catch (e) {}
+// bugs-r13-opus 5: the page never sends the session's secret part. It sends
+// "<nonce>.<unix-ms>.<sig>", sig = HMAC-SHA256(key = the hmac part, "crowdvm-node-ui-req:" +
+// method + " " + path + " " + unix-ms). A squatter on this port while the daemon
+// is down sees only signed requests. This narrows the hole: a page the squatter
+// serves is the same origin and can still read localStorage.
+const hex = (b) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("");
+async function sessHeaders(h, method, path) {
+  try {
+    const v = localStorage.getItem("crowdvm_node_session");
+    const [nonce, key] = (v || "").split(".");
+    if (nonce && key) {
+      const ms = String(Date.now()), enc = new TextEncoder();
+      const k = await crypto.subtle.importKey("raw", enc.encode(key), {name: "HMAC", hash: "SHA-256"}, false, ["sign"]);
+      const sig = await crypto.subtle.sign("HMAC", k, enc.encode("crowdvm-node-ui-req:" + method + " " + path + " " + ms));
+      h["X-Crowdvm-Ui-Session"] = nonce + "." + ms + "." + hex(sig);
+    }
+  } catch (e) {}
   return h;
 }
 async function call(path, body) {
-  const r = await fetch(path, {method: "POST", headers: sessHeaders({"Content-Type": "application/json", "X-Crowdvm-Ui": "1"}),
+  const r = await fetch(path, {method: "POST", headers: await sessHeaders({"Content-Type": "application/json", "X-Crowdvm-Ui": "1"}, "POST", path),
     body: body ? JSON.stringify(body) : undefined});
   let j = {};
   try { j = await r.json(); } catch (e) {}
@@ -459,7 +474,7 @@ function render(s) {
 
 async function refresh() {
   try {
-    const r = await fetch("/api/status", {cache: "no-store", headers: sessHeaders({})});
+    const r = await fetch("/api/status", {cache: "no-store", headers: await sessHeaders({}, "GET", "/api/status")});
     render(await r.json());
     $("banner").style.display = "none";
   } catch (e) {

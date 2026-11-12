@@ -258,6 +258,7 @@ type bootOpts struct {
 	Env       *ResolvedEnv // unused by the core; kept for hooks
 	LiveFrom  string       // fork: take a live snapshot of this running sandbox first
 	FailFast  bool         // a node that refuses for capacity fails the boot instead of queueing it
+	Retried   bool         // failFast: already placed again once after a refusal
 }
 
 func (s *Server) startBoot(sb *Sandbox, o bootOpts) {
@@ -296,6 +297,23 @@ func (s *Server) requeueBoot(id string, o bootOpts, nf *nodeFullError) bool {
 		_, _ = s.DB.Exec(`UPDATE sandboxes SET error=NULL, health='ok', health_reason=NULL, degraded_since=NULL WHERE id=? AND state='error' AND error='node_offline'`, id)
 	} else if !sb.starting() {
 		return true
+	}
+	if o.FailFast && !nf.offline && !o.Retried {
+		// The node refused before the server learned it was paused or full
+		// (its next heartbeat): try once more on another node with room now
+		// (bugs-r13-opus 11).
+		spec, _ := api.SizeByName(sb.Size)
+		req := schedReq{Size: spec, Placement: sb.Placement, Chain: s.snapshotChain(nf.parent), ImageID: sb.ImageID, Exclude: nf.node, Owners: s.ownersFor(sb.OwnerID, sb.OrgID)}
+		if _, err := s.placeSandbox(id, state, req); err == nil {
+			o.Retried = true
+			if nf.parent != "" {
+				o.Parent, o.LiveFrom = nf.parent, "" // a fork's live snapshot is taken
+			}
+			if sb, err := s.SandboxByID(id); err == nil {
+				s.startBoot(sb, o)
+				return true
+			}
+		}
 	}
 	if o.FailFast {
 		msg := "no_ready_machine: the node had no room for this sandbox (" + nf.msg + ")"

@@ -953,7 +953,12 @@ func (s *Server) handleSaveSaved(c *Ctx) error {
 	if oldErr == nil && old.Status == "saving" {
 		return Err(409, "save_in_progress", "A save under this name is still running.")
 	}
+	// Check and insert under one lock, or parallel saves of new names all
+	// pass the allowance (bugs-r13-sonnet 5).
+	unlockLimits := func() {}
 	if oldErr != nil {
+		unlockLimits = s.lockLimits()
+		defer unlockLimits()
 		if err := s.checkSavedAllowance(wallet); err != nil {
 			return err
 		}
@@ -973,6 +978,7 @@ func (s *Server) handleSaveSaved(c *Ctx) error {
 			return Err(409, "name_taken", "You already have a saved snapshot named "+req.Name+" in another wallet; pick another name.")
 		}
 	}
+	unlockLimits()
 	if err != nil {
 		return err
 	}

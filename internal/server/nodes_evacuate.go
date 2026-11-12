@@ -296,19 +296,54 @@ func (s *Server) evacuationResume(sb *Sandbox, from string) {
 		s.evacuationStranded(sb)
 		return
 	}
+	// A stop the node died in falls back to the last stored snapshot, but
+	// the stop's own, newer one is on that node: wait for it rather than
+	// boot an older disk (bugs-r13-opus 3). failedEvacMoves boots it once
+	// the evacuation has every layer stored.
+	if snap, stored := s.newerSnapshotOn(sb, from); snap != "" {
+		if !stored {
+			_ = s.SetSandboxExtra(sb.ID, "evacuatedFrom", s.evacMark(from))
+			msg := "snapshot_unavailable: the newest snapshot of this sandbox is still on node " + from + ", which went offline while it was evacuated; it starts on another node once that node is back (or resume it now from its last stored snapshot)"
+			s.transition(sb.ID, []string{api.StateArchived}, api.StateError, map[string]any{"error": msg}, Event{Type: EvSandboxError, Reason: msg})
+			return
+		}
+		_ = s.updateSandbox(sb.ID, map[string]any{"head_snapshot_id": snap})
+		sb.HeadSnapshotID = snap
+	}
 	_ = s.updateSandbox(sb.ID, map[string]any{"error": nil, "stopped_at": nil, "archive_after": ttlDeadline(sb)})
-	_ = s.SetSandboxExtra(sb.ID, "evacuatedFrom", from) // failedEvacMoves
+	_ = s.SetSandboxExtra(sb.ID, "evacuatedFrom", s.evacMark(from)) // failedEvacMoves
 	s.queueBoot(sb.ID, pendingBoot{Kind: proto.BootResume, Parent: sb.HeadSnapshotID, Exclude: from, Reason: "evacuated"})
 	s.Bus.Publish(Event{Type: EvSandboxState, SandboxID: sb.ID, SandboxName: sb.Name, OwnerID: sb.OwnerID, OrgID: sb.OrgID, PreviousState: api.StateArchived, State: api.StateProvisioning})
 	s.Log.Info("resuming evacuated sandbox on another node", "sandbox", sb.ID, "from", from)
 }
 
-// failedEvacMoves: sandboxes moved off nodeID whose boot failed because a
-// layer was only on that node while it was offline.
+// newerSnapshotOn returns the newest snapshot sb took since its last boot
+// that is newer than its head and stored or held by node from ("" if none).
+func (s *Server) newerSnapshotOn(sb *Sandbox, from string) (id string, stored bool) {
+	_ = s.DB.QueryRow(`SELECT n.id, n.uploaded_at IS NOT NULL FROM snapshots n JOIN sandboxes b ON b.id=n.sandbox_id
+		WHERE b.id=? AND n.purged_at IS NULL AND n.deleted_at IS NULL AND n.created_at>=COALESCE(b.started_at,0)
+		AND n.created_at>COALESCE((SELECT h.created_at FROM snapshots h WHERE h.id=b.head_snapshot_id),0)
+		AND (n.uploaded_at IS NOT NULL OR EXISTS (SELECT 1 FROM snapshot_locations l WHERE l.snapshot_id=n.id AND l.node_id=?))
+		ORDER BY n.created_at DESC LIMIT 1`, sb.ID, from).Scan(&id, &stored)
+	return id, stored
+}
+
+// evacMark names node id's current evacuation ("<node>@<started ms>"), so
+// a later evacuation of the same node never matches the moves of an earlier
+// one (bugs-r13-sonnet 7).
+func (s *Server) evacMark(nodeID string) string {
+	var started int64
+	_ = s.DB.QueryRow(`SELECT started_at FROM node_evacuations WHERE node_id=?`, nodeID).Scan(&started)
+	return fmt.Sprintf("%s@%d", nodeID, started)
+}
+
+// failedEvacMoves: sandboxes moved off nodeID by its current evacuation
+// whose boot failed because a layer was only on that node while it was
+// offline.
 func (s *Server) failedEvacMoves(nodeID string) []*Sandbox {
 	var out []*Sandbox
 	rows, err := s.DB.Query(`SELECT id FROM sandboxes WHERE deleted_at IS NULL AND state='error' AND error LIKE 'snapshot_unavailable%'
-AND json_extract(extra,'$.evacuatedFrom')=?`, nodeID)
+AND json_extract(extra,'$.evacuatedFrom')=?`, s.evacMark(nodeID))
 	if err != nil {
 		return nil
 	}

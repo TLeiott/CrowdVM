@@ -215,12 +215,12 @@ func (a *Agent) prefetch(ctx context.Context, list []string) (int, int64) {
 }
 
 func prefetchFile(p string, buf []byte) (int64, bool) {
-	f, err := os.Open(p)
+	f, fi, err := openFileNB(p) // bugs-r13-opus 7: a FIFO must not block the open
 	if err != nil {
 		return 0, false
 	}
 	defer f.Close()
-	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() || fi.Size() > prefetchMaxFile {
+	if !fi.Mode().IsRegular() || fi.Size() > prefetchMaxFile {
 		return 0, false
 	}
 	n, _ := io.CopyBuffer(io.Discard, struct{ io.Reader }{f}, buf)

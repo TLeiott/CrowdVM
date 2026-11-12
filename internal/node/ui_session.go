@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -85,16 +86,42 @@ func (s *uiSessions) create() string {
 	return nonce + "." + s.sign(nonce)
 }
 
-// valid reports whether v is a live session of this token.
-func (s *uiSessions) valid(v string) bool {
-	nonce, sig, ok := strings.Cut(v, ".")
-	if !ok || s.token == "" || subtle.ConstantTimeCompare([]byte(sig), []byte(s.sign(nonce))) != 1 {
+// bugs-r13-opus 5: the page no longer sends the session's hmac. It sends
+// "<nonce>.<unix-ms>.<sig>", sig = hex HMAC-SHA256(key = the session's hmac
+// part as text, "crowdvm-node-ui-req:" + method + " " + path-with-query + " " +
+// unix-ms). A squatter on the UI port while the daemon is down then sees only
+// requests it cannot turn into other actions (it can replay one for 60 s). It
+// narrows the hole, it does not close it: a page the squatter serves on the
+// same port is the same origin and can still read localStorage.
+const uiReqSkew = 60 * time.Second
+
+func uiReqSig(key, method, uri, ms string) string {
+	m := hmac.New(sha256.New, []byte(key))
+	m.Write([]byte("crowdvm-node-ui-req:" + method + " " + uri + " " + ms))
+	return hex.EncodeToString(m.Sum(nil))
+}
+
+// validRequest reports whether v is a live session's signature of this request.
+func (s *uiSessions) validRequest(v, method, uri string, now time.Time) bool {
+	parts := strings.Split(v, ".")
+	if len(parts) != 3 || s.token == "" {
+		return false
+	}
+	nonce, ms, sig := parts[0], parts[1], parts[2]
+	t, err := strconv.ParseInt(ms, 10, 64)
+	if err != nil {
+		return false
+	}
+	if d := now.Sub(time.UnixMilli(t)); d > uiReqSkew || d < -uiReqSkew {
+		return false
+	}
+	if subtle.ConstantTimeCompare([]byte(sig), []byte(uiReqSig(s.sign(nonce), method, uri, ms))) != 1 {
 		return false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	exp, ok := s.m[nonce]
-	return ok && time.Now().Before(exp)
+	return ok && now.Before(exp)
 }
 
 // revoke ends the session v.

@@ -9,18 +9,18 @@ import (
 	"path/filepath"
 	"regexp"
 	"testing"
+	"time"
 )
 
 // bugs-r12-opus 1 and 2 regression tests.
 
 // sessionTransport adds the page session header to every request, as the
-// page's JS does.
+// page's JS does: bugs-r13-opus 5 signs each request, it no longer sends the
+// session itself.
 type sessionTransport string
 
 func (s sessionTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	r = r.Clone(r.Context())
-	r.Header.Set(UISessionHeader, string(s))
-	return http.DefaultTransport.RoundTrip(r)
+	return signedTransport{sess: string(s), at: time.Now}.RoundTrip(r)
 }
 
 var sessRe = regexp.MustCompile(`localStorage\.setItem\("crowdvm_node_session", "([^"]+)"\)`)

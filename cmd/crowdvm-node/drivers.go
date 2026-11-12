@@ -27,7 +27,18 @@ func newDriver(cfg *node.Config, log *slog.Logger) (vm.Driver, error) {
 		sort.Strings(names)
 		return nil, fmt.Errorf("unknown or unavailable driver %q (available: %s)", name, strings.Join(names, ", "))
 	}
-	return f(cfg, log)
+	// Building a driver adopts the data dir's VMs and cleans up the ones it
+	// cannot reach: never while a daemon runs on it (bugs-r13-sonnet 1). The
+	// lock stays until the process exits; Run takes its own reference.
+	release, err := node.LockDataDir(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	drv, err := f(cfg, log)
+	if err != nil {
+		release()
+	}
+	return drv, err
 }
 
 // logf adapts slog for drivers that take a printf-style logger.

@@ -145,7 +145,11 @@ func (s *Server) tryPlace(id string) bool {
 			chainFrom = src.HeadSnapshotID
 		}
 	}
-	req := schedReq{Size: spec, Placement: sb.Placement, Chain: s.snapshotChain(chainFrom), ImageID: sb.ImageID, Exclude: pb.Exclude, Owners: s.ownersFor(sb.OwnerID, sb.OrgID)}
+	exclude := pb.Exclude
+	if pb.Reason == "evacuated" && s.evacuation(exclude) == nil {
+		exclude = "" // the evacuation is over: its node may take it again (bugs-r13-opus 10)
+	}
+	req := schedReq{Size: spec, Placement: sb.Placement, Chain: s.snapshotChain(chainFrom), ImageID: sb.ImageID, Exclude: exclude, Owners: s.ownersFor(sb.OwnerID, sb.OrgID)}
 	var placeErr error
 	if pb.Prefer != "" {
 		req.Only = pb.Prefer

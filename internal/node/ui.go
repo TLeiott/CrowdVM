@@ -227,7 +227,7 @@ func (n *Node) UIHandler(token string) http.Handler {
 		if b, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok && eq(b, token) {
 			return accessFull
 		}
-		if sessions.valid(r.Header.Get(UISessionHeader)) { // bugs-r12-opus 1
+		if sessions.validRequest(r.Header.Get(UISessionHeader), r.Method, r.URL.RequestURI(), time.Now()) { // bugs-r12-opus 1, bugs-r13-opus 5
 			return accessBrowser
 		}
 		return accessNone

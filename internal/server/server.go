@@ -269,12 +269,13 @@ type Server struct {
 	nodes  *nodeRegistry
 	nodeH  http.Handler
 
-	schedMu sync.Mutex
-	limitMu sync.Mutex // lockLimits
-	sbLocks keyedMutex
-	ipLim   *ipLimiter
-	usage   *keyUsage
-	waiters *stateWaiters
+	schedMu  sync.Mutex
+	limitMu  sync.Mutex // lockLimits
+	sbLocks  keyedMutex
+	ipLim    *ipLimiter
+	codeMiss codeMisses // wrong device codes per user
+	usage    *keyUsage
+	waiters  *stateWaiters
 
 	activityMu sync.Mutex
 	deletionMu sync.Mutex                 // one deletion-operation pass at a time

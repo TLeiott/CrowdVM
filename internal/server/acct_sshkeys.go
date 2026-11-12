@@ -25,6 +25,17 @@ CREATE TABLE sandbox_ssh_keys (
   created_at INTEGER NOT NULL,
   PRIMARY KEY (sandbox_id, key)
 );
+`}, store.Migration{Version: 2, SQL: `
+CREATE TABLE sandbox_ssh_keys_v2 (
+  sandbox_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  key TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (sandbox_id, user_id, key)
+);
+INSERT INTO sandbox_ssh_keys_v2 SELECT sandbox_id,user_id,key,created_at FROM sandbox_ssh_keys;
+DROP TABLE sandbox_ssh_keys;
+ALTER TABLE sandbox_ssh_keys_v2 RENAME TO sandbox_ssh_keys;
 `})
 	RegisterFeature("acct_sshkeys", func(s *Server) error {
 		s.Hooks.Guard = append(s.Hooks.Guard, s.sshKeyGuard)
@@ -54,13 +65,21 @@ func (s *Server) sshKeyGuard(c *Ctx) error {
 		return Err(400, "invalid_json", "Could not read the request body.")
 	}
 	c.R.Body = io.NopCloser(strings.NewReader(string(body)))
+	// Only a caller the handler will let through is recorded: a refused
+	// call (no access, viewer, unknown id) leaves nothing (bugs-r13-sonnet 2).
+	sb, err := c.Sandbox("ssh", false)
+	if err != nil || s.accessOf(c.P, sb) == AccessView {
+		return nil
+	}
 	var req struct {
 		Key string `json:"key"`
 	}
 	if json.Unmarshal(body, &req) == nil {
 		if k := sshKeyFields(req.Key); k != "" {
-			_, _ = s.DB.Exec(`INSERT INTO sandbox_ssh_keys(sandbox_id,user_id,key,created_at) VALUES(?,?,?,?) ON CONFLICT(sandbox_id,key) DO NOTHING`,
-				c.Param("sandboxId"), c.P.User.ID, k, store.Now())
+			// One row per sender, so a key the creator also sent stays theirs
+			// whoever sent it first (bugs-r13-sonnet 3).
+			_, _ = s.DB.Exec(`INSERT INTO sandbox_ssh_keys(sandbox_id,user_id,key,created_at) VALUES(?,?,?,?) ON CONFLICT DO NOTHING`,
+				sb.ID, c.P.User.ID, k, store.Now())
 		}
 	}
 	return nil

@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -172,6 +173,8 @@ type run struct {
 	reset    atomic.Bool // channel guest rebooted (qemu exits instead): relaunch
 	launched time.Time
 	log      string
+	waited   bool              // waitErr is cmd.Wait's result (not set for adopted runs)
+	waitErr  error             // set before exited closes
 	net      *netstack.Network // nil with slirp
 }
 
@@ -1118,7 +1121,7 @@ func (d *Driver) spawn(m *machine, dir string) (err error) {
 		return err
 	}
 	r := &run{proc: cmd.Process, exited: make(chan struct{}), launched: time.Now(), log: logPath}
-	go func() { cmd.Wait(); close(r.exited) }()
+	go func() { r.waitErr, r.waited = cmd.Wait(), true; close(r.exited) }() // bugs-r13-opus 12
 
 	ctx, cancel := context.WithTimeout(d.ctx, 30*time.Second)
 	defer cancel()
@@ -1365,6 +1368,9 @@ func (d *Driver) watch(m *machine, r *run) {
 				cur := m.run == r && m.st.State == proto.VMRunning
 				d.mu.Unlock()
 				if cur {
+					if r.net != nil {
+						r.net.CloseGuestConns() // bugs-r13-opus 6: calls in flight to the old guest
+					}
 					d.setState(m, proto.VMStarting, "")
 					d.waitBoot(m, r)
 				}
@@ -1388,8 +1394,8 @@ func (d *Driver) watch(m *machine, r *run) {
 		msg := "qemu exited unexpectedly"
 		if r.poweroff.Load() {
 			msg = "guest powered off"
-		} else if t := logTail(r.log); t != "" {
-			msg += ": " + t
+		} else {
+			msg += exitDetail(r) // bugs-r13-opus 12
 		}
 		d.mu.Lock()
 		cur := m.run == r && !m.gone
@@ -1764,7 +1770,52 @@ func consoleTail(path string, n int) string {
 }
 
 // logTail returns the end of the last launch's qemu output.
-func logTail(path string) string {
+// exitDetail describes how a run ended: its exit status or signal, then a tail
+// of what qemu itself wrote. bugs-r13-opus 12: qemu also prints "Formatting"
+// lines for the overlays it creates, and its log names the node's paths; the
+// sandbox owner sees neither.
+func exitDetail(r *run) string {
+	var parts []string
+	if r.waited { // adopted runs have no wait status
+		s := "exit status 0"
+		if r.waitErr != nil {
+			s = r.waitErr.Error()
+		}
+		if strings.HasPrefix(s, "signal: ") {
+			s = "killed by " + s
+		}
+		parts = append(parts, s)
+	}
+	if t := cleanLogTail(r.log); t != "" {
+		parts = append(parts, t)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return ": " + strings.Join(parts, ": ")
+}
+
+var pathRe = regexp.MustCompile(`(/[\w.@+=-]+){2,}`)
+
+// cleanLogTail is logTail without the overlay "Formatting" lines and with
+// absolute paths replaced.
+func cleanLogTail(path string) string {
+	var keep []string
+	for _, l := range strings.Split(string(lastLaunchLog(path)), "\n") {
+		if strings.Contains(l, "Formatting '") || strings.Contains(l, "backing_file=") {
+			continue
+		}
+		keep = append(keep, pathRe.ReplaceAllString(l, "<path>"))
+	}
+	s := strings.TrimSpace(strings.Join(keep, "\n"))
+	if len(s) > 800 {
+		s = strings.TrimSpace(s[len(s)-800:])
+	}
+	return s
+}
+
+// lastLaunchLog is the log of the latest launch, without its "--- launch" line.
+func lastLaunchLog(path string) []byte {
 	b, _ := os.ReadFile(path)
 	if i := bytes.LastIndex(b, []byte("--- launch ")); i >= 0 {
 		b = b[i:]
@@ -1772,6 +1823,11 @@ func logTail(path string) string {
 			b = b[j+1:]
 		}
 	}
+	return b
+}
+
+func logTail(path string) string {
+	b := lastLaunchLog(path)
 	if len(b) > 800 {
 		b = b[len(b)-800:]
 	}

@@ -208,6 +208,13 @@ func runCmd(g *globals) *cobra.Command {
 			if err := f.apply(c, cfg); err != nil {
 				return err
 			}
+			// Before the flags are saved and a driver is built: a second
+			// daemon must change nothing (bugs-r13-sonnet 1).
+			release, err := node.LockDataDir(cfg.DataDir)
+			if err != nil {
+				return err
+			}
+			defer release()
 			if c.Flags().NFlag() > 0 {
 				if err := cfg.Save(); err != nil {
 					return err
@@ -618,7 +625,14 @@ schedule-hold: "offer" or "pause" until the schedule's next boundary, "" to clea
 			}
 			// bugs-r12-opus 2: no verified daemon (not running, or nothing on
 			// the UI port proved it holds the token): write the file ourselves
-			// and never claim it applied.
+			// and never claim it applied. A daemon that holds the data dir but
+			// did not answer keeps its own copy: don't rewrite the file under
+			// it (bugs-r13-sonnet, code only).
+			release, err := node.LockDataDir(cfg.DataDir)
+			if err != nil {
+				return fmt.Errorf("%w; it did not answer on the local page, so nothing was saved (try again, or restart it)", err)
+			}
+			defer release()
 			if err := cfg.Set(args[0], args[1]); err != nil {
 				return err
 			}

@@ -80,9 +80,33 @@ func parseMode(s string) (fs.FileMode, error) {
 	return m, nil
 }
 
+// errNotRegular: a content read hit a FIFO, socket or device (bugs-r13-opus 7).
+var errNotRegular = errors.New("not a regular file")
+
+// openFileNB opens p for reading without ever blocking (a FIFO open for
+// read would wait for a writer) and refuses anything but a regular file or a
+// directory; callers handle directories themselves (bugs-r13-opus 7).
+func openFileNB(p string) (*os.File, fs.FileInfo, error) {
+	f, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	fi, err := f.Stat()
+	if err == nil && !fi.Mode().IsRegular() && !fi.IsDir() {
+		err = &os.PathError{Op: "open", Path: p, Err: errNotRegular}
+	}
+	if err != nil {
+		f.Close()
+		return nil, nil, err
+	}
+	return f, fi, nil
+}
+
 // fsErr maps filesystem errors onto the error envelope.
 func (a *Agent) fsErr(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, errNotRegular):
+		writeErr(w, 400, "not_a_regular_file", a.scrub(err.Error()))
 	case errors.Is(err, errInvalidPath):
 		writeErr(w, 400, "invalid_path", err.Error())
 	case errors.Is(err, fs.ErrNotExist):
@@ -167,11 +191,19 @@ func (a *Agent) handleFileRead(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "is_directory", virt+" is a directory")
 		return
 	}
+	if !fi.Mode().IsRegular() { // bugs-r13-opus 7
+		a.fsErr(w, &os.PathError{Op: "read", Path: real, Err: errNotRegular})
+		return
+	}
 	if fi.Size() > maxFileRW {
 		writeErr(w, 400, "file_too_large", "files over 5 MiB need files/download-url")
 		return
 	}
-	b, err := os.ReadFile(real)
+	b, err := readSmallFile(real)
+	if errors.Is(err, errTooLarge) {
+		writeErr(w, 400, "file_too_large", "files over 5 MiB need files/download-url")
+		return
+	}
 	if err != nil {
 		a.fsErr(w, err)
 		return
@@ -181,6 +213,24 @@ func (a *Agent) handleFileRead(w http.ResponseWriter, r *http.Request) {
 		content = base64.StdEncoding.EncodeToString(b)
 	}
 	ok(w, "file.read", map[string]any{"success": true, "path": virt, "encoding": enc, "size": len(b), "content": content})
+}
+
+var errTooLarge = errors.New("file is larger than 5 MiB")
+
+// readSmallFile reads a regular file of at most maxFileRW bytes, without
+// blocking on a FIFO swapped in after the caller's stat, and without
+// reading past the limit if the file grew meanwhile (bugs-r13-opus 4, 7).
+func readSmallFile(p string) ([]byte, error) {
+	f, _, err := openFileNB(p)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, maxFileRW+1))
+	if err == nil && len(b) > maxFileRW {
+		err = errTooLarge
+	}
+	return b, err
 }
 
 // PUT /v1/files
@@ -432,25 +482,33 @@ func (a *Agent) handleFileFind(w http.ResponseWriter, r *http.Request) {
 		if !d.Type().IsRegular() {
 			return nil
 		}
-		f, err := os.Open(p)
+		f, fi, err := openFileNB(p) // bugs-r13-opus 7
 		if err != nil {
-			errs = append(errs, a.scrub(err.Error()))
+			if !errors.Is(err, errNotRegular) {
+				errs = append(errs, a.scrub(err.Error()))
+			}
 			return nil
 		}
 		defer f.Close()
+		if !fi.Mode().IsRegular() {
+			return nil
+		}
 		br := bufio.NewReaderSize(f, 64<<10)
 		if head, _ := br.Peek(8000); bytes.IndexByte(head, 0) >= 0 {
 			return nil // binary
 		}
 		virt := a.toVirt(p)
+		var buf []byte
 		for n := 1; ; n++ {
-			line, err := br.ReadString('\n')
-			if len(line) > 0 && match(strings.TrimRight(line, "\r\n")) {
+			var err error
+			buf, err = readCappedLine(br, buf[:0], findLineCap)
+			line := strings.TrimRight(string(buf), "\r\n")
+			if len(buf) > 0 && match(line) {
 				if len(matches) == maxFindMatch {
 					truncated = true
 					return filepath.SkipAll
 				}
-				matches = append(matches, findMatch{File: virt, Line: n, Content: cutLine(strings.TrimRight(line, "\r\n"))})
+				matches = append(matches, findMatch{File: virt, Line: n, Content: cutLine(line)})
 			}
 			if err != nil {
 				return nil
@@ -466,6 +524,24 @@ func (a *Agent) handleFileFind(w http.ResponseWriter, r *http.Request) {
 		res["errors"] = errs
 	}
 	ok(w, "file.find", res)
+}
+
+// findLineCap: find looks at most this far into a line (bugs-r13-opus 4).
+var findLineCap = 64 << 10
+
+// readCappedLine reads one line (up to and including '\n') into dst, keeping
+// at most max bytes and dropping the rest of a longer line as it reads, so
+// a huge single-line file never sits in memory (bugs-r13-opus 4).
+func readCappedLine(br *bufio.Reader, dst []byte, max int) ([]byte, error) {
+	for {
+		chunk, err := br.ReadSlice('\n')
+		if room := max - len(dst); room > 0 {
+			dst = append(dst, chunk[:min(len(chunk), room)]...)
+		}
+		if err != bufio.ErrBufferFull {
+			return dst, err
+		}
+	}
 }
 
 func cutLine(s string) string {
@@ -664,10 +740,13 @@ func (a *Agent) handleReplace(w http.ResponseWriter, r *http.Request) {
 			if fi.IsDir() {
 				return errors.New("is a directory")
 			}
-			if fi.Size() > maxFileRW {
-				return errors.New("file is larger than 5 MiB")
+			if !fi.Mode().IsRegular() { // bugs-r13-opus 7
+				return errNotRegular
 			}
-			b, err := os.ReadFile(real)
+			if fi.Size() > maxFileRW {
+				return errTooLarge
+			}
+			b, err := readSmallFile(real)
 			if err != nil {
 				return err
 			}
@@ -703,14 +782,16 @@ func (a *Agent) handleArtifact(w http.ResponseWriter, r *http.Request) {
 		name := filepath.Base(virt)
 		w.Header().Set("Content-Type", "application/gzip")
 		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", name+".tar.gz"))
-		_ = writeTarGz(w, real, name)
+		if err := writeTarGz(w, real, name); err != nil {
+			panic(http.ErrAbortHandler) // bugs-r13-opus 9: the client must see a failed transfer
+		}
 		return
 	}
 	if fi.Size() > maxArtifact {
 		writeErr(w, 400, "file_too_large", "artifacts are limited to 50 MiB; use files/download-url")
 		return
 	}
-	f, err := os.Open(real)
+	f, _, err := openFileNB(real) // bugs-r13-opus 7
 	if err != nil {
 		a.fsErr(w, err)
 		return
@@ -721,6 +802,32 @@ func (a *Agent) handleArtifact(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, "", fi.ModTime(), f)
 }
 
+// tarAfterHeader is a test seam: called after a regular file's header is written.
+var tarAfterHeader func(path string)
+
+// errRecorder remembers the first write error, to tell a failed write from a
+// failed read of the source file.
+type errRecorder struct {
+	w   io.Writer
+	err error
+}
+
+func (e *errRecorder) Write(p []byte) (int, error) {
+	n, err := e.w.Write(p)
+	if err != nil && e.err == nil {
+		e.err = err
+	}
+	return n, err
+}
+
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) { clear(p); return len(p), nil }
+
+// writeTarGz streams dir as a .tar.gz. A file that changes size while it is
+// written does not break the archive: a shrunk file is padded with zeros, a
+// grown one cut, as GNU tar does. Any error returned is a write error
+// (bugs-r13-opus 9).
 func writeTarGz(w io.Writer, dir, prefix string) error {
 	gz := gzip.NewWriter(w)
 	tw := tar.NewWriter(gz)
@@ -731,6 +838,18 @@ func writeTarGz(w io.Writer, dir, prefix string) error {
 		fi, err := d.Info()
 		if err != nil {
 			return nil
+		}
+		var f *os.File
+		if fi.Mode().IsRegular() { // open first: a file that cannot be opened gets no header
+			var ofi fs.FileInfo
+			if f, ofi, err = openFileNB(p); err != nil {
+				return nil
+			}
+			defer f.Close()
+			if !ofi.Mode().IsRegular() {
+				return nil
+			}
+			fi = ofi
 		}
 		rel, _ := filepath.Rel(dir, p)
 		link := ""
@@ -748,14 +867,19 @@ func writeTarGz(w io.Writer, dir, prefix string) error {
 		if err := tw.WriteHeader(hdr); err != nil {
 			return err
 		}
-		if fi.Mode().IsRegular() {
-			f, err := os.Open(p)
-			if err != nil {
-				return nil
+		if f != nil {
+			if tarAfterHeader != nil {
+				tarAfterHeader(p)
 			}
-			defer f.Close()
-			if _, err := io.CopyN(tw, f, fi.Size()); err != nil {
-				return err
+			ew := &errRecorder{w: tw}
+			n, _ := io.Copy(ew, io.LimitReader(f, hdr.Size)) // a read error counts as a shrunk file
+			if ew.err != nil {
+				return ew.err
+			}
+			if n < hdr.Size {
+				if _, err := io.CopyN(tw, zeroReader{}, hdr.Size-n); err != nil {
+					return err
+				}
 			}
 		}
 		return nil
@@ -776,17 +900,12 @@ func (a *Agent) handleRawGet(w http.ResponseWriter, r *http.Request) {
 	if !okk {
 		return
 	}
-	f, err := os.Open(real)
+	f, fi, err := openFileNB(real) // bugs-r13-opus 7
 	if err != nil {
 		a.fsErr(w, err)
 		return
 	}
 	defer f.Close()
-	fi, err := f.Stat()
-	if err != nil {
-		a.fsErr(w, err)
-		return
-	}
 	if fi.IsDir() {
 		writeErr(w, 400, "is_directory", virt+" is a directory")
 		return

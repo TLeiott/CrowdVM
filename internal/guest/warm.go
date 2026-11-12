@@ -41,6 +41,20 @@ func LoadAdopted(dataDir string) (proto.GuestConfig, bool) {
 	return cfg, true
 }
 
+// ClearAdopted removes adopted.json. It holds the adopted sandbox's whole
+// config (API key, guest token, env secrets) and is only needed while the
+// VM still boots from its warm config drive: any other boot (resume, fork,
+// a deploy of a saved or shared snapshot) runs from its own config, and the
+// file must not travel on in the disk (bugs-r13-opus 1).
+func ClearAdopted(dataDir string) error {
+	p := adoptedPath(dataDir)
+	if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	_ = os.Remove(p + ".tmp")
+	return nil
+}
+
 // RunWarm serves a warm VM until it is adopted and returns the adopted
 // config (saved for restarts). listen overrides cfg.ListenAddr.
 func RunWarm(ctx context.Context, cfg proto.GuestConfig, dataDir string, logger *log.Logger) (proto.GuestConfig, error) {

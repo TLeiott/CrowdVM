@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/crowdvm/crowdvm/internal/server/store"
@@ -116,11 +117,16 @@ func (s *Server) handleDevicePoll(c *Ctx) error {
 	}
 	switch d.Status {
 	case "approved":
+		// Only the poll that marks the code consumed gets a session.
+		if res, err := s.DB.Exec(`UPDATE device_codes SET status='consumed' WHERE id=? AND status='approved'`, d.ID); err != nil {
+			return err
+		} else if n, _ := res.RowsAffected(); n != 1 {
+			return c.OK(200, "device.poll", map[string]any{"status": "expired"})
+		}
 		tok, err := s.NewSession(d.UserID, sessionCLI, d.ClientName)
 		if err != nil {
 			return err
 		}
-		_, _ = s.DB.Exec(`UPDATE device_codes SET status='consumed' WHERE id=?`, d.ID)
 		u, err := s.UserByID(d.UserID)
 		if err != nil {
 			return err
@@ -133,9 +139,56 @@ func (s *Server) handleDevicePoll(c *Ctx) error {
 	}
 }
 
+// codeMisses counts each user's wrong device codes. Agent claim codes are
+// six digits: without a cap, a signed-in user could guess pending ones and
+// claim other people's agents into their own account (bugs-r13-sonnet).
+type codeMisses struct {
+	mu sync.Mutex
+	m  map[string]*ipWin
+}
+
+const (
+	codeMissMax    = 20
+	codeMissWindow = 10 * time.Minute
+)
+
+// check refuses a user with too many wrong codes in the window.
+func (cm *codeMisses) check(user string) error {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	if e := cm.m[user]; e != nil && time.Since(e.start) < codeMissWindow && e.n >= codeMissMax {
+		return ErrD(429, "too_many_attempts", "Too many wrong codes. Try again in a few minutes.", map[string]any{"retryAfter": int((codeMissWindow - time.Since(e.start)).Seconds()) + 1})
+	}
+	return nil
+}
+
+func (cm *codeMisses) miss(user string) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	if cm.m == nil {
+		cm.m = map[string]*ipWin{}
+	}
+	now := time.Now()
+	for k, e := range cm.m {
+		if now.Sub(e.start) >= codeMissWindow {
+			delete(cm.m, k)
+		}
+	}
+	e := cm.m[user]
+	if e == nil {
+		e = &ipWin{start: now}
+		cm.m[user] = e
+	}
+	e.n++
+}
+
 func (s *Server) handleDeviceLookup(c *Ctx) error {
+	if err := s.codeMiss.check(c.P.User.ID); err != nil {
+		return err
+	}
 	d, err := s.deviceBy("user_code", normUserCode(c.Query("code")))
 	if err != nil || d.ExpiresAt < store.Now() {
+		s.codeMiss.miss(c.P.User.ID)
 		return errNotFound("Code")
 	}
 	return c.OK(200, "device.info", map[string]any{"kind": d.Kind, "clientName": d.ClientName, "status": d.Status, "email": nz(d.Email)})
@@ -151,7 +204,19 @@ func (s *Server) handleDeviceApprove(c *Ctx) error {
 	if err := c.Bind(&req); err != nil {
 		return err
 	}
+	if err := s.codeMiss.check(c.P.User.ID); err != nil {
+		return err
+	}
 	d, err := s.deviceBy("user_code", normUserCode(req.UserCode))
+	if err != nil {
+		s.codeMiss.miss(c.P.User.ID)
+	} else {
+		// One approval per code: parallel ones would each mint a key
+		// (bugs-r13-sonnet 6). Read the row again under the lock.
+		unlock := s.sbLocks.Lock("device:" + d.ID)
+		defer unlock()
+		d, err = s.deviceBy("id", d.ID)
+	}
 	if err != nil || d.ExpiresAt < store.Now() || d.Status != "pending" {
 		return Err(404, "invalid_code", "The code is wrong, expired or already used.")
 	}
@@ -381,7 +446,15 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 	case d.Status == "denied":
 		oauthErr(w, 400, "access_denied", "The human denied the request.")
 	case d.Status == "approved" && d.Token != "":
-		_, _ = s.DB.Exec(`UPDATE device_codes SET status='consumed', token=NULL WHERE id=?`, d.ID)
+		// Only the poll that consumes the code gets the key.
+		var n int64
+		if res, err := s.DB.Exec(`UPDATE device_codes SET status='consumed', token=NULL WHERE id=? AND status='approved'`, d.ID); err == nil {
+			n, _ = res.RowsAffected()
+		}
+		if n != 1 {
+			oauthErr(w, 400, "invalid_grant", "The code was already used.")
+			return
+		}
 		writeRawJSON(w, 200, map[string]any{"access_token": d.Token, "token_type": "Bearer", "expires_in": int((90 * 24 * time.Hour).Seconds())})
 	default:
 		oauthErr(w, 400, "invalid_grant", "The code was already used.")

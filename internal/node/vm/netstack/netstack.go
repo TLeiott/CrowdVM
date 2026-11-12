@@ -93,7 +93,8 @@ type Network struct {
 	closeOnce sync.Once
 	lmu       sync.Mutex
 	listeners []net.Listener
-	blocked   map[string]time.Time // log dedup
+	fwd       map[net.Conn]struct{} // spliced Forward connections (both ends), under lmu; bugs-r13-opus 6
+	blocked   map[string]time.Time  // log dedup
 }
 
 // New creates a network. Attach a QEMU stream connection to bring it up.
@@ -409,6 +410,7 @@ func (n *Network) handleTCP(r *tcp.ForwarderRequest) {
 		out.Close()
 		return
 	}
+	setKeepalive(ep) // bugs-r13-opus 6
 	splice(gonet.NewTCPConn(&wq, ep), out)
 }
 
@@ -521,7 +523,11 @@ func splice(a, b net.Conn) {
 // DialGuest opens a TCP connection to the guest's port (on 10.0.2.15; the
 // guest sees it coming from the gateway).
 func (n *Network) DialGuest(ctx context.Context, port uint16) (net.Conn, error) {
-	return gonet.DialContextTCP(ctx, n.s, tcpip.FullAddress{NIC: nicID, Addr: tcpAddr(GuestIP), Port: port}, ipv4.ProtocolNumber)
+	c, _, err := dialGuestTCP(ctx, n.s, tcpip.FullAddress{NIC: nicID, Addr: tcpAddr(GuestIP), Port: port}) // bugs-r13-opus 6: with keepalive
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
 }
 
 // DialGuestUDP opens a UDP "connection" to the guest's port (from the
@@ -529,6 +535,39 @@ func (n *Network) DialGuest(ctx context.Context, port uint16) (net.Conn, error) 
 func (n *Network) DialGuestUDP(port uint16) (net.Conn, error) {
 	return gonet.DialUDP(n.s, &tcpip.FullAddress{NIC: nicID, Addr: tcpAddr(Gateway)},
 		&tcpip.FullAddress{NIC: nicID, Addr: tcpAddr(GuestIP), Port: port}, ipv4.ProtocolNumber)
+}
+
+func (n *Network) track(cs ...net.Conn) {
+	n.lmu.Lock()
+	defer n.lmu.Unlock()
+	if n.fwd == nil {
+		n.fwd = map[net.Conn]struct{}{}
+	}
+	for _, c := range cs {
+		n.fwd[c] = struct{}{}
+	}
+}
+
+func (n *Network) untrack(cs ...net.Conn) {
+	n.lmu.Lock()
+	defer n.lmu.Unlock()
+	for _, c := range cs {
+		delete(n.fwd, c)
+	}
+}
+
+// CloseGuestConns closes every connection Forward is relaying: the guest
+// rebooted, so none of them can answer any more (bugs-r13-opus 6).
+func (n *Network) CloseGuestConns() {
+	n.lmu.Lock()
+	cs := make([]net.Conn, 0, len(n.fwd))
+	for c := range n.fwd {
+		cs = append(cs, c)
+	}
+	n.lmu.Unlock()
+	for _, c := range cs {
+		c.Close()
+	}
 }
 
 // Forward relays connections accepted on l to the guest's port until the
@@ -555,7 +594,9 @@ func (n *Network) Forward(l net.Listener, port uint16) {
 					c.Close()
 					return
 				}
+				n.track(c, g)
 				splice(c, g)
+				n.untrack(c, g)
 			}()
 		}
 	}()
