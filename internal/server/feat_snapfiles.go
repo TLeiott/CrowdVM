@@ -879,7 +879,11 @@ func (f *snapFiles) handleInventory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sn, err := f.s.SnapshotByID(id)
-	if err != nil || sn.DeletedAt != nil {
+	var saved int
+	if err == nil && sn.DeletedAt != nil { // a saved snapshot's layer stays readable (SNAP-032, bugs-r19-sonnet 4)
+		_ = f.s.DB.QueryRow(`SELECT COUNT(*) FROM saved_snapshots WHERE snapshot_id=?`, sn.ID).Scan(&saved)
+	}
+	if err != nil || (sn.DeletedAt != nil && saved == 0) {
 		api.WriteError(w, Err(404, "not_found", "Snapshot not found."))
 		return
 	}

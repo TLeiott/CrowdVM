@@ -136,6 +136,25 @@ func (s *Server) ensureDiskKey(sbID, parent string) (string, error) {
 var errRekeyPending = ErrD(409, "disk_rekey_pending", "This sandbox is still re-encrypting its disk to a key of its own (its first start after being copied with --new-key). Retry in a few minutes.",
 	map[string]any{"retryable": true, "retryAfterSeconds": 60})
 
+// errRekeyMidSnapshot: a snapshot taken while its sandbox re-encrypted its
+// disk keeps that mark for good: which key opens it is not known, so it is
+// not copied, also after its sandbox finished (bugs-r19-sonnet 1).
+var errRekeyMidSnapshot = ErrD(409, "snapshot_taken_during_rekey", "This snapshot was taken while its sandbox was re-encrypting its disk to a key of its own, so it cannot be copied. Save a new snapshot of the sandbox (or fork the running sandbox) instead.",
+	map[string]any{"retryable": false})
+
+// copyRekeyErr: why snapshot id cannot be copied now (nil: it can).
+func (s *Server) copyRekeyErr(id string) error {
+	if !s.snapshotRekeyPending(id) {
+		return nil
+	}
+	var sbID string
+	_ = s.DB.QueryRow(`SELECT COALESCE(sandbox_id,'') FROM snapshots WHERE id=?`, id).Scan(&sbID)
+	if s.sandboxRekeyPending(sbID) {
+		return errRekeyPending // its sandbox is still at it: retry
+	}
+	return errRekeyMidSnapshot
+}
+
 func (s *Server) sandboxRekeyPending(id string) bool {
 	var p string
 	_ = s.DB.QueryRow(`SELECT rekey_from FROM sandboxes WHERE id=?`, id).Scan(&p)

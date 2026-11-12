@@ -248,12 +248,19 @@ func Join(a, b io.ReadWriteCloser) {
 		mu.Unlock()
 	}
 	copyDir := func(dst, src io.ReadWriteCloser) {
-		if _, err := io.Copy(touchWriter{dst, touch}, src); err != nil {
-			// A write that timed out (a stalled egress destination,
-			// bugs-r17-opus 1): nothing more will move. Other errors keep
-			// the half-close below, so an early answer (a 413 to a large
-			// upload) still reaches the client (bugs-r18-sonnet).
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		tw := &touchWriter{Writer: dst, touch: touch}
+		if _, err := io.Copy(tw, src); err != nil {
+			// A failed read (the sender broke off: a truncated upload must
+			// not look complete, bugs-r19-sonnet) or a write that timed out
+			// (a stalled egress destination, bugs-r17-opus 1): abort both.
+			// Another failed write keeps the half-close below, so an early
+			// answer (a 413 to a large upload) still reaches the client
+			// (bugs-r18-sonnet).
+			ne, isNet := tw.err.(net.Error)
+			if tw.err == nil || (isNet && ne.Timeout()) {
+				if l, ok := dst.(interface{ SetLinger(int) error }); ok && tw.err == nil {
+					_ = l.SetLinger(0) // a TCP receiver sees a reset, not a clean end
+				}
 				closeBoth()
 				return
 			}
@@ -284,10 +291,14 @@ func Join(a, b io.ReadWriteCloser) {
 type touchWriter struct {
 	io.Writer
 	touch func()
+	err   error // the first write error
 }
 
-func (w touchWriter) Write(p []byte) (int, error) {
+func (w *touchWriter) Write(p []byte) (int, error) {
 	n, err := w.Writer.Write(p)
 	w.touch()
+	if err != nil && w.err == nil {
+		w.err = err
+	}
 	return n, err
 }

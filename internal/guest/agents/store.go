@@ -88,7 +88,18 @@ func (m *Manager) load() {
 		}
 	}
 	// Retention on: rewrite state.json without the text an earlier boot kept
-	// (bugs-r17-sonnet 6).
+	// (bugs-r17-sonnet 6), and drop it from memory too (bugs-r19-sonnet 6).
+	if m.zdr() {
+		for _, c := range m.convs {
+			c.LastPromptPreview = ""
+		}
+		for _, p := range m.prompts {
+			p.Prompt = ""
+		}
+		for _, st := range m.steers {
+			st.Message = ""
+		}
+	}
 	if dirty || m.zdr() {
 		m.saveLocked()
 	}

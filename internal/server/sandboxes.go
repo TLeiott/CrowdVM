@@ -669,6 +669,11 @@ func (s *Server) handleUpdateSandbox(c *Ctx) error {
 		if len(sd) < 3 || len(sd) > 40 || !subdomainRe.MatchString(sd) || strings.Contains(sd, "--") || strings.HasSuffix(sd, "-desktop") || regexp.MustCompile(`-\d+$`).MatchString(sd) {
 			return Err(400, "invalid_subdomain", "subdomain must be 3-40 lowercase letters, digits and single hyphens, not ending in -desktop or -<number>.")
 		}
+		// bx-<id> is the label space of sandboxes without a subdomain: taking
+		// another sandbox's would serve its URLs (bugs-r19-opus 1).
+		if strings.HasPrefix(sd, strings.ReplaceAll(api.PrefixSandbox, "_", "-")) && sd != strings.ReplaceAll(sb.ID, "_", "-") {
+			return Err(400, "invalid_subdomain", "Subdomains starting with "+strings.ReplaceAll(api.PrefixSandbox, "_", "-")+" are reserved for sandbox ids.")
+		}
 		var n int
 		_ = s.DB.QueryRow(`SELECT COUNT(*) FROM sandboxes WHERE subdomain=? AND id<>? AND deleted_at IS NULL`, sd, sb.ID).Scan(&n)
 		if n > 0 {
@@ -943,8 +948,8 @@ func (s *Server) handleCreateSandbox(c *Ctx) error {
 	var chain []string
 	if src != nil {
 		parent = src.SnapshotID
-		if s.snapshotRekeyPending(parent) {
-			return fail(errRekeyPending)
+		if err := s.copyRekeyErr(parent); err != nil {
+			return fail(err)
 		}
 		chain = s.snapshotChain(parent)
 		if sn, err := s.SnapshotByID(parent); err == nil && sn.ImageID != "" {

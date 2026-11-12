@@ -1745,10 +1745,15 @@ func (s *Server) handleFork(c *Ctx) error {
 	if !src.SnapshotsEnabled {
 		return Err(409, "snapshots_disabled", "This sandbox has snapshots off and cannot be forked.")
 	}
-	if s.sandboxRekeyPending(src.ID) || s.snapshotRekeyPending(src.HeadSnapshotID) {
+	if s.sandboxRekeyPending(src.ID) {
 		return errRekeyPending
 	}
 	live := src.Usable() && src.NodeID != "" && s.nodes.get(src.NodeID) != nil
+	if !live { // a running source gets a live snapshot of its own
+		if err := s.copyRekeyErr(src.HeadSnapshotID); err != nil {
+			return err
+		}
+	}
 	if !live && src.HeadSnapshotID == "" {
 		if src.FirstBootDone && src.State != api.StateError {
 			return s.noHeadErr(src)

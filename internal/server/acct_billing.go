@@ -368,7 +368,13 @@ func (s *Server) grantQuotas() {
 			continue
 		}
 		bal := s.Balance(x.w)
-		expire := math.Max(0, math.Min(bal, st.QuotaGranted))
+		// Only the unused part of last month's quota expires: credits spent
+		// since it was granted came out of it first, and other credits
+		// (grants, earnings, transfers) never expire (bugs-r19-sonnet 7).
+		var spent float64 // every debit since the last quota grant
+		_ = s.DB.QueryRow(`SELECT COALESCE(-SUM(delta),0) FROM credit_ledger WHERE wallet_id=? AND delta<0 AND kind!='quota'
+			AND created_at>=COALESCE((SELECT MAX(created_at) FROM credit_ledger WHERE wallet_id=? AND kind='quota' AND delta>0),0)`, x.w, x.w).Scan(&spent)
+		expire := math.Max(0, math.Min(bal, st.QuotaGranted-spent))
 		_ = s.DB.Tx(s.ctx, func(tx *sql.Tx) error {
 			if expire > 0 {
 				if err := walletAdd(tx, x.w, -expire, "quota", "unused monthly credits expired", "", "", ""); err != nil {
@@ -855,7 +861,7 @@ func (s *Server) policyGuard(c *Ctx) error {
 			if sb.OrgID != "" {
 				wallets = append(wallets, sb.OrgID)
 			}
-			if op == "fork" {
+			if op == "fork" || op == "resume" { // a resume keeps its size too (bugs-r19-sonnet 8)
 				inherited = sb.Size
 			}
 		}
