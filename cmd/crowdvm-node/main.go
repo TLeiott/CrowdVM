@@ -234,6 +234,26 @@ func runCmd(g *globals) *cobra.Command {
 				if err := node.NoDumps(); err != nil {
 					log.Warn("cannot disable core dumps", "err", err)
 				}
+				if supervised {
+					// The unit comes from this build, not from the one that
+					// downloaded it; a changed unit applies on a restart (the
+					// next start finds nothing to change).
+					var out strings.Builder
+					if changed, err := service.Refresh(&out); err != nil {
+						log.Warn("cannot update the service unit", "err", err)
+					} else if changed {
+						log.Info("service unit updated; restarting to apply it", "out", strings.TrimSpace(out.String()))
+						return service.ErrRestart
+					}
+					// Count this start of a new build, or roll back one that
+					// never reached the server.
+					if back, err := node.CheckUpdateStart(ctx, cfg, ""); err != nil {
+						log.Warn("pending update", "err", err)
+					} else if back {
+						log.Warn("rolled back the updated crowdvm-node: it did not reach the server; restarting into the previous build")
+						return service.ErrRestart
+					}
+				}
 				drv, err := newDriver(cfg, log)
 				if err != nil {
 					return err
@@ -559,10 +579,22 @@ func updateLine(s node.Status) string {
 	if u == nil || u.State == compat.StateCurrent {
 		return ""
 	}
-	if u.State == compat.StateAvailable {
-		return fmt.Sprintf("%s is available (run %s)", u.Latest, u.Command)
+	cmd := u.Command
+	if cmd == "" {
+		cmd = "crowdvm-node update"
 	}
-	return strings.ToUpper(u.State) + ": " + u.Message
+	l := strings.ToUpper(u.State) + ": " + u.Message
+	if u.State == compat.StateAvailable {
+		l = fmt.Sprintf("%s is available (run %s)", u.Latest, cmd)
+	}
+	// Whether the daemon would install it by itself.
+	if a := s.AutoUpdate; a != nil && a.Unavailable != "" {
+		l += "; auto-update unavailable: " + a.Unavailable
+		if u.State != compat.StateAvailable {
+			l += "; run " + cmd
+		}
+	}
+	return l
 }
 
 // acceptLine says whether the node takes new sandboxes, and why not.

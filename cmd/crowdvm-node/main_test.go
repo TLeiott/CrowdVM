@@ -86,3 +86,16 @@ func TestR3StatusReadableMaps(t *testing.T) {
 		t.Fatal("empty direct endpoints must be readable")
 	}
 }
+
+// The Update line says why the daemon does not install a pending update.
+func TestUpdateLineAutoUpdate(t *testing.T) {
+	u := &proto.NodeUpdate{State: "outdated", Latest: "v1.3.0", Message: "Update by 14:00.", Command: "crowdvm-node update"}
+	s := node.Status{Update: u, AutoUpdate: &node.AutoUpdateStatus{Mode: "required", Unavailable: "not running as a service"}}
+	if l := updateLine(s); l != "OUTDATED: Update by 14:00.; auto-update unavailable: not running as a service; run crowdvm-node update" {
+		t.Fatal(l)
+	}
+	s.AutoUpdate.Unavailable = ""
+	if l := updateLine(s); strings.Contains(l, "auto-update") {
+		t.Fatal(l)
+	}
+}

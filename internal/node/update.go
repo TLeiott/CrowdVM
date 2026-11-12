@@ -1,14 +1,19 @@
 package node
 
 // Self-update: `crowdvm-node update`, the local page's "Update node", and
-// later the daemon itself. The server's GET /downloads lists its binaries
-// with checksums and the release version (scripts/dist.sh's manifest).
-// crowdvm-node and the companions installed next to it are downloaded to
-// <name>.new, checked (size, sha256, the new node answers `version`), then
-// swapped in: <name> becomes <name>.old and <name>.new becomes <name>.
-// Renaming works for a running executable on Linux and Windows, so the
-// daemon keeps running the old code until it restarts; its VMs survive the
-// restart. Rollback swaps the .old files back.
+// the daemon itself (autoupdate.go). The server's GET /downloads lists its
+// binaries with checksums and the release version (scripts/dist.sh's
+// manifest). crowdvm-node and the companions installed next to it
+// (crowdvm-guest, crowdvm-linux-amd64; the crowdvm CLI updates itself) are
+// downloaded to temp files next to them, checked (size, sha256, the new
+// node answers `version`), then swapped in: <name> is hard-linked to
+// <name>.old and the download renamed over <name>, so <name> exists at
+// every moment (Windows renames <name> away first). The daemon keeps
+// running the old code until it restarts; its VMs survive the restart.
+// Rollback swaps the .old files back. A lock file next to the binaries
+// keeps the CLI and the daemon from updating at once. The new build
+// confirms itself by reaching the server, or is rolled back
+// (update_pending.go).
 
 import (
 	"context"
@@ -18,17 +23,19 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/crowdvm/crowdvm/internal/api"
 	"github.com/crowdvm/crowdvm/internal/client"
-	"github.com/crowdvm/crowdvm/internal/node/service"
 	"github.com/crowdvm/crowdvm/internal/version"
 )
 
@@ -36,7 +43,7 @@ import (
 type UpdateOptions struct {
 	Check    bool   // only report whether an update is available
 	Rollback bool   // swap the .old files from the last update back
-	Force    bool   // install the server's build even when it is not newer
+	Force    bool   // install the server's build even when it is not newer, or was rolled back
 	Exe      string // the crowdvm-node to replace (default: this executable)
 }
 
@@ -57,7 +64,7 @@ type updateFile struct {
 	want client.DownloadFile
 }
 
-var updateMu sync.Mutex // one update at a time in this process
+var errUpdating = errors.New("another crowdvm-node update is running; try again when it is done")
 
 // SelfUpdate installs the newer build cfg.Server offers (see the file
 // comment). Newer means a higher release version; when either side is not
@@ -66,8 +73,6 @@ var updateMu sync.Mutex // one update at a time in this process
 // when it is older. A checksum mismatch or a node binary that does not run
 // leaves every file as it was.
 func SelfUpdate(ctx context.Context, cfg *Config, o UpdateOptions) (UpdateResult, error) {
-	updateMu.Lock()
-	defer updateMu.Unlock()
 	res := UpdateResult{Server: cfg.Server, Current: Version}
 	exe := o.Exe
 	if exe == "" {
@@ -80,8 +85,15 @@ func SelfUpdate(ctx context.Context, cfg *Config, o UpdateOptions) (UpdateResult
 		}
 	}
 	paths := updatePaths(exe)
+	if !o.Check { // a check reads only, so it never waits for an update
+		unlock, err := lockUpdate(paths)
+		if err != nil {
+			return res, err
+		}
+		defer unlock()
+	}
 	if o.Rollback {
-		return res, rollback(paths, &res)
+		return res, rollback(ctx, cfg.DataDir, paths, &res)
 	}
 	if cfg.Server == "" {
 		return res, errors.New("this node has not joined a server (crowdvm-node join)")
@@ -108,10 +120,19 @@ func SelfUpdate(ctx context.Context, cfg *Config, o UpdateOptions) (UpdateResult
 			todo = append(todo, updateFile{p, want})
 		}
 	}
-	cmp, comparable := version.Compare(list.Version, Version)
-	res.Available = len(todo) > 0 && (!comparable || cmp > 0)
+	// The companions follow the node: they come with a newer node, or alone
+	// when the node already is the server's (so a crash between two swaps
+	// heals on the next update), never with an older node.
+	nodeDiffers := len(todo) > 0 && todo[0].path == exe
+	res.Available = len(todo) > 0
+	if cmp, comparable := version.Compare(list.Version, Version); nodeDiffers && comparable && cmp <= 0 {
+		res.Available = false
+	}
 	if o.Check || len(todo) == 0 || (!res.Available && !o.Force) {
 		return res, nil
+	}
+	if nodeDiffers && !o.Force && isSkipped(cfg.DataDir, list.Version) {
+		return res, errSkipped(list.Version)
 	}
 
 	var news []string
@@ -121,19 +142,22 @@ func SelfUpdate(ctx context.Context, cfg *Config, o UpdateOptions) (UpdateResult
 		}
 	}()
 	for _, f := range todo {
-		n := newPath(f.path)
-		news = append(news, n)
-		if err := download(ctx, cl, f.want, n); err != nil {
+		n, err := download(ctx, cl, f.want, f.path)
+		if err != nil {
 			return res, err
 		}
+		news = append(news, n)
 	}
-	if todo[0].path == exe {
+	if nodeDiffers {
 		got := binaryVersion(ctx, news[0])
 		if got == "" {
 			return res, fmt.Errorf("the crowdvm-node from %s does not run on this machine (`version` failed); keeping %s", cfg.Server, exe)
 		}
 		if c, ok := version.Compare(got, Version); ok && c <= 0 && !o.Force {
 			return res, fmt.Errorf("the server's crowdvm-node is %s, not newer than this one (%s); use --force to install it anyway", got, Version)
+		}
+		if !o.Force && isSkipped(cfg.DataDir, got) {
+			return res, errSkipped(got)
 		}
 		res.Latest = got
 	}
@@ -144,30 +168,57 @@ func SelfUpdate(ctx context.Context, cfg *Config, o UpdateOptions) (UpdateResult
 			return res, fmt.Errorf("remove %s.old (restart the node once, then update again): %w", p, err)
 		}
 	}
+	if nodeDiffers { // before the swap: a crash right after it still leaves the marker
+		if err := savePending(cfg.DataDir, pendingUpdate{From: Version, To: res.Latest}); err != nil {
+			return res, err
+		}
+	}
 	var done []string
 	for i, f := range todo {
 		if err := swapIn(f.path, news[i]); err != nil {
 			for _, p := range done {
 				_ = os.Rename(p+".old", p)
 			}
+			removePending(cfg.DataDir)
 			return res, err
 		}
 		done = append(done, f.path)
 	}
+	syncDir(filepath.Dir(exe))
 	news = nil
 	res.Updated, res.Files = true, done
 	return res, nil
 }
 
-// updatePaths: crowdvm-node first, then the companions that sit next to it
-// as regular files. A symlink (npm's crowdvm) belongs to another installer.
-func updatePaths(exe string) []string {
-	ext := ""
-	if runtime.GOOS == "windows" {
-		ext = ".exe"
+// lockUpdate takes the update lock next to the binaries (one update at a
+// time across processes: the CLI and the daemon) and clears the temp files
+// a killed update left behind.
+func lockUpdate(paths []string) (unlock func(), err error) {
+	dir := filepath.Dir(paths[0])
+	f, err := lockFile(filepath.Join(dir, ".crowdvm-node-update.lock"))
+	if errors.Is(err, errLocked) {
+		return nil, errUpdating
 	}
+	if err != nil {
+		return nil, fmt.Errorf("lock the update: %w", err)
+	}
+	if ents, err := os.ReadDir(dir); err == nil {
+		for _, e := range ents {
+			for _, p := range paths {
+				if b := filepath.Base(p); strings.HasPrefix(e.Name(), strings.TrimSuffix(b, ".exe")+".new-") || e.Name() == b+".swap" {
+					os.Remove(filepath.Join(dir, e.Name()))
+				}
+			}
+		}
+	}
+	return func() { f.Close() }, nil
+}
+
+// updatePaths: crowdvm-node first, then the companions that sit next to it
+// as regular files. A symlink belongs to another installer.
+func updatePaths(exe string) []string {
 	paths := []string{exe}
-	for _, n := range []string{"crowdvm-guest", "crowdvm-linux-amd64", "crowdvm" + ext} {
+	for _, n := range []string{"crowdvm-guest", "crowdvm-linux-amd64"} {
 		p := filepath.Join(filepath.Dir(exe), n)
 		if st, err := os.Lstat(p); err == nil && st.Mode().IsRegular() {
 			paths = append(paths, p)
@@ -177,15 +228,14 @@ func updatePaths(exe string) []string {
 }
 
 // findDownload maps a file next to the node to its download: crowdvm-node
-// and crowdvm for this platform, the guest and in-sandbox CLI from
-// linux/amd64 (any platform's copy of those is the same file).
+// for this platform, the guest and in-sandbox CLI from linux/amd64 (any
+// platform's copy of those is the same file).
 func findDownload(l *client.DownloadList, base string) (client.DownloadFile, bool) {
 	switch base {
 	case "crowdvm-guest", "crowdvm-linux-amd64":
 		if f, ok := l.Find("linux", "amd64", base); ok {
 			return f, true
 		}
-	case "crowdvm", "crowdvm.exe":
 	default: // this crowdvm-node, whatever its file is called
 		base = "crowdvm-node"
 		if runtime.GOOS == "windows" {
@@ -195,74 +245,121 @@ func findDownload(l *client.DownloadList, base string) (client.DownloadFile, boo
 	return l.Find(runtime.GOOS, runtime.GOARCH, base)
 }
 
-// newPath is where the download goes; Windows runs only .exe files.
-func newPath(p string) string {
-	if strings.HasSuffix(p, ".exe") {
-		return strings.TrimSuffix(p, ".exe") + ".new.exe"
-	}
-	return p + ".new"
-}
-
-func download(ctx context.Context, cl *client.Client, want client.DownloadFile, dst string) error {
+// download fetches want into a new temp file next to p (Windows runs only
+// .exe files) and returns its path. A body longer than the listed size
+// fails without filling the disk.
+func download(ctx context.Context, cl *client.Client, want client.DownloadFile, p string) (string, error) {
 	body, err := cl.DownloadBinary(ctx, want.OS, want.Arch, want.Name)
 	if err != nil {
-		return fmt.Errorf("download %s: %w", want.Name, err)
+		return "", fmt.Errorf("download %s: %w", want.Name, err)
 	}
 	defer body.Close()
-	f, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	pattern := filepath.Base(p) + ".new-*"
+	if strings.HasSuffix(p, ".exe") {
+		pattern = strings.TrimSuffix(filepath.Base(p), ".exe") + ".new-*.exe"
+	}
+	f, err := os.CreateTemp(filepath.Dir(p), pattern)
 	if err != nil {
-		return err
+		return "", err
 	}
 	h := sha256.New()
-	n, err := io.Copy(io.MultiWriter(f, h), body)
+	n, err := io.Copy(io.MultiWriter(f, h), io.LimitReader(body, want.Size+1))
+	if err == nil {
+		err = f.Chmod(0o755)
+	}
+	if err == nil {
+		err = f.Sync() // on disk before it replaces a working binary
+	}
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
-	if err != nil {
-		return fmt.Errorf("download %s: %w", want.Name, err)
-	}
-	if got := hex.EncodeToString(h.Sum(nil)); got != want.SHA256 || n != want.Size {
-		return fmt.Errorf("the downloaded %s does not match the server's checksum (sha256 %s, %d bytes; want %s, %d bytes); nothing was installed",
+	got := hex.EncodeToString(h.Sum(nil))
+	switch {
+	case err != nil:
+		err = fmt.Errorf("download %s: %w", want.Name, err)
+	case n > want.Size:
+		err = fmt.Errorf("the downloaded %s is larger than the server's %d bytes; nothing was installed", want.Name, want.Size)
+	case got != want.SHA256 || n != want.Size:
+		err = fmt.Errorf("the downloaded %s does not match the server's checksum (sha256 %s, %d bytes; want %s, %d bytes); nothing was installed",
 			want.Name, got, n, want.SHA256, want.Size)
 	}
-	return nil
+	if err != nil {
+		os.Remove(f.Name())
+		return "", err
+	}
+	return f.Name(), nil
 }
 
-// swapIn moves p to p.old and next to p (undone when the second step fails).
+// keepAs makes dst name p's file: a hard link, so p stays in place, or on
+// Windows (and file systems without links) a rename. renamed says which.
+func keepAs(p, dst string) (renamed bool, err error) {
+	if runtime.GOOS != "windows" {
+		if err := os.Link(p, dst); err == nil || os.IsExist(err) {
+			return false, err
+		}
+	}
+	return true, os.Rename(p, dst)
+}
+
+// swapIn keeps p as p.old and renames next over p (undone when that fails).
 func swapIn(p, next string) error {
-	if err := os.Rename(p, p+".old"); err != nil {
+	renamed, err := keepAs(p, p+".old")
+	if err != nil {
 		return err
 	}
 	if err := os.Rename(next, p); err != nil {
-		_ = os.Rename(p+".old", p)
+		if renamed {
+			_ = os.Rename(p+".old", p)
+		} else {
+			_ = os.Remove(p + ".old")
+		}
 		return err
 	}
 	return nil
 }
 
-// rollback swaps each file with its .old, so a second rollback goes
-// forward again.
-func rollback(paths []string, res *UpdateResult) error {
-	var done []string
-	swap := func(p string) error {
-		tmp := newPath(p)
-		_ = os.Remove(tmp)
-		if err := os.Rename(p, tmp); err != nil {
-			return err
-		}
-		if err := os.Rename(p+".old", p); err != nil {
-			_ = os.Rename(tmp, p)
-			return err
-		}
-		return os.Rename(tmp, p+".old")
+// swapOld exchanges p and p.old, p in place throughout like swapIn.
+func swapOld(p string) error {
+	tmp := p + ".swap"
+	_ = os.Remove(tmp)
+	renamed, err := keepAs(p, tmp)
+	if err != nil {
+		return err
 	}
+	if err := os.Rename(p+".old", p); err != nil {
+		if renamed {
+			_ = os.Rename(tmp, p)
+		} else {
+			_ = os.Remove(tmp)
+		}
+		return err
+	}
+	return os.Rename(tmp, p+".old")
+}
+
+// syncDir makes the renames in dir durable (Windows has no directory fsync).
+func syncDir(dir string) {
+	if runtime.GOOS == "windows" {
+		return
+	}
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		d.Close()
+	}
+}
+
+// rollback swaps each file with its .old, so a second rollback goes
+// forward again. The build it leaves is skipped by auto-update.
+func rollback(ctx context.Context, dataDir string, paths []string, res *UpdateResult) error {
+	from := binaryVersion(ctx, paths[0])
+	var done []string
 	for _, p := range paths {
 		if _, err := os.Stat(p + ".old"); err != nil {
 			continue
 		}
-		if err := swap(p); err != nil {
+		if err := swapOld(p); err != nil {
 			for _, d := range done {
-				_ = swap(d)
+				_ = swapOld(d)
 			}
 			return err
 		}
@@ -271,16 +368,30 @@ func rollback(paths []string, res *UpdateResult) error {
 	if len(done) == 0 {
 		return fmt.Errorf("no previous version to roll back to (no %s.old)", paths[0])
 	}
+	syncDir(filepath.Dir(paths[0]))
+	if done[0] == paths[0] {
+		skipVersion(dataDir, from)
+		removePending(dataDir)
+	}
 	res.Updated, res.Files, res.Latest = true, done, ""
 	return nil
 }
 
 // binaryVersion runs `path version` ("crowdvm-node v1.2.3 linux/amd64 go1.x");
-// "" when it does not run. Older releases have no --version flag.
+// "" when it does not run. Older releases have no --version flag. A file
+// just written may be busy for a moment (another fork still holds it open
+// for writing).
 func binaryVersion(ctx context.Context, path string) string {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, path, "version").Output()
+	var out []byte
+	var err error
+	for i := 0; i < 3; i++ {
+		if out, err = exec.CommandContext(ctx, path, "version").Output(); !errors.Is(err, syscall.ETXTBSY) {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 	if err != nil {
 		return ""
 	}
@@ -291,18 +402,42 @@ func binaryVersion(ctx context.Context, path string) string {
 	return f[1]
 }
 
+// Tailscale's addresses: WireGuard authenticates the peer.
+var tailnet4, tailnet6 = netip.MustParsePrefix("100.64.0.0/10"), netip.MustParsePrefix("fd7a:115c:a1e0::/48")
+
+// TrustedUpdateServer reports whether a download from server is
+// authenticated: https, this machine, or a Tailscale address. Over plain
+// http on a network anyone on the path could swap the binary, so the
+// daemon does not update itself from such a server (the checksums come
+// from the same server).
+func TrustedUpdateServer(server string) bool {
+	if !strings.Contains(server, "://") {
+		server = "http://" + server
+	}
+	u, err := url.Parse(server)
+	if err != nil {
+		return false
+	}
+	if u.Scheme == "https" || u.Hostname() == "localhost" {
+		return true
+	}
+	a, err := netip.ParseAddr(u.Hostname())
+	if err != nil {
+		return false
+	}
+	a = a.Unmap().WithZone("")
+	return a.IsLoopback() || tailnet4.Contains(a) || tailnet6.Contains(a)
+}
+
 // Update is SelfUpdate for the running daemon (the local page, and
-// auto-update): after a swap it refreshes the service unit and, when a
-// service manager starts the daemon again, restarts it. Sandboxes keep
-// running through the restart.
+// auto-update): after a swap, when a service manager starts the daemon
+// again, it restarts; the new build brings its service unit up to date as
+// it starts. Sandboxes keep running through the restart.
 func (n *Node) Update(ctx context.Context, o UpdateOptions) (UpdateResult, error) {
 	cfg := n.config()
 	res, err := SelfUpdate(ctx, &cfg, o)
 	if err != nil || !res.Updated {
 		return res, err
-	}
-	if _, err := service.Refresh(io.Discard); err != nil {
-		n.log.Warn("update: cannot refresh the service unit", "err", err)
 	}
 	n.mu.Lock()
 	fn := n.restarter
@@ -316,17 +451,19 @@ func (n *Node) Update(ctx context.Context, o UpdateOptions) (UpdateResult, error
 }
 
 // updateRoutes serves the local page's update control: GET /api/update
-// checks (cached for a while, as the page polls), POST /api/update installs
-// and restarts the node.
-func (n *Node) updateRoutes(m, ctl *http.ServeMux) {
+// checks (cached for a while, as the page polls; ?refresh=1 skips the
+// cache for an authorized caller only, so nobody can make the node hammer
+// its server), POST /api/update installs and restarts the node.
+func (n *Node) updateRoutes(m, ctl *http.ServeMux, authorized func(*http.Request) bool) {
 	const ttl = 10 * time.Minute
 	var mu sync.Mutex
 	var at time.Time
 	var last map[string]any
 	m.HandleFunc("GET /api/update", func(w http.ResponseWriter, r *http.Request) {
+		refresh := r.URL.Query().Get("refresh") != "" && authorized(r)
 		mu.Lock()
 		defer mu.Unlock()
-		if last == nil || time.Since(at) > ttl || r.URL.Query().Get("refresh") != "" {
+		if last == nil || time.Since(at) > ttl || refresh {
 			cfg := n.config()
 			ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 			res, err := SelfUpdate(ctx, &cfg, UpdateOptions{Check: true})

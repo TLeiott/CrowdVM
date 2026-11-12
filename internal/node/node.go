@@ -110,6 +110,8 @@ type Node struct {
 	update            *proto.NodeUpdate // from the server: is this build current
 	serverGen         int
 	autoUpdateAt      time.Time // last auto-update attempt
+	autoUpdateLatest  string    // the release it went for
+	updateConfirmed   sync.Once // confirmUpdate after the first heartbeat
 
 	// Local control (ui.go): settings saved but only applied on restart,
 	// and how to restart the daemon (nil: nothing would bring it back).
@@ -587,6 +589,7 @@ func (n *Node) heartbeat(ctx context.Context, withInfo bool) error {
 	n.mu.Lock()
 	n.connState.LastHeartbeat = time.Now()
 	n.mu.Unlock()
+	n.updateConfirmed.Do(func() { confirmUpdate(n.config().DataDir) })
 	return nil
 }
 

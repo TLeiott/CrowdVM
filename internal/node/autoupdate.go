@@ -9,10 +9,13 @@ package node
 // would then reach every such node at once, so it is opt-in); "off" leaves
 // it to the owner. Only a supervised daemon (systemd, Windows service)
 // updates itself, because only it can restart into the new build; its VMs
-// survive the restart.
+// survive the restart. Only from a server whose downloads are
+// authenticated (TrustedUpdateServer), and never to a build that was
+// rolled back here (update_pending.go).
 
 import (
 	"context"
+	"math/rand/v2"
 	"time"
 
 	"github.com/crowdvm/crowdvm/internal/compat"
@@ -29,28 +32,67 @@ const (
 // downloads lag behind its requirement).
 var autoUpdateEvery = time.Hour
 
+// autoUpdateJitter: a random wait up to this before an update, so a
+// release does not pull every node's download at once.
+var autoUpdateJitter = 5 * time.Minute
+
+// AutoUpdateStatus is the daemon's auto-update in Status. Unavailable says
+// why it would not update by itself ("" when it would).
+type AutoUpdateStatus struct {
+	Mode        string `json:"mode"`
+	Unavailable string `json:"unavailable,omitempty"`
+}
+
+// autoUpdateStatus for the server's latest release.
+func (n *Node) autoUpdateStatus(latest string) AutoUpdateStatus {
+	c := n.config()
+	n.mu.Lock()
+	supervised := n.restarter != nil
+	n.mu.Unlock()
+	s := AutoUpdateStatus{Mode: firstNonEmpty(c.AutoUpdate, AutoUpdateRequired)}
+	switch {
+	case s.Mode == AutoUpdateOff:
+		s.Unavailable = "turned off"
+	case !supervised:
+		s.Unavailable = "not running as a service"
+	case !TrustedUpdateServer(c.Server):
+		s.Unavailable = "server is not https"
+	case isSkipped(c.DataDir, latest):
+		s.Unavailable = latest + " was rolled back here after it failed"
+	}
+	return s
+}
+
 // maybeAutoUpdate starts an update in the background when u and the
 // auto-update setting call for one.
 func (n *Node) maybeAutoUpdate(u *proto.NodeUpdate) {
 	if u == nil {
 		return
 	}
-	mode := firstNonEmpty(n.config().AutoUpdate, AutoUpdateRequired)
+	st := n.autoUpdateStatus(u.Latest)
 	required := u.State == compat.StateOutdated || u.State == compat.StateIncompatible
-	if mode == AutoUpdateOff || !(required || (mode == AutoUpdateAlways && u.State == compat.StateAvailable)) {
+	if st.Unavailable != "" || !(required || (st.Mode == AutoUpdateAlways && u.State == compat.StateAvailable)) {
 		return
 	}
 	n.mu.Lock()
-	ok := n.restarter != nil && time.Since(n.autoUpdateAt) >= autoUpdateEvery
+	// A newer release than the last attempt's is worth trying at once.
+	ok := time.Since(n.autoUpdateAt) >= autoUpdateEvery || u.Latest != n.autoUpdateLatest
 	if ok {
-		n.autoUpdateAt = time.Now()
+		n.autoUpdateAt, n.autoUpdateLatest = time.Now(), u.Latest
 	}
 	n.mu.Unlock()
 	if !ok {
 		return
 	}
-	n.log.Info("auto-update", "state", u.State, "latest", u.Latest, "mode", mode)
-	go autoUpdateRun(n)
+	var wait time.Duration
+	if autoUpdateJitter > 0 {
+		wait = rand.N(autoUpdateJitter)
+	}
+	n.log.Info("auto-update", "state", u.State, "latest", u.Latest, "mode", st.Mode, "in", wait.Round(time.Second))
+	go func() {
+		time.Sleep(wait)
+		autoUpdateRun(n)
+	}()
 }
 
 // autoUpdateRun installs the update (a variable for tests).
