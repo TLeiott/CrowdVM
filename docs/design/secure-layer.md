@@ -10,6 +10,18 @@ it, ops subset on the node side), phase 4 v1 as **egress over the guest channel*
 the critique below §5.6), and phase 2 in a **one-disk variant** (§5.4a). Not yet:
 phase 3 beyond core dumps (QMP/NIC fd passing, Landlock, tiers), the CLI as exit.
 
+**Phase 3, first part (red team round 3).** A node user stopped the node service
+(`systemctl --user stop`; VMs keep running), connected to `qmp.sock` and ran
+`dump-guest-memory`: 2.6 GB of guest RAM with the env canary 24 times (and the disk
+key). Now QMP (`-chardev socket,fd=3,server=off` + `-mon`) and the NIC (`-netdev
+stream,addr.type=fd,addr.str=4`) are socketpairs; the node keeps its ends in systemd's
+fd store (`NotifyAccess=main`, `FileDescriptorStoreMax=1024`,
+`FileDescriptorStorePreserve=yes`, `CROWDVM_FDSTORE=1` in the unit) and gets them back
+in `LISTEN_FDS` on restart, so adoption works as before. Verified: no socket file left,
+`open(/proc/<qemu>/fd/N)` ENXIO, `pidfd_getfd` EPERM (Yama), the restarted node adopts
+the VM and the guest channel reconnects in ~10 s. Without the unit variable (node run by
+hand, e2e) the path sockets remain.
+
 **§5.4a, as built (red team round 2).** No second drive: image v4 boots
 `init=/usr/local/lib/crowdvm/preinit`, which runs `crowdvm-guest preinit` from the
 config drive as PID 1. It redeems the ticket (static `10.0.2.15`, dialing the node's

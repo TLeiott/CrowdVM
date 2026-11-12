@@ -23,7 +23,7 @@ as software on ordinary PCs can:
 | reads your configuration (environment variables, secret files, SSH keys, registry and AI logins) | **no.** The node gets a boot stub; the VM fetches its configuration from the server over TLS pinned to the server's key |
 | runs commands in the sandbox, reads or writes its files, opens tunnels to it | **no.** The sandbox's API is served only on its channel to the server; the node may only check its health and pause or stop it |
 | sees what the sandbox does on the network | **no.** TCP and DNS go through the channel and leave from the server. The node sees one encrypted connection, its timing and volume |
-| reads the sandbox's memory | not with normal tools: no core dumps, no debugger access (Linux `ptrace` restrictions), the VM's control socket is held by the node. **Yes as root** |
+| reads the sandbox's memory | not with normal tools: no core dumps, no debugger access (Linux `ptrace` restrictions), and under the node's systemd service the VM's control and network sockets exist only as file descriptors kept by systemd, with no path anyone could connect to (a node started by hand keeps them as files in its data directory). **Yes as root** |
 | reads the sandbox's disk and snapshots | **no** (images from v4 on): everything the sandbox writes lands on an encrypted partition (LUKS2, AES-XTS). Its key comes from the server over the channel at boot and never passes through the node. The node and the server's snapshot store hold only ciphertext and the public base image |
 | changes CrowdVM or the VM image to get in | **yes**: whoever has root on a machine controls the VMs on it |
 

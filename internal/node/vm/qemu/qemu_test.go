@@ -445,7 +445,7 @@ func TestPlanMergeHiddenBase(t *testing.T) {
 
 func mustArgs(t *testing.T, d *Driver, rec vmRecord, dir string, port int, netSock, qmpArg string) []string {
 	t.Helper()
-	a, err := d.args(rec, dir, port, netSock, qmpArg)
+	a, err := d.args(rec, dir, port, netSock, []string{"-qmp", qmpArg})
 	if err != nil {
 		t.Fatal(err)
 	}
