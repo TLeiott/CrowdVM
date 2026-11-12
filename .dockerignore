@@ -10,3 +10,4 @@ node_modules
 **/.venv
 *.qcow2
 *.img
+.env

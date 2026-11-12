@@ -5,8 +5,8 @@
 #
 # The build runs on the build machine's own platform and cross-compiles, so
 # an arm64 image builds at native speed on an x86 machine.
-FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
-ARG TARGETOS TARGETARCH VERSION
+FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine AS build
+ARG TARGETOS TARGETARCH VERSION=""
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

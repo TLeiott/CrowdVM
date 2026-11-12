@@ -8,7 +8,7 @@ bookkeeping. Three things decide how hard the Pi works:
 | Load | Why | What to do |
 |---|---|---|
 | Disk | The server keeps uploaded snapshots and base images, so it can rebuild a sandbox when its node is gone | Put the data directory on an SSD (NVMe HAT or USB 3), never the SD card |
-| Network | Snapshots move through the server; by default sandboxes reach the internet through it too | Wired Ethernet; the Pi setup sends sandbox internet traffic out through the nodes (see below) |
+| Network | Snapshots move through the server; by default sandboxes reach the internet through it too | Wired Ethernet. If it is not enough, send sandbox internet traffic out through the nodes (see below) |
 | CPU | TLS, the dashboard and heartbeats (every node, every 10 s) | Nothing to do: a Pi 5 has hardware AES |
 
 ## With Docker
@@ -29,25 +29,51 @@ docker compose exec crowdvm-server crowdvm-server user create --username admin -
 
 Compose reads `.env` for every command, `exec` included. Without `CROWDVM_DATA` the data
 goes to a named volume in Docker's data root, so that root should be on the SSD as well.
+`CROWDVM_NODE_EGRESS=1` is a choice, not a requirement; read
+[Sandbox internet traffic](#sandbox-internet-traffic) before you keep it.
+
+The container uses the host's network (`network_mode: host`): the server listens on the
+Pi's port 8420 directly, sees real client addresses for its rate limits and public URL
+rules, and knows the Pi's own networks when it checks sandbox traffic.
 
 To build the arm64 image on a faster machine instead: `docker buildx build --platform
 linux/arm64 -t crowdvm-server .` (the build cross-compiles, so it runs at native speed).
 
 The compose file caps the container at 1 GB and sets `GOMEMLIMIT=600MiB`, so the Go
-runtime collects garbage before memory grows. Admin commands (`user`, `join-token`,
+runtime collects garbage before memory grows. (If `docker info` warns "No memory limit
+support", add `cgroup_enable=memory` to `/boot/firmware/cmdline.txt` and reboot;
+`GOMEMLIMIT` works either way.) `docker compose stop` gives the server 30 s to finish
+requests and write its usage records. Admin commands (`user`, `join-token`,
 `invite`) run inside the container with `docker compose exec crowdvm-server
 crowdvm-server ...`.
 
+## Binaries for nodes
+
+New nodes install `crowdvm-node` from the server (`curl http://<server>:8420/install | sh
+-s -- --node`), and nodes update from it, so the server needs the release binaries. Build
+them on any machine with Go (`make dist` writes `dist/`; on the Pi it takes a while) and
+import them next to the compose file:
+
+```sh
+make dist
+docker compose run --rm -v "$PWD/dist:/dist:ro" crowdvm-server downloads import /dist
+docker compose restart
+```
+
+Repeat this for every release you roll out ([Updates and compatibility](updates.md#server-operators)).
+
 ## Sandbox internet traffic
 
-A plain `crowdvm-server serve` sends a sandbox's internet traffic out through the server,
-so it never shows a node owner's address and node owners do not see it
-([Security model](security.md#the-sandboxs-network)). On a Pi that traffic would be the
-largest load, so the Docker setup turns it around by default: `CROWDVM_NODE_EGRESS=1`
-sends it out through each sandbox's node. Set `CROWDVM_NODE_EGRESS=0` in `.env` (then
-`docker compose up -d`) to route it through the server again, for example when the
-nodes belong to people who should not carry each other's traffic. Outside Docker the
-same setting is `crowdvm-server serve --node-egress` or the environment variable.
+By default a sandbox's internet traffic leaves through the server: it never shows a node
+owner's address, and node owners do not see it ([Security model](security.md#the-sandboxs-network)).
+On a Pi that traffic is usually the largest load. `CROWDVM_NODE_EGRESS=1` in `.env` (as
+in the setup above) sends it out through each sandbox's node instead. The Pi then carries
+none of it, but each node owner sees the traffic of the sandboxes on their machine
+(destinations, DNS lookups, anything unencrypted), and it leaves from their address. Use
+it when your node owners trust each other and the people who use the sandboxes.
+`CROWDVM_NODE_EGRESS=0` (the compose default) keeps it on the server. After a change,
+`docker compose up -d`; running sandboxes keep their old route until they start again.
+Outside Docker the same setting is `crowdvm-server serve --node-egress`.
 
 ## How the scheduler spreads sandboxes
 
@@ -59,7 +85,8 @@ available and, on Linux, pressure stall information (PSI). The scheduler then:
    shares, and placement rules (`--gpu`, `--min-tier`, labels, trust) still apply;
 2. skips a host that is short of memory (its owner's programs use it);
 3. prefers cool hosts: a host whose CPU is busy, or whose tasks stall on CPU or memory,
-   gets a sandbox only when no other node fits;
+   gets a sandbox only when no other node fits, unless it holds the sandbox's newest
+   snapshot (resuming there beats moving the disk through the server);
 4. among the rest, picks the one with the most room left on its tightest resource,
    counting both booked sizes and real use, plus a bonus for faster nodes, for a node
    that already holds the sandbox's snapshot (no download from the server) and for

@@ -8,8 +8,11 @@ services:
         VERSION: ${CROWDVM_VERSION:-}
     image: crowdvm-server
     restart: unless-stopped
-    ports:
-      - "8420:8420"
+    # Host networking: the server sees real client addresses (rate limits,
+    # public URL rules) and the host's own networks (egress checks).
+    network_mode: host
+    # Lets in-flight requests and the usage flush finish on docker stop.
+    stop_grace_period: 30s
     volumes:
       # Snapshots and images live here: keep it on an SSD, not the SD card.
       # Default: a named volume (Docker's data root). A host path in
@@ -18,10 +21,11 @@ services:
     environment:
       # Go collects garbage harder before the heap reaches this: steady memory.
       GOMEMLIMIT: 600MiB
-      # 1 (default here): sandbox internet traffic leaves through each node, so
-      # the Pi does not carry it. 0: it leaves through this server, which keeps
-      # node owners' IPs out of it (docs/guide/security.md#the-sandboxs-network).
-      CROWDVM_NODE_EGRESS: ${CROWDVM_NODE_EGRESS:-1}
+      # 1: sandbox internet traffic leaves through each node, so the Pi does not
+      # carry it, but node owners then see it and it shows their address.
+      # 0 (default): it leaves through this server
+      # (docs/guide/security.md#the-sandboxs-network).
+      CROWDVM_NODE_EGRESS: ${CROWDVM_NODE_EGRESS:-0}
     mem_limit: 1g
     command:
       - serve
