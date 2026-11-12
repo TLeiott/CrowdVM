@@ -72,16 +72,40 @@ crowdvm-node update --rollback # go back to the build before the last update
 ```
 
 The update downloads `crowdvm-node` and the guest agent from the server's
-`/downloads`, checks each against the sha256 the server lists (this proves the
-download is complete, not who built it: the node trusts its server), keeps the old files
-as `*.old`, refreshes the systemd unit if the new build needs a different one, and
-restarts the service. Running sandboxes survive the restart. They get the new guest
-agent at their next stop and resume.
+`/downloads` (the `crowdvm` CLI updates itself, see below). It checks each file against
+the sha256 the server lists: this proves the download is complete, not who built it,
+as the node trusts its server. It keeps the old files as `*.old` and restarts the
+service. Running sandboxes survive the restart. They get the new guest agent at their
+next stop and resume. Only one update runs at a time on a machine.
+
+The new build brings its systemd unit up to date when it starts. It replaces only a
+unit crowdvm-node wrote (the first line says so); one you edited stays as it is, and
+the node logs that. Put local changes in a drop-in (`systemctl --user edit
+crowdvm-node`) instead.
+
+A new build that never reaches the server is rolled back on its fourth start, and the
+node never installs that version by itself again. `crowdvm-node update --rollback`
+skips the version it leaves as well. Install a skipped version with
+`crowdvm-node update --force`.
+
+### Auto-update
 
 By default a node updates itself when the server says it misses a required update,
 so it never loses its sandboxes to the grace period
 (`crowdvm-node config set auto-update required`). `always` also installs optional
-updates. `off` leaves every update to you.
+updates. `off` leaves every update to you. Nodes wait a random 0 to 5 minutes first,
+so a release does not restart the whole pool at once.
+
+A node updates itself only when:
+
+- it runs as a service (`crowdvm-node install-service`, or the Windows service), as
+  only the service can restart it into the new build, and
+- its server is reached over `https`, on this machine, or over Tailscale: over plain
+  `http` on a network, anyone on the path could hand it a binary to run.
+
+Otherwise `crowdvm-node status` says why (`auto-update unavailable: ...`) and you run
+`crowdvm-node update` yourself (over plain `http` it warns that the download is
+unauthenticated).
 
 ## CLI and SDKs
 

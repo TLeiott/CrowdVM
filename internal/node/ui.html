@@ -326,7 +326,7 @@ function limitValues(st) {
 
 function acceptState(s) {
   const p = s.pause || {};
-  if (s.evacuation) return ["bad", "Evacuating"];
+  if (s.evacuation) return ["bad", s.evacuation.reason === "outdated" ? "Needs update" : "Evacuating"];
   if (s.drained) return ["warn", "Drained"];
   if (s.paused) return ["warn", s.vms.length ? `Paused · ${s.vms.length} still running` : "Paused"];
   if (p.paused && p.reason === "hold") return ["warn", "Paused until " + clock(p.until)];
@@ -449,7 +449,9 @@ function render(s) {
   $("pause").textContent = s.paused ? "Resume" : "Pause";
   $("pause").className = "ctl" + (s.paused ? " primary" : "");
   $("evacnote").style.display = s.evacuation ? "" : "none";
-  if (s.evacuation) $("evacnote").innerHTML = `This machine is being reclaimed. Sandboxes still here at <b>${esc(clock(s.evacuation.deadline))}</b> are stopped, with their disks saved, and resumed on other nodes.`;
+  if (s.evacuation) $("evacnote").innerHTML = s.evacuation.reason === "outdated"
+    ? `This node misses a required update. Unless it is updated, sandboxes still here at <b>${esc(clock(s.evacuation.deadline))}</b> are stopped, with their disks saved, and resumed on other nodes.`
+    : `This machine is being reclaimed. Sandboxes still here at <b>${esc(clock(s.evacuation.deadline))}</b> are stopped, with their disks saved, and resumed on other nodes.`;
 
   if (!$("update") || !$("update").disabled) renderUpdate(s); // not while an update runs
   renderAvailability(s);

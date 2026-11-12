@@ -200,17 +200,17 @@ crowdvm-node update             # install it; the node restarts, its sandboxes k
 crowdvm-node update --rollback  # back to the files the last update replaced
 ```
 
-`update` downloads `crowdvm-node`, plus `crowdvm-guest`, `crowdvm-linux-amd64` and the
-`crowdvm` CLI when they sit next to it (a symlink, such as npm's `crowdvm`, is left
-alone). It checks each file against the server's sha256 and runs the new node once
-before it swaps anything; the previous files stay next to them as `<name>.old`. It
-then brings the systemd unit up to date and restarts a running node. An older release
-is only installed with `--force`. When the page knows of a newer release it shows an
-Update node button that does the same.
+`update` downloads `crowdvm-node`, plus `crowdvm-guest` and `crowdvm-linux-amd64` when
+they sit next to it (the `crowdvm` CLI updates itself with `crowdvm self-update`). It
+checks each file against the server's sha256 and runs the new node once before it swaps
+anything; the previous files stay next to them as `<name>.old`. Then it restarts a
+running node, and the new build brings the systemd unit up to date. An older or skipped
+release is only installed with `--force`. When the page knows of a newer release it
+shows an Update node button that does the same.
 
-When the server says the node misses a required update, it updates itself (see
-[Updates and compatibility](updates.md) for what an outdated node may still do and for
-the `auto-update` setting).
+When the server says the node misses a required update, a node that runs as a service
+updates itself (see [Updates and compatibility](updates.md) for what an outdated node
+may still do, the `auto-update` setting and when it is unavailable).
 
 ## Leaving the pool
 
