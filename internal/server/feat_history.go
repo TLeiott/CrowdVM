@@ -641,7 +641,7 @@ type storedEvent struct {
 }
 
 func (s *Server) agentEvents(sbID string) []*storedEvent {
-	rows, err := s.DB.Query(`SELECT event_id,type,conversation_id,task_id,ts,data FROM agent_events WHERE sandbox_id=? ORDER BY ts, event_id`, sbID)
+	rows, err := s.DB.Query(`SELECT event_id,type,conversation_id,task_id,ts,data FROM agent_events WHERE sandbox_id=? ORDER BY ts, rowid`, sbID) // rowid: arrival order within a millisecond (bugs-r17-sonnet 3)
 	if err != nil {
 		return nil
 	}

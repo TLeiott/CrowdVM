@@ -1321,7 +1321,7 @@ Usage:
 
 Flags:
       --amount float   credits to move
-      --from string    source wallet (default: the one in scope)
+      --from string    source wallet (default: the one in scope: --org, CROWDVM_ORG or the active org; "personal" for your own)
   -h, --help           help for transfer
       --to string      target wallet: user or org id/name
 ```
@@ -1430,6 +1430,7 @@ Flags:
 
 ```text
 Print and open the desktop URL. It carries a token: treat it as a secret.
+Without --public the desktop is private (a public one becomes private again).
 
 Usage:
   crowdvm desktop ID [flags]

@@ -242,6 +242,7 @@ func (s *Server) authorizeSandbox(p *Principal, sb *Sandbox, action string, owne
 // SandboxJSON renders the Boat Sandbox object for viewer p (nil = owner view).
 func (s *Server) SandboxJSON(sb *Sandbox, p *Principal) map[string]any {
 	spec, _ := api.SizeByName(sb.Size)
+	disk := diskSpec(sb, spec).DiskGiB // the disk it has (bugs-r17-opus 9)
 	access := AccessOwner
 	if p != nil {
 		access = s.accessOf(p, sb)
@@ -341,7 +342,7 @@ func (s *Server) SandboxJSON(sb *Sandbox, p *Principal) map[string]any {
 		"environment": nz(sb.Environment), "environmentVersion": envVer, "stop": stop,
 		// CrowdVM extensions
 		"nodeId": nz(sb.NodeID), "node": nz(sb.NodeID), "imageId": nz(sb.ImageID), "placement": sb.Placement, "agentState": nz(sb.AgentState),
-		"noEnv": sb.NoEnv, "nested": sb.Nested, "storage": map[string]any{"diskGB": spec.DiskGiB, "encrypted": sb.Disk == "luks"},
+		"noEnv": sb.NoEnv, "nested": sb.Nested, "storage": map[string]any{"diskGB": disk, "encrypted": sb.Disk == "luks"},
 	}
 	if v, ok := sb.Extra["snapshotDataExpiredAt"].(float64); ok && v > 0 {
 		m["dataExpiredAt"] = tsMs(int64(v))

@@ -207,6 +207,12 @@ type RegistryLogin struct {
 type AIProxy struct {
 	BaseURL string `json:"baseUrl"` // e.g. http://10.0.2.2:8420/ai-proxy  (as reachable from the guest)
 	Token   string `json:"token"`   // per-sandbox proxy token
+	// Vendors the sandbox's profile has a credential for (VendorsSet: the
+	// list is given; older servers send none and every vendor is proxied).
+	// Others keep their own endpoints, e.g. OpenCode's free models
+	// (bugs-r17-opus 7).
+	Vendors    []string `json:"vendors,omitempty"`
+	VendorsSet bool     `json:"vendorsSet,omitempty"`
 }
 
 type DesktopConfig struct {

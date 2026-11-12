@@ -260,9 +260,15 @@ func (s *Server) guestStreams(g *GuestConn, egress bool) http.Handler {
 			out.Close()
 			return
 		}
+		// A destination that takes nothing for egressStall ends the flow,
+		// so stalled flows cannot hold all of a sandbox's slots
+		// (bugs-r17-opus 1).
+		out = &stallConn{Conn: out}
 		defer context.AfterFunc(sessDone, func() {
-			if tc, ok := out.(*net.TCPConn); ok {
-				_ = tc.SetLinger(0) // reset: drop what the destination never read
+			if sc, ok := out.(*stallConn); ok {
+				if tc, ok := sc.Conn.(*net.TCPConn); ok {
+					_ = tc.SetLinger(0) // reset: drop what the destination never read
+				}
 			}
 			out.Close()
 			conn.Close()
@@ -300,6 +306,37 @@ func (s *Server) guestStreams(g *GuestConn, egress bool) http.Handler {
 	})
 	return m
 }
+
+// egressStall: how long an egress write may wait for its destination.
+var egressStall = 2 * time.Minute
+
+// stallConn fails a write the destination has not taken within egressStall
+// (each write gets the full time again).
+type stallConn struct {
+	net.Conn
+	stalled atomic.Bool
+}
+
+func (c *stallConn) Write(p []byte) (int, error) {
+	_ = c.Conn.SetWriteDeadline(time.Now().Add(egressStall))
+	n, err := c.Conn.Write(p)
+	if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		c.stalled.Store(true)
+	}
+	return n, err
+}
+
+// Close resets a stalled flow: what the destination never took is dropped,
+// not kept in the kernel until it gives up.
+func (c *stallConn) Close() error {
+	if tc, ok := c.Conn.(*net.TCPConn); ok && c.stalled.Load() {
+		_ = tc.SetLinger(0)
+	}
+	return c.Conn.Close()
+}
+
+// CloseWrite keeps the half-close of the TCP conn (mux.Join).
+func (c *stallConn) CloseWrite() error { return mux.CloseWrite(c.Conn) }
 
 // maxGuestStreams caps the streams a guest channel has served at once: TCP
 // flows (maxEgressFlows), DNS and its calls, with room to spare.

@@ -155,6 +155,21 @@ func aiCredByID(id string) (aiCred, bool) {
 }
 
 // aiVendorCreds: the credentials the proxy may use for a vendor, preferred first.
+// aiProxiedVendors lists the proxy vendors active holds a credential for.
+func aiProxiedVendors(active map[string]aiSecret) []string {
+	out := []string{}
+	for v, creds := range aiVendorCreds {
+		for _, c := range creds {
+			if _, ok := active[c]; ok {
+				out = append(out, v)
+				break
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 var aiVendorCreds = map[string][]string{
 	"anthropic":  {"anthropic-api-key", "claude-subscription"},
 	"openai":     {"openai-api-key", "chatgpt-subscription"},
@@ -1440,10 +1455,11 @@ func (s *Server) aiPlan(sb *Sandbox, cfg envConfig, personal, forceProxy, boot b
 			if tok, err = s.aiMintToken(sb.ID, prof.ID); err != nil {
 				return err
 			}
-			p.AIProxy = &proto.AIProxy{BaseURL: s.envGuestURL() + "/ai-proxy", Token: tok}
 		} else if tok = s.aiCurrentToken(sb.ID); tok == "" {
 			return nil
 		}
+		// Live applies repoint it too, so a key added later is proxied.
+		p.AIProxy = &proto.AIProxy{BaseURL: s.envGuestURL() + "/ai-proxy", Token: tok, Vendors: aiProxiedVendors(active), VendorsSet: true}
 		base := s.envGuestURL() + "/ai-proxy"
 		// Vendors the guest's ProxyEnv does not cover.
 		if _, ok := active["llmgateway-api-key"]; ok {

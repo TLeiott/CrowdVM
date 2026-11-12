@@ -86,7 +86,9 @@ func (m *Manager) load() {
 			dirty = true
 		}
 	}
-	if dirty {
+	// Retention on: rewrite state.json without the text an earlier boot kept
+	// (bugs-r17-sonnet 6).
+	if dirty || m.zdr() {
 		m.saveLocked()
 	}
 }

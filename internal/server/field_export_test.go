@@ -28,3 +28,11 @@ func (s *Server) RequestStop(id, reason string) error {
 	_, err = s.requestStop(sb, false, reason)
 	return err
 }
+
+// SetEgressStall sets how long an egress write may wait and returns the
+// restore function (tests).
+func SetEgressStall(d time.Duration) func() {
+	old := egressStall
+	egressStall = d
+	return func() { egressStall = old }
+}

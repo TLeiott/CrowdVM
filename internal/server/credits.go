@@ -271,7 +271,15 @@ func (s *Server) handleCreditTransfer(c *Ctx) error {
 	if req.Amount <= 0 || math.IsNaN(req.Amount) {
 		return Err(400, "invalid_amount", "amount must be positive.")
 	}
-	from, err := s.resolveOrgRef(c.P.User, req.From)
+	// bugs-r17-opus 4: no "from" means the request's scope (header, org key,
+	// active org); an explicit "from", including "personal", stays as given.
+	var from *Org
+	var err error
+	if req.From == "" {
+		from, err = c.Scope("")
+	} else {
+		from, err = s.resolveOrgRef(c.P.User, req.From)
+	}
 	if err != nil {
 		return err
 	}

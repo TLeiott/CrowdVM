@@ -92,18 +92,30 @@ const (
 	maxAttachTotal = 64 << 20
 )
 
+// attachPath resolves an attachment path: absolute, ~/..., or relative to home.
+func attachPath(p, home string) string {
+	switch {
+	case strings.HasPrefix(p, "~/"):
+		return filepath.Join(home, p[2:])
+	case !filepath.IsAbs(p):
+		return filepath.Join(home, p)
+	}
+	return p
+}
+
 func checkAttachments(paths []string, home string) error {
 	if len(paths) > maxAttachFiles {
 		return fmt.Errorf("at most %d attachments per prompt (got %d)", maxAttachFiles, len(paths))
 	}
 	var total int64
 	for _, p := range paths {
-		if !filepath.IsAbs(p) {
-			p = filepath.Join(home, p)
-		}
+		p = attachPath(p, home) // ~/ too (bugs-r17-sonnet 5)
 		st, err := os.Stat(p)
 		if err != nil {
 			continue // the harness reports missing files itself
+		}
+		if !st.Mode().IsRegular() { // a FIFO would hang the read (bugs-r17-sonnet 7)
+			return fmt.Errorf("attachment %s is not a regular file", filepath.Base(p))
 		}
 		if st.Size() > maxAttachFile {
 			return fmt.Errorf("attachment %s is %d bytes; the limit is 25 MB per file", filepath.Base(p), st.Size())

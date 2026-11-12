@@ -89,7 +89,7 @@ sandboxes then reach the internet through their nodes, as described in
 ### Who can reach a sandbox
 
 - You, with your session or an API key whose scope covers the sandbox.
-- Members of your organization, when the sandbox is shared (`crowdvm share ID`).
+- Members of your organization, when the sandbox is shared (`crowdvm share ID`). They then see its coding-agent prompts and answers, also those from while it was private; the command history of that time stays hidden.
 - Anyone holding a token URL:
 
 | URL | Valid for |

@@ -190,6 +190,12 @@ func (s *Server) effectiveProvider(sb *Sandbox, req map[string]any) string {
 // applyPromptDefaults fills provider/model/fast from the caller's account
 // settings; it reports whether req changed.
 func (s *Server) applyPromptDefaults(u *User, sb *Sandbox, req map[string]any) bool {
+	// The account's defaults are for new conversations: a prompt that names
+	// one keeps that conversation's agent, which the guest knows
+	// (bugs-r17-sonnet 4).
+	if conv, _ := req["conversationId"].(string); conv != "" {
+		return false
+	}
 	st := s.accountSettings(u.ID)
 	changed := false
 	provider, _ := req["provider"].(string)

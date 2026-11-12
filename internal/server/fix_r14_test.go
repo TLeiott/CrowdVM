@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/crowdvm/crowdvm/internal/mux"
+	"github.com/crowdvm/crowdvm/internal/proto"
 	"github.com/crowdvm/crowdvm/internal/server"
 	"github.com/crowdvm/crowdvm/internal/server/servertest"
 )
@@ -154,5 +155,89 @@ func TestR16EgressFlowEndsWithItsSession(t *testing.T) {
 			}
 			return // EOF or reset: closed
 		}
+	}
+}
+
+// bugs-r17-opus 1: within a live session, a flow to a destination that
+// never reads never ended, and 256 of them cut the sandbox off the network.
+// A write the destination does not take within the stall time ends it.
+func TestR17StalledEgressFlowEnds(t *testing.T) {
+	defer server.SetEgressStall(300 * time.Millisecond)()
+	sink, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sink.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		if c, err := sink.Accept(); err == nil {
+			accepted <- c
+		}
+	}()
+	env := servertest.New(t, func(c *server.Config) { c.EgressAllow = []string{sink.Addr().String()} })
+	node := env.StartNode(servertest.NodeOptions{GuestChannel: true})
+	id := createSandbox(t, env, env.AdminKey, nil)
+	env.WaitState(env.AdminKey, id, "ready")
+	spec, _ := node.Spec(id)
+	sess, _ := rawChannel(t, env, id, spec.Guest.Channel.Ticket)
+	st, err := sess.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	up, err := mux.DialUpgrade(st, "server", "/v1/egress?addr="+sink.Addr().String(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := <-accepted
+	defer c.Close()
+	_ = c.(*net.TCPConn).SetReadBuffer(4096)
+	go func() { // the guest keeps writing
+		buf := make([]byte, 64<<10)
+		for {
+			if _, err := up.Write(buf); err != nil {
+				return
+			}
+		}
+	}()
+	time.Sleep(time.Second) // the destination's buffers fill, then the write stalls
+	// The destination sees the flow end (a reset) while the session is up.
+	_ = c.SetReadDeadline(time.Now().Add(15 * time.Second))
+	buf := make([]byte, 1<<20)
+	for {
+		if _, err := c.Read(buf); err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				t.Fatal("a flow whose destination takes nothing stayed open (the session is still up)")
+			}
+			return
+		}
+	}
+}
+
+// bugs-r17-opus 9: a disk never shrinks, but after a resume at a smaller
+// type the API (and the node's reservation) showed the smaller disk.
+func TestR17SmallerTypeKeepsTheBiggerDisk(t *testing.T) {
+	env := servertest.New(t)
+	key := env.AdminKey
+	node := env.StartNode(servertest.NodeOptions{Capacity: proto.Capacity{VCPU: 64, MemoryMiB: 1 << 18, DiskGiB: 10000, MaxSandboxes: 10}})
+	id := createSandbox(t, env, key, map[string]any{"type": "small"})
+	env.WaitState(key, id, "ready")
+	small := env.Do(key, "GET", "/api/v1/sandboxes/"+id, nil).Get("sandbox.storage.diskGB").(float64)
+	resize := func(typ string) {
+		env.Do(key, "POST", "/api/v1/sandboxes/"+id+"/stop", nil)
+		env.WaitState(key, id, "archived")
+		if r := env.Do(key, "POST", "/api/v1/sandboxes/"+id+"/resume", map[string]any{"type": typ}); r.Status/100 != 2 {
+			t.Fatalf("resume %s: %s", typ, r)
+		}
+		env.WaitState(key, id, "ready")
+	}
+	resize("large")
+	large := env.Do(key, "GET", "/api/v1/sandboxes/"+id, nil).Get("sandbox.storage.diskGB").(float64)
+	resize("small")
+	r := env.Do(key, "GET", "/api/v1/sandboxes/"+id, nil)
+	if got := r.Get("sandbox.storage.diskGB").(float64); got != large || got <= small {
+		t.Fatalf("after large then small: diskGB %v, want the large disk %v (small is %v)", got, large, small)
+	}
+	if sp, ok := node.Spec(id); !ok || float64(sp.Size.DiskGiB) != large {
+		t.Fatalf("the node was asked for a %d GiB disk, want %v", sp.Size.DiskGiB, large)
 	}
 }

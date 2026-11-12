@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -145,23 +146,29 @@ func (m *Manager) ProxyEnv() map[string]string {
 		return map[string]string{}
 	}
 	b := strings.TrimRight(p.BaseURL, "/")
-	return map[string]string{
-		"CROWDVM_AI_PROXY_URL": b,
-		"ANTHROPIC_BASE_URL":   b + "/anthropic",
-		"ANTHROPIC_API_KEY":    p.Token,
-		"OPENAI_BASE_URL":      b + "/openai/v1",
-		"OPENAI_API_KEY":       p.Token,
-		"OPENROUTER_BASE_URL":  b + "/openrouter/api/v1",
-		"OPENROUTER_API_KEY":   p.Token,
-		"MISTRAL_BASE_URL":     b + "/mistral/v1",
-		"MISTRAL_API_KEY":      p.Token,
-		"MOONSHOT_BASE_URL":    b + "/moonshot/v1",
-		"MOONSHOT_API_KEY":     p.Token,
-		"XAI_BASE_URL":         b + "/xai/v1",
-		"XAI_API_KEY":          p.Token,
-		"OPENCODE_BASE_URL":    b + "/opencode/zen/v1",
-		"OPENCODE_API_KEY":     p.Token,
+	env := map[string]string{"CROWDVM_AI_PROXY_URL": b}
+	for vendor, v := range proxyVendors {
+		// Only vendors the profile holds a key for (when the server says):
+		// others keep their own endpoint, e.g. OpenCode's free models
+		// (bugs-r17-opus 7).
+		if p.VendorsSet && !slices.Contains(p.Vendors, vendor) {
+			continue
+		}
+		env[v.prefix+"_BASE_URL"], env[v.prefix+"_API_KEY"] = b+v.path, p.Token
 	}
+	return env
+}
+
+// proxyVendors: the proxy's vendor names, their env var prefix and the path
+// under the proxy's base URL.
+var proxyVendors = map[string]struct{ prefix, path string }{
+	"anthropic":  {"ANTHROPIC", "/anthropic"},
+	"openai":     {"OPENAI", "/openai/v1"},
+	"openrouter": {"OPENROUTER", "/openrouter/api/v1"},
+	"mistral":    {"MISTRAL", "/mistral/v1"},
+	"moonshot":   {"MOONSHOT", "/moonshot/v1"},
+	"xai":        {"XAI", "/xai/v1"},
+	"opencode":   {"OPENCODE", "/opencode/zen/v1"},
 }
 
 func (m *Manager) envValue(k string) string {

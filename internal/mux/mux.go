@@ -248,7 +248,10 @@ func Join(a, b io.ReadWriteCloser) {
 		mu.Unlock()
 	}
 	copyDir := func(dst, src io.ReadWriteCloser) {
-		_, _ = io.Copy(touchWriter{dst, touch}, src)
+		if _, err := io.Copy(touchWriter{dst, touch}, src); err != nil {
+			closeBoth() // a failed read or write (not an end of input): nothing to wait for
+			return
+		}
 		if cw, ok := dst.(interface{ CloseWrite() error }); ok && cw.CloseWrite() == nil {
 			mu.Lock()
 			if idle == nil {

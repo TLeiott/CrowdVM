@@ -303,6 +303,7 @@ func (s *Server) requeueBoot(id string, o bootOpts, nf *nodeFullError) bool {
 		// (its next heartbeat): try once more on another node with room now
 		// (bugs-r13-opus 11).
 		spec, _ := api.SizeByName(sb.Size)
+		spec = diskSpec(sb, spec)
 		req := schedReq{Size: spec, Placement: sb.Placement, Chain: s.snapshotChain(nf.parent), ImageID: sb.ImageID, Exclude: nf.node, Owners: s.ownersFor(sb.OwnerID, sb.OrgID), Encrypted: sb.Disk == "luks"}
 		if _, err := s.placeSandbox(id, state, req); err == nil {
 			o.Retried = true
@@ -439,6 +440,10 @@ func (s *Server) boot(ctx context.Context, id string, o bootOpts) (err error) {
 		return err
 	}
 	spec, _ := api.SizeByName(sb.Size)
+	spec = diskSpec(sb, spec) // the node never shrinks a disk (bugs-r17-opus 9)
+	if prev, _ := sb.Extra["diskGiB"].(float64); int(prev) < spec.DiskGiB {
+		_ = s.SetSandboxExtra(sb.ID, "diskGiB", spec.DiskGiB)
+	}
 	token := randToken(40)
 	env := map[string]string{}
 	for k, v := range sb.Env {
@@ -1645,7 +1650,9 @@ func (s *Server) handleResume(c *Ctx) error {
 	if sb.State == api.StateError {
 		prevNode = sb.NodeID
 	}
-	sreq := schedReq{Size: spec, Placement: placement, Chain: chain, ImageID: sb.ImageID, Owners: s.ownersFor(sb.OwnerID, sb.OrgID), Encrypted: sb.Disk == "luks"}
+	// Placed by the disk it really has: it does not shrink (bugs-r17-opus 9).
+	// The type_too_small check below keeps the type's own size.
+	sreq := schedReq{Size: diskSpec(sb, spec), Placement: placement, Chain: chain, ImageID: sb.ImageID, Owners: s.ownersFor(sb.OwnerID, sb.OrgID), Encrypted: sb.Disk == "luks"}
 	// Shrinking below the data on the disk is refused (SIZE-010).
 	if used := diskUsedBytes(sb); used > 0 && newSize != sb.Size && used > int64(spec.DiskGiB)<<30 {
 		return ErrD(409, "type_too_small", fmt.Sprintf("The sandbox holds %.1f GB of data, more than the %d GB disk of %s. Free space first, or pick a larger type.",

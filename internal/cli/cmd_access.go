@@ -170,6 +170,14 @@ func setKnownHost(file, host, key string) error {
 	if f := strings.Fields(key); len(f) >= 3 && !strings.HasPrefix(f[0], "ssh-") && !strings.HasPrefix(f[0], "ecdsa-") {
 		key = strings.Join(f[1:], " ") // "host keytype key" form
 	}
+	// One writer at a time, and a rename: parallel ssh connections (the
+	// ssh-config entry pins on each) kept losing each other's line, and a
+	// reader saw a truncated file (bugs-r17-sonnet 2).
+	unlock, err := lockFile(file + ".lock")
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	var keep []string
 	if b, err := os.ReadFile(file); err == nil {
 		for _, l := range strings.Split(string(b), "\n") {
@@ -180,7 +188,24 @@ func setKnownHost(file, host, key string) error {
 		}
 	}
 	keep = append(keep, host+" "+key)
-	return os.WriteFile(file, []byte(strings.Join(keep, "\n")+"\n"), 0o600)
+	f, err := os.CreateTemp(filepath.Dir(file), filepath.Base(file)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	_, err = f.WriteString(strings.Join(keep, "\n") + "\n")
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Chmod(f.Name(), 0o600)
+	}
+	if err == nil {
+		err = os.Rename(f.Name(), file)
+	}
+	if err != nil {
+		os.Remove(f.Name())
+	}
+	return err
 }
 
 // runTool runs an external program attached to the CLI's stdio and returns
@@ -766,7 +791,7 @@ func (a *App) desktopCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "desktop ID",
 		Short: "Open the sandbox desktop (noVNC) in your browser",
-		Long:  "Print and open the desktop URL. It carries a token: treat it as a secret.",
+		Long:  "Print and open the desktop URL. It carries a token: treat it as a secret.\nWithout --public the desktop is private (a public one becomes private again).",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, id, err := a.clientAndID(args[0])
@@ -775,7 +800,7 @@ func (a *App) desktopCmd() *cobra.Command {
 			}
 			var res *client.DesktopResult
 			for i := 0; ; i++ {
-				res, err = c.Desktop(cmd.Context(), id, &client.DesktopRequest{PublicAccess: public}, true)
+				res, err = c.Desktop(cmd.Context(), id, &client.DesktopRequest{PublicAccess: &public}, true) // bugs-r17-opus 8: false makes it private again
 				if err != nil {
 					return err
 				}
@@ -793,7 +818,11 @@ func (a *App) desktopCmd() *cobra.Command {
 			if !noOpen && !a.jsonOut {
 				_ = a.OpenURL(res.DesktopURL)
 			}
-			return a.result(map[string]any{"id": id, "desktopUrl": res.DesktopURL, "viewerUrl": res.DesktopURL, "mode": res.Mode}, func() {
+			if res.PublicAccess {
+				// Always on stderr (also with --json): this is about who can open it.
+				fmt.Fprintf(a.Err, "note: this desktop is public: anyone with the URL can open it; run `crowdvm desktop %s` without --public to make it private\n", id) // bugs-r17-opus 8
+			}
+			return a.result(map[string]any{"id": id, "desktopUrl": res.DesktopURL, "viewerUrl": res.DesktopURL, "mode": res.Mode, "publicAccess": res.PublicAccess}, func() {
 				a.printf("%s\n", res.DesktopURL)
 			})
 		},

@@ -147,8 +147,10 @@ func updateConfig(dir string, fn func(cur *Config) error) error {
 // on every OS) and returns the unlock func. A lock left by a killed process
 // is taken over after 30 seconds. The lock file holds a token; unlock removes
 // the file only while it still holds this process's token (not a new owner's).
-func lockConfig(dir string) (func(), error) {
-	path := filepath.Join(dir, "config.lock")
+func lockConfig(dir string) (func(), error) { return lockFile(filepath.Join(dir, "config.lock")) }
+
+// lockFile takes the lock file path the way lockConfig does.
+func lockFile(path string) (func(), error) {
 	tok := make([]byte, 8)
 	_, _ = rand.Read(tok)
 	token := fmt.Sprintf("%d-%x", os.Getpid(), tok)
@@ -180,7 +182,7 @@ func lockConfig(dir string) (func(), error) {
 				os.Remove(path)
 			}
 		} else if time.Now().After(deadline) {
-			return nil, fmt.Errorf("config is locked by another crowdvm (%s)", path)
+			return nil, fmt.Errorf("locked by another crowdvm (%s)", path)
 		}
 	}
 }

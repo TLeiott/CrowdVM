@@ -481,11 +481,13 @@ type HostFirewall struct {
 }
 
 type DesktopRequest struct {
-	PublicAccess bool `json:"publicAccess,omitempty"`
+	// bugs-r17-opus 8: a pointer, so false ("make it private") is sent too.
+	PublicAccess *bool `json:"publicAccess,omitempty"`
 }
 
 type DesktopResult struct {
 	DesktopURL   string `json:"desktopUrl"`
+	PublicAccess bool   `json:"publicAccess,omitempty"` // bugs-r17-opus 8
 	IP           string `json:"ip,omitempty"`
 	Mode         string `json:"mode,omitempty"`
 	Provisioning bool   `json:"provisioning,omitempty"`

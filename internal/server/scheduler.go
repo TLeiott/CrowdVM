@@ -76,23 +76,34 @@ func (r schedReq) encrypted(s *Server) bool {
 	return r.Encrypted || (len(r.Chain) > 0 && s.encryptedChain(r.Chain[0]))
 }
 
+// diskSpec is spec with the disk a sandbox really has: a disk never shrinks,
+// so after a resume at a smaller type it keeps the largest it booted with
+// (extra.diskGiB, bugs-r17-opus 9).
+func diskSpec(sb *Sandbox, spec api.SizeSpec) api.SizeSpec {
+	if d, _ := sb.Extra["diskGiB"].(float64); int(d) > spec.DiskGiB {
+		spec.DiskGiB = int(d)
+	}
+	return spec
+}
+
 // reservedOn sums the sizes of the sandboxes the server placed on a node.
 func (s *Server) reservedOn(nodeID string) proto.Usage {
 	var u proto.Usage
-	rows, err := s.DB.Query(`SELECT size FROM sandboxes WHERE node_id=? AND deleted_at IS NULL AND state IN ('provisioning','provisioned','cloning','ready','idle','running','archiving')`, nodeID)
+	rows, err := s.DB.Query(`SELECT size, COALESCE(json_extract(extra,'$.diskGiB'),0) FROM sandboxes WHERE node_id=? AND deleted_at IS NULL AND state IN ('provisioning','provisioned','cloning','ready','idle','running','archiving')`, nodeID)
 	if err != nil {
 		return u
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var sz string
-		if rows.Scan(&sz) != nil {
+		var disk int
+		if rows.Scan(&sz, &disk) != nil {
 			continue
 		}
 		spec, _ := api.SizeByName(sz)
 		u.VCPU += spec.VCPU
 		u.MemoryMiB += spec.MemoryMiB
-		u.DiskGiB += spec.DiskGiB
+		u.DiskGiB += max(spec.DiskGiB, disk) // bugs-r17-opus 9
 		u.VMs++
 	}
 	return u

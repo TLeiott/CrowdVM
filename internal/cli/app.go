@@ -175,6 +175,11 @@ func (a *App) reportError(err error) int {
 		}
 		return 130
 	}
+	// bugs-r17-opus 10: the reader of stdout went away (`| head`): end quietly
+	// with 128+SIGPIPE. An EPIPE on a network connection is not this case.
+	if errors.Is(err, syscall.EPIPE) && !isNetworkError(err) {
+		return 141
+	}
 	apiErr, isAPI := client.AsError(err)
 	if a.jsonOut {
 		line := map[string]any{"event": "error", "error": err.Error()}
@@ -212,12 +217,19 @@ func (a *App) reportError(err error) int {
 		return 1
 	}
 	fmt.Fprintln(a.Err, "error:", err)
-	var ne net.Error
-	var oe *net.OpError
-	if errors.As(err, &oe) || errors.As(err, &ne) || strings.Contains(err.Error(), "connection refused") {
+	if isNetworkError(err) || strings.Contains(err.Error(), "connection refused") {
 		fmt.Fprintln(a.Err, "hint: is the CrowdVM server reachable? check `crowdvm status` and --api-url / CROWDVM_API_BASE")
 	}
 	return 1
+}
+
+// isNetworkError is true for real network failures only. Not net.Error: a bare
+// syscall.Errno (EPIPE on stdout) satisfies it too (bugs-r17-opus 10).
+func isNetworkError(err error) bool {
+	var oe *net.OpError
+	var ue *url.Error
+	var de *net.DNSError
+	return errors.As(err, &oe) || errors.As(err, &ue) || errors.As(err, &de)
 }
 
 func isCobraUsage(err error) bool {
