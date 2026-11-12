@@ -31,9 +31,11 @@ The server judges each node by the generation it sends when it connects:
 - **Update available**: a newer release is in the server's downloads.
   `crowdvm-node status`, the node's local page and the dashboard say so. Nothing else
   changes.
-- **Outdated** (misses a required update): the node gets no new sandboxes at once.
-  Its owner gets a notice (and an email when one is set up). Sandboxes still running
-  there keep running until the grace period ends (`--node-update-grace`, 72 hours by
+- **Outdated** (misses a required update): the node gets no new sandboxes at once,
+  and updates itself if it can (see below). If it is still outdated 10 minutes later,
+  its owner gets a notice (and an email when one is set up), and so do the owners of
+  the sandboxes on it. Sandboxes still running there keep running until the grace
+  period ends (`--node-update-grace`, 72 hours by
   default). Then they are stopped with their disks saved and resumed on other nodes,
   like an [evacuation](node-owners.md#taking-the-machine-back). Updating the node ends
   all of this; the evacuation cannot be cancelled otherwise.
