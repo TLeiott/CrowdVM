@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -560,12 +561,20 @@ func TestDeployAfterMerge(t *testing.T) {
 	qio(t, p, "read -P 0x22 1M 64k")
 }
 
-// Windows QEMU refuses dump-guest-core=off; elsewhere guest RAM stays out of core files.
-func TestMachineOpts(t *testing.T) {
-	if o := machineOpts("windows"); strings.Contains(o, "dump-guest-core") {
-		t.Fatalf("windows: %s", o)
+// madvise-only args (dump-guest-core=off, free-page reporting) stay on Linux:
+// Windows QEMU refuses to start with dump-guest-core=off.
+func TestHostArgs(t *testing.T) {
+	for goos, want := range map[string]bool{"linux": true, "windows": false, "darwin": false} {
+		m, b := hostArgs(goos)
+		if strings.Contains(m, "dump-guest-core=off") != want || b != want {
+			t.Errorf("%s: %q balloon=%v", goos, m, b)
+		}
 	}
-	if o := machineOpts("linux"); !strings.Contains(o, "dump-guest-core=off") {
-		t.Fatalf("linux: %s", o)
+	d := &Driver{store: &store{dir: "/data"}}
+	rec := vmRecord{Spec: proto.VMSpec{SandboxID: "sb"}, Disk: "disks/a.qcow2"}
+	a := strings.Join(mustArgs(t, d, rec, "/data/vms/sb", 4242, "", "q"), " ")
+	m, b := hostArgs(runtime.GOOS)
+	if !strings.Contains(a, "-machine "+m+" ") || strings.Contains(a, "virtio-balloon-pci") != b {
+		t.Fatalf("args ignore hostArgs(%s): %s", runtime.GOOS, a)
 	}
 }

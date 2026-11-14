@@ -1291,15 +1291,17 @@ func sandboxPolicy(p *proto.NetPolicy) (*netstack.Sandbox, error) {
 	return &netstack.Sandbox{Allow: allow, Deny: deny, NoDNS: p.NoDNS}, nil
 }
 
-// machineOpts is the -machine value. dump-guest-core=off keeps guest RAM out
-// of a QEMU core file; QEMU supports it only where madvise(MADV_DONTDUMP)
-// exists, and on Windows it refuses to start ("Dumping guest memory cannot be
-// disabled on this host").
-func machineOpts(goos string) string {
-	if goos == "windows" {
-		return "q35,smm=off,vmport=off"
+// hostArgs returns the -machine value and whether to add the free-page
+// reporting balloon. Both need madvise, which QEMU has only on Linux here:
+// dump-guest-core=off keeps guest RAM out of a QEMU core file, and Windows QEMU
+// refuses to start with it ("Dumping guest memory cannot be disabled on this
+// host"); free-page reporting gives freed guest RAM back, and without madvise
+// QEMU only logs an error for every report.
+func hostArgs(goos string) (machine string, balloon bool) {
+	if goos != "linux" {
+		return "q35,smm=off,vmport=off", false
 	}
-	return "q35,smm=off,vmport=off,dump-guest-core=off"
+	return "q35,smm=off,vmport=off,dump-guest-core=off", true
 }
 
 func (d *Driver) args(rec vmRecord, dir string, port int, netSock string, qmpArgs []string) ([]string, error) {
@@ -1312,10 +1314,11 @@ func (d *Driver) args(rec vmRecord, dir string, port int, netSock string, qmpArg
 	if d.virgl != "" {
 		display = "egl-headless,rendernode=" + esc(d.virgl)
 	}
+	machine, balloon := hostArgs(runtime.GOOS)
 	a := []string{
 		"-name", esc("crowdvm-" + rec.Spec.SandboxID),
 		"-nodefaults", "-no-user-config", "-display", display,
-		"-machine", machineOpts(runtime.GOOS),
+		"-machine", machine,
 		"-smp", strconv.Itoa(max(rec.Spec.Size.VCPU, 1)),
 		"-m", strconv.Itoa(mem),
 	}
@@ -1378,7 +1381,7 @@ func (d *Driver) args(rec vmRecord, dir string, port int, netSock string, qmpArg
 	if len(rec.Spec.GPUDevices) > 0 {
 		// VFIO pins all guest RAM: no balloon (QEMU inhibits it anyway).
 		a = append(a, gpuArgs(rec.Spec.GPUDevices)...)
-	} else {
+	} else if balloon {
 		a = append(a, "-device", "virtio-balloon-pci,free-page-reporting=on")
 	}
 	if d.virgl != "" {
