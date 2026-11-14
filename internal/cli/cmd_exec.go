@@ -435,6 +435,9 @@ code of the command. Ctrl-C deletes the sandbox.`,
 			start := time.Now()
 			req := &client.CreateSandboxRequest{Type: sf.typ, Env: env, Environment: sf.environment, NoEnv: sf.noEnv,
 				FailFast: sf.failFast, From: from, TTLSeconds: client.TTLSeconds(900), Name: "crowdvm run"}
+			if req.Placement, err = sf.placement(); err != nil {
+				return err
+			}
 			if !keep {
 				req.Snapshots = boolPtr(false)
 			}

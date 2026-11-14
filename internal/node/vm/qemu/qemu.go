@@ -1291,6 +1291,17 @@ func sandboxPolicy(p *proto.NetPolicy) (*netstack.Sandbox, error) {
 	return &netstack.Sandbox{Allow: allow, Deny: deny, NoDNS: p.NoDNS}, nil
 }
 
+// machineOpts is the -machine value. dump-guest-core=off keeps guest RAM out
+// of a QEMU core file; QEMU supports it only where madvise(MADV_DONTDUMP)
+// exists, and on Windows it refuses to start ("Dumping guest memory cannot be
+// disabled on this host").
+func machineOpts(goos string) string {
+	if goos == "windows" {
+		return "q35,smm=off,vmport=off"
+	}
+	return "q35,smm=off,vmport=off,dump-guest-core=off"
+}
+
 func (d *Driver) args(rec vmRecord, dir string, port int, netSock string, qmpArgs []string) ([]string, error) {
 	esc := func(p string) string { return strings.ReplaceAll(p, ",", ",,") }
 	mem := rec.Spec.Size.MemoryMiB
@@ -1304,7 +1315,7 @@ func (d *Driver) args(rec vmRecord, dir string, port int, netSock string, qmpArg
 	a := []string{
 		"-name", esc("crowdvm-" + rec.Spec.SandboxID),
 		"-nodefaults", "-no-user-config", "-display", display,
-		"-machine", "q35,smm=off,vmport=off,dump-guest-core=off", // guest RAM never in a core file
+		"-machine", machineOpts(runtime.GOOS),
 		"-smp", strconv.Itoa(max(rec.Spec.Size.VCPU, 1)),
 		"-m", strconv.Itoa(mem),
 	}

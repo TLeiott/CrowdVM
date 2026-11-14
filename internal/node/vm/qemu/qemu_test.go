@@ -559,3 +559,13 @@ func TestDeployAfterMerge(t *testing.T) {
 	}
 	qio(t, p, "read -P 0x22 1M 64k")
 }
+
+// Windows QEMU refuses dump-guest-core=off; elsewhere guest RAM stays out of core files.
+func TestMachineOpts(t *testing.T) {
+	if o := machineOpts("windows"); strings.Contains(o, "dump-guest-core") {
+		t.Fatalf("windows: %s", o)
+	}
+	if o := machineOpts("linux"); !strings.Contains(o, "dump-guest-core=off") {
+		t.Fatalf("linux: %s", o)
+	}
+}
