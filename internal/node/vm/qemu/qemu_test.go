@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -558,4 +559,22 @@ func TestDeployAfterMerge(t *testing.T) {
 		t.Fatalf("path %s %v, want %s", p, err, st.abs(rel))
 	}
 	qio(t, p, "read -P 0x22 1M 64k")
+}
+
+// madvise-only args (dump-guest-core=off, free-page reporting) stay on Linux:
+// Windows QEMU refuses to start with dump-guest-core=off.
+func TestHostArgs(t *testing.T) {
+	for goos, want := range map[string]bool{"linux": true, "windows": false, "darwin": false} {
+		m, b := hostArgs(goos)
+		if strings.Contains(m, "dump-guest-core=off") != want || b != want {
+			t.Errorf("%s: %q balloon=%v", goos, m, b)
+		}
+	}
+	d := &Driver{store: &store{dir: "/data"}}
+	rec := vmRecord{Spec: proto.VMSpec{SandboxID: "sb"}, Disk: "disks/a.qcow2"}
+	a := strings.Join(mustArgs(t, d, rec, "/data/vms/sb", 4242, "", "q"), " ")
+	m, b := hostArgs(runtime.GOOS)
+	if !strings.Contains(a, "-machine "+m+" ") || strings.Contains(a, "virtio-balloon-pci") != b {
+		t.Fatalf("args ignore hostArgs(%s): %s", runtime.GOOS, a)
+	}
 }

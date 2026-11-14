@@ -689,6 +689,16 @@ func TestRunCreatesExecsDeletes(t *testing.T) {
 	}
 }
 
+// run honors placement flags like new does.
+func TestRunPlacement(t *testing.T) {
+	e := newEnv(t)
+	e.run("run", "--json=false", "--node", "dev-machine-1", "--", "true")
+	b := reqBody(t, e.f.Find("POST", "/api/v1/sandboxes"))
+	if p, _ := b["placement"].(map[string]any); p["node"] != "dev-machine-1" {
+		t.Fatalf("run dropped --node: %v", b)
+	}
+}
+
 func TestMiscCommands(t *testing.T) {
 	e := newEnv(t)
 	id := e.f.AddSandbox("ready")
