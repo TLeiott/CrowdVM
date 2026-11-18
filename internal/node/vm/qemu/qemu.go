@@ -35,6 +35,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/crowdvm/crowdvm/internal/node/bench"
 	"github.com/crowdvm/crowdvm/internal/node/vm"
 	"github.com/crowdvm/crowdvm/internal/node/vm/netstack"
 	"github.com/crowdvm/crowdvm/internal/node/vm/qemu/guestconn"
@@ -1467,7 +1468,41 @@ func (d *Driver) watch(m *machine, r *run) {
 		}
 	}()
 	go d.waitBoot(m, r)
+	go d.resumeOnSpace(m, r)
 }
+
+// resumeOnSpace continues a VM that qemu paused on a write error (werror
+// defaults to "enospc": a full host disk stops the VM instead of failing
+// the guest's writes) once the data dir has room again. Without it the VM
+// stayed paused until a power-cycle, and its sandbox looked hung.
+func (d *Driver) resumeOnSpace(m *machine, r *run) {
+	t := time.NewTicker(ioErrorPoll)
+	defer t.Stop()
+	for {
+		select {
+		case <-r.exited:
+			return
+		case <-t.C:
+		}
+		var st struct{ Status string }
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := r.q.cmd(ctx, "query-status", nil, &st)
+		if err == nil && st.Status == "io-error" {
+			if free, ferr := bench.DataDirFree(d.opt.DataDir); ferr == nil && free >= ioErrorFree {
+				if err = r.q.cmd(ctx, "cont", nil, nil); err == nil {
+					d.opt.Logf("qemu: %s: continued after a disk write error (%d MiB free)", m.id, free>>20)
+				}
+			}
+		}
+		cancel()
+	}
+}
+
+// Poll interval and free space needed to continue a VM paused on ENOSPC.
+var (
+	ioErrorPoll        = 15 * time.Second
+	ioErrorFree uint64 = 2 << 30
+)
 
 // checkFDVMs refuses to start without the fd store while VMs started under it
 // still run: their sockets are only in the store, and adopting them is
