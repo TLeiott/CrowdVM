@@ -225,9 +225,11 @@ per-command cgroups under the delegated transient unit
   layer. **Chain compaction** (tiered, fanout 4): a new snapshot absorbs a run of
   3 same-level layers at the top of the chain (QMP `block-stream` live,
   `qemu-img rebase` at stop) and lists them in `SnapshotRef.Supersedes`; depth
-  stays ≈15 after a day of minutes and a byte is re-uploaded ≤5×. The node
-  drops superseded layers from its cache once the merged one is uploaded; the
-  server may delete superseded periodic snapshots nothing else needs. Hard cap
+  stays ≈15 after a day of minutes and a byte is re-uploaded ≤5×. The server
+  deletes superseded periodic snapshots nothing else needs as soon as the node
+  reports the merged layer (not after its upload: failed uploads must not pin
+  them), and GC erases them from the node. Nodes keep a stopped sandbox's
+  layers for `--node-cache` (24 h) once the server stores and verified them. Hard cap
   32 layers (then flattened onto the image).
 * **Lazy chain fetch (LIFE-013).** On nodes with `NodeInfo.LazyChain` (qemu
   with the `http` and `copy-on-read` block drivers; `crowdvm-node config set

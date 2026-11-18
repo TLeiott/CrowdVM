@@ -101,6 +101,7 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?,`+snapDiskCols+`)`,
 	if nodeID != "" {
 		s.addLocation(ref.ID, nodeID)
 	}
+	defer s.retireSuperseded(sb.ID, "", ref) // after the head moved
 	// The sandbox was deleted while the node took it (e.g. a stop racing a
 	// delete): the snapshot is deleted from the start, so GC erases it.
 	if r, _ := s.DB.Exec(`UPDATE snapshots SET deleted_at=(SELECT deleted_at FROM sandboxes WHERE id=?) WHERE id=? AND deleted_at IS NULL
@@ -108,21 +109,6 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?,`+snapDiskCols+`)`,
 		if n, _ := r.RowsAffected(); n > 0 {
 			s.kickDeletions()
 		}
-	}
-	// Layers the node merged into this one (tiered compaction): periodic
-	// ones go; GC keeps whatever a head, saved snapshot or fork still needs.
-	merged := 0
-	for _, old := range ref.Supersedes {
-		if old == "" || old == ref.ID {
-			continue
-		}
-		r, _ := s.DB.Exec(`UPDATE snapshots SET deleted_at=? WHERE id=? AND sandbox_id=? AND kind='periodic' AND deleted_at IS NULL`, now, old, sb.ID)
-		if n, _ := r.RowsAffected(); n > 0 {
-			merged++
-		}
-	}
-	if merged > 0 {
-		s.Go(s.gcSnapshots)
 	}
 	// The attempt completes when the blob is stored (afterSnapshotStored);
 	// until then it is in progress (uploading).
@@ -231,8 +217,39 @@ WHERE s.id=? AND s.purged_at IS NULL AND (s.node_id=? OR b.node_id=?)`, nodeID, 
 		s.kickDeletions()
 		return
 	}
+	s.retireSuperseded(sb.ID, nodeID, ref)
 	s.Bus.Publish(Event{Type: EvSnapshotCreated, SandboxID: sb.ID, SandboxName: sb.Name, OwnerID: sb.OwnerID, OrgID: sb.OrgID, NodeID: nodeID,
 		Data: map[string]any{"snapshotId": ref.ID, "kind": "periodic", "parentId": ref.ParentID}})
+}
+
+// retireSuperseded deletes the periodic layers ref merged away (tiered
+// compaction) as soon as the node reports ref, not once ref is uploaded:
+// until then they would count as needed, the server would ask for their
+// uploads and the node would keep them all (field report: a sandbox with a
+// 17 GB disk held 79 GB of merged-away layers on its node, and the uploads
+// filled the server). GC still keeps whatever a head, saved snapshot, fork
+// or running machine needs; the head itself is retired by the upload-time
+// call once ref is stored and became the head.
+// nodeID (when set): only layers that node took, so another node cannot
+// retire a sandbox's layers by naming them (bugs-r9-sonnet).
+func (s *Server) retireSuperseded(sbID, nodeID string, ref proto.SnapshotRef) {
+	now, n := store.Now(), int64(0)
+	for _, old := range ref.Supersedes {
+		if old == "" || old == ref.ID {
+			continue
+		}
+		// Never the head: it stays live until a newer layer is stored (a
+		// deleted head would let a snapshot delete move it to unstored data).
+		r, err := s.DB.Exec(`UPDATE snapshots SET deleted_at=? WHERE id=? AND sandbox_id=? AND kind='periodic' AND deleted_at IS NULL AND (?='' OR node_id=?)
+			AND id<>COALESCE((SELECT head_snapshot_id FROM sandboxes WHERE id=?),'')`, now, old, sbID, nodeID, nodeID, sbID)
+		if err == nil {
+			k, _ := r.RowsAffected()
+			n += k
+		}
+	}
+	if n > 0 {
+		s.Go(s.gcSnapshots)
+	}
 }
 
 // onDiskOf: snapshot id is a layer of sb's disk: one of its own, or in the
@@ -290,14 +307,8 @@ func (s *Server) onSnapshotUploaded(nodeID, sbID string, ref proto.SnapshotRef) 
 	if ref.SizeBytes > 0 { // only the node that took or holds it (bugs-r11-sonnet 13)
 		_, _ = s.DB.Exec(`UPDATE snapshots SET size_bytes=? WHERE id=? AND (node_id=? OR id IN (SELECT snapshot_id FROM snapshot_locations WHERE node_id=?))`, ref.SizeBytes, ref.ID, nodeID, nodeID)
 	}
-	if len(ref.Supersedes) > 0 && sbID != "" {
-		now := store.Now()
-		for _, old := range ref.Supersedes {
-			// Only layers this node took: another node cannot retire a
-			// sandbox's layers by naming them (bugs-r9-sonnet).
-			_, _ = s.DB.Exec(`UPDATE snapshots SET deleted_at=? WHERE id=? AND sandbox_id=? AND kind='periodic' AND deleted_at IS NULL AND id<>? AND node_id=?`, now, old, sbID, ref.ID, nodeID)
-		}
-		s.Go(s.gcSnapshots)
+	if sbID != "" {
+		defer s.retireSuperseded(sbID, nodeID, ref) // after the head moved
 	}
 	if sn, err := s.SnapshotByID(ref.ID); err == nil && sn.DeletedAt != nil {
 		s.kickDeletions() // deleted while it uploaded: erase it now

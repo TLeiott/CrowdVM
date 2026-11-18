@@ -63,10 +63,13 @@ type Config struct {
 	// SnapshotInterval is pushed to nodes in heartbeat replies
 	// (0 = DefaultSnapshotInterval, <0 off).
 	SnapshotInterval time.Duration
-	DefaultImage     string        // base image id ("" = newest known)
-	StartWait        time.Duration // guest calls wait this long while starting (60 s)
-	SessionTTL       time.Duration
-	RetryAfter       int // retryAfterSeconds for out_of_capacity
+	// NodeCacheTTL: nodes keep a stopped sandbox's disk this long once the
+	// server stores all of it (0 = DefaultNodeCacheTTL, <0 = forever).
+	NodeCacheTTL time.Duration
+	DefaultImage string        // base image id ("" = newest known)
+	StartWait    time.Duration // guest calls wait this long while starting (60 s)
+	SessionTTL   time.Duration
+	RetryAfter   int // retryAfterSeconds for out_of_capacity
 
 	SMTP SMTPConfig
 
@@ -418,6 +421,7 @@ func (s *Server) maintenanceLoop(ctx context.Context) {
 		if time.Since(lastSweep) > 10*time.Minute {
 			lastSweep = time.Now()
 			s.sweepOrphanBlobs()
+			s.kickEviction()
 		}
 		s.nodes.expireStale(s)
 		s.cleanupAuth()

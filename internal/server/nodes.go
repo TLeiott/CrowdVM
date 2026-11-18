@@ -1419,6 +1419,13 @@ func (s *Server) grantChain(nodeID, snapID string) {
 	}
 }
 
+// bootingOn: a boot or inspector on node nodeID was granted snapshot id in
+// the last hour, so it may be about to build on the node's copy.
+func bootingOn(nodeID, id string) bool {
+	v, ok := blobGrants.Load(nodeID + "/" + id)
+	return ok && time.Until(v.(time.Time)) > 23*time.Hour
+}
+
 // mayFetch: node nodeID may read blob kind/id. Images are public to nodes;
 // a snapshot only when the node was granted its chain, holds it already, or
 // it is in the chain of a sandbox placed on the node (grants are in memory:

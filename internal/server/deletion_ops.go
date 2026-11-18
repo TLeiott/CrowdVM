@@ -289,10 +289,14 @@ func (s *Server) reconcileNodeSnapshots(ctx context.Context, c *NodeConn) {
 			continue
 		}
 		var purged bool
-		err := s.DB.QueryRow(`SELECT purged_at IS NOT NULL FROM snapshots WHERE id=?`, ns.ID).Scan(&purged)
+		var sbID string
+		err := s.DB.QueryRow(`SELECT purged_at IS NOT NULL, sandbox_id FROM snapshots WHERE id=?`, ns.ID).Scan(&purged, &sbID)
 		switch {
 		case err == nil && !purged:
 			s.addLocation(ns.ID, c.ID)
+			// Layers it merged away that an older server kept (it retired
+			// them only once this one was uploaded) go now.
+			s.retireSuperseded(sbID, c.ID, proto.SnapshotRef{ID: ns.ID, Supersedes: ns.Supersedes})
 		case err == nil || s.snapshotGone(ns.ID, ns.SandboxID):
 			s.Log.Info("erasing a node's copy of deleted data", "node", c.ID, "snapshot", ns.ID, "sandbox", ns.SandboxID)
 			cctx, cancel := context.WithTimeout(ctx, 30*time.Second)

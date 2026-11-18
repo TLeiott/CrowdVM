@@ -88,6 +88,12 @@ sandbox disk sizes that add up to `disk × disk-overcommit` (default 4). It stil
 refuses new VMs, and stops downloading snapshots, before it eats into `disk-reserve`
 (default 10G of free space on your drive).
 
+What a node stores: the base image, the disks of its running sandboxes, and a cache of
+the disks of sandboxes it stopped. Layers that periodic snapshots merged away are erased
+right after the merge, and a stopped sandbox's disk is erased one day after the stop
+once the server holds a copy (server flag `--node-cache`); resuming it later downloads
+it again.
+
 ## Network policy
 
 Sandboxes reach the internet and the CrowdVM server, but not your machine, your LAN or

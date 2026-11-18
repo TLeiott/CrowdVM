@@ -114,6 +114,7 @@ func serve(args []string) error {
 	maxActive := fl.Int("max-active", server.DefaultLimits.Active, "sandboxes at once per wallet, 0 = unlimited")
 	ipLimit := fl.Int("ip-rate-limit", server.DefaultLimits.IP, "API requests per 60 s per IP, 0 = unlimited")
 	snapSec := fl.Int("snapshot-interval", 0, "periodic live snapshot interval pushed to nodes, seconds (0 = 60, -1 = off)")
+	nodeCache := fl.Duration("node-cache", 0, "nodes keep a stopped sandbox's disk this long once the server stores it (0 = 24h, -1s = forever)")
 	image := fl.String("default-image", "", "base image id for new sandboxes (default: newest known)")
 	startWait := fl.Duration("start-wait", 60*time.Second, "how long guest calls wait while a sandbox starts")
 	smtpAddr := fl.String("smtp-addr", "", "SMTP server host:port for login codes and invites (optional)")
@@ -155,7 +156,7 @@ func serve(args []string) error {
 		DataDir: *dataDir, PublicURL: strings.TrimRight(*publicURL, "/"), PublicDomain: *publicDomain, OpenSignup: *openSignup, OpenNodes: *openNodes,
 		EnforceCredits: *enforce, SignupCredits: *signupCredits, NodeEarnRate: *earn,
 		StartsPerMinute: *perMin, StartsPerHour: *perHour, StartsPerDay: *perDay, MaxActive: *maxActive, IPRateLimit: *ipLimit,
-		SnapshotInterval: time.Duration(*snapSec) * time.Second, DefaultImage: *image, StartWait: *startWait,
+		SnapshotInterval: time.Duration(*snapSec) * time.Second, NodeCacheTTL: *nodeCache, DefaultImage: *image, StartWait: *startWait,
 		SMTP:  server.SMTPConfig{Addr: *smtpAddr, From: *smtpFrom, Username: *smtpUser, Password: *smtpPass},
 		WebFS: webFS, Logger: log, TrustProxy: *trustProxy, DownloadsDir: *downloadsDir, MinGuestVersion: *minGuest, NodeUpdateGrace: *nodeGrace,
 		SavedSnapshotsIncluded: *savedIncl, SavedSnapshotExtraDollarsPerDay: *savedDaily, OutputCapPerHour: *outputCap,
