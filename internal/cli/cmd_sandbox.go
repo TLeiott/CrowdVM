@@ -62,7 +62,7 @@ func parseKV(flag string, kvs []string) (map[string]string, error) {
 
 func (s *sandboxFlags) bind(cmd *cobra.Command, lifecycle bool) {
 	f := cmd.Flags()
-	f.StringVar(&s.typ, "type", "", "machine size: small, default, large or xlarge")
+	f.StringVar(&s.typ, "type", "", "machine size: small, default, large, xlarge, or custom <vcpu>c<GiB>g like 8c10g")
 	f.StringVar(&s.environment, "environment", "", "environment to start from (see: crowdvm env list)")
 	f.StringArrayVarP(&s.env, "env", "e", nil, "per-sandbox variable KEY=VALUE (repeatable)")
 	f.BoolVar(&s.noEnv, "no-env", false, "give the sandbox none of your secrets")

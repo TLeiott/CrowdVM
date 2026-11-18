@@ -424,8 +424,13 @@ func parseCILabel(l string) (ciLabel, error) {
 	out := ciLabel{Raw: l}
 	sz, ok := strings.CutPrefix(parts[0], CILabelPrefix)
 	sz = strings.TrimPrefix(sz, "-")
-	if out.Size, ok = ciSizes[sz]; !ok || (sz == "" && parts[0] != CILabelPrefix) {
-		return out, fmt.Errorf("unknown label %s: use %s-small, %s, %s-large or %s-xlarge", parts[0], CILabelPrefix, CILabelPrefix, CILabelPrefix, CILabelPrefix)
+	if out.Size, ok = ciSizes[sz]; !ok && sz != "" {
+		if sp, custom := api.SizeByName(sz); custom {
+			out.Size, ok = sp.Name, true
+		}
+	}
+	if !ok || (sz == "" && parts[0] != CILabelPrefix) {
+		return out, fmt.Errorf("unknown label %s: use %s-small, %s, %s-large, %s-xlarge or a custom shape like %s-8c10g", parts[0], CILabelPrefix, CILabelPrefix, CILabelPrefix, CILabelPrefix, CILabelPrefix)
 	}
 	for _, o := range parts[1:] {
 		switch {

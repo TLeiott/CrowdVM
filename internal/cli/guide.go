@@ -22,7 +22,7 @@ commands local. Details: the ` + "`" + `crowdvm` + "`" + ` skill (` + "`" + `cro
 
 - Signed in? ` + "`" + `crowdvm status --check` + "`" + ` (exit 1: ask the human to run ` + "`" + `crowdvm login` + "`" + `)
 - One-shot job: ` + "`" + `crowdvm run --push . --type large -- make test` + "`" + ` (new sandbox, copy this folder, run, delete; exits with the command's exit code)
-- Create: ` + "`" + `id=$(crowdvm new --type large --json=false)` + "`" + ` (prints the id when ready; sizes ` + "`" + `small` + "`" + `, ` + "`" + `default` + "`" + `, ` + "`" + `large` + "`" + `, ` + "`" + `xlarge` + "`" + `; stops itself after 1 hour unless ` + "`" + `--ttl SECONDS` + "`" + `)
+- Create: ` + "`" + `id=$(crowdvm new --type large --json=false)` + "`" + ` (prints the id when ready; sizes ` + "`" + `small` + "`" + `, ` + "`" + `default` + "`" + `, ` + "`" + `large` + "`" + `, ` + "`" + `xlarge` + "`" + `, or a custom shape like ` + "`" + `8c10g` + "`" + ` = 8 vCPU / 10 GiB; stops itself after 1 hour unless ` + "`" + `--ttl SECONDS` + "`" + `)
 - Run: ` + "`" + `crowdvm exec "$id" --push . --timeout 0 -- npm test` + "`" + ` (copies this folder to /home/user/<folder> and runs there; ` + "`" + `--timeout 0` + "`" + ` = no limit, the default cuts a command after 30 s)
 - Long job or server: ` + "`" + `pid=$(crowdvm exec "$id" --detach --json=false "npm run dev")` + "`" + `, then ` + "`" + `crowdvm exec "$id" --status "$pid"` + "`" + `
 - Files: ` + "`" + `crowdvm push "$id" .` + "`" + ` sends git-tracked and new, not-ignored files one way; ` + "`" + `crowdvm scp -r "$id":/home/user/<folder>/dist ./dist` + "`" + ` copies results back

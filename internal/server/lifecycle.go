@@ -1487,7 +1487,7 @@ func (s *Server) handleResume(c *Ctx) error {
 	}
 	if req.Type != "" {
 		if _, ok := api.SizeByName(req.Type); !ok {
-			return Err(400, "invalid_type", "type must be small, default, large or xlarge.")
+			return Err(400, "invalid_type", api.InvalidTypeMsg)
 		}
 	}
 	if req.Env != nil {
@@ -1735,7 +1735,7 @@ func (s *Server) handleFork(c *Ctx) error {
 	}
 	if req.Type != "" {
 		if _, ok := api.SizeByName(req.Type); !ok {
-			return Err(400, "invalid_type", "type must be small, default, large or xlarge.")
+			return Err(400, "invalid_type", api.InvalidTypeMsg)
 		}
 	}
 	if req.Placement != nil {

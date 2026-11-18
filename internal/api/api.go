@@ -7,7 +7,10 @@ package api
 import (
 	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -73,7 +76,7 @@ type PageInfo struct {
 	Limit      int    `json:"limit"`
 }
 
-// SizeSpec is one entry of the machine size catalog.
+// SizeSpec is one machine shape: a catalog entry or a custom shape.
 type SizeSpec struct {
 	Name       string  `json:"name"`
 	VCPU       int     `json:"vcpu"`
@@ -82,15 +85,41 @@ type SizeSpec struct {
 	Multiplier float64 `json:"multiplier"` // credit rate relative to "default"
 }
 
-// Sizes is the size catalog, same shapes as Boat.
+// Credits per hour for each vCPU and GiB of RAM. Every size, named or
+// custom, costs vcpu*PerVCPU + GiB*PerGiB, so default (4 vCPU, 8 GiB) is 1.
+const (
+	PerVCPU = 0.125
+	PerGiB  = 0.0625
+)
+
+// Custom shape bounds ("<vcpu>c<GiB>g", e.g. 8c10g).
+const (
+	MinVCPU, MaxVCPU     = 1, 64
+	MinMemGiB, MaxMemGiB = 2, 256
+)
+
+// Sizes is the named catalog, same shapes as Boat.
 var Sizes = []SizeSpec{
-	{"small", 2, 4096, 51, 0.5},
-	{"default", 4, 8192, 51, 1},
-	{"large", 8, 16384, 111, 2},
-	{"xlarge", 16, 32768, 251, 50.0 / 9}, // Boat: 50/9 ≈ 5.556
+	shape("small", 2, 4, 51),
+	shape("default", 4, 8, 51),
+	shape("large", 8, 16, 111),
+	shape("xlarge", 16, 32, 251),
 }
 
+// InvalidTypeMsg is the error for a type SizeByName rejects.
+var InvalidTypeMsg = fmt.Sprintf("type must be small, default, large, xlarge or a custom shape like 8c10g (%d-%d vCPU, %d-%d GiB).", MinVCPU, MaxVCPU, MinMemGiB, MaxMemGiB)
+
+func shape(name string, vcpu, gib, disk int) SizeSpec {
+	return SizeSpec{name, vcpu, gib * 1024, disk, float64(vcpu)*PerVCPU + float64(gib)*PerGiB}
+}
+
+var customRe = regexp.MustCompile(`^([0-9]{1,3})c([0-9]{1,4})g$`)
+
+// SizeByName resolves a catalog name or a custom "<vcpu>c<GiB>g" shape.
+// A custom shape equal to a catalog entry resolves to that entry, and a
+// custom one gets the disk of the smallest named size that covers it.
 func SizeByName(name string) (SizeSpec, bool) {
+	name = strings.ToLower(strings.TrimSpace(name))
 	if name == "" || name == "medium" {
 		name = "default"
 	}
@@ -99,7 +128,30 @@ func SizeByName(name string) (SizeSpec, bool) {
 			return s, true
 		}
 	}
-	return SizeSpec{}, false
+	m := customRe.FindStringSubmatch(name)
+	if m == nil {
+		return SizeSpec{}, false
+	}
+	vcpu, _ := strconv.Atoi(m[1])
+	gib, _ := strconv.Atoi(m[2])
+	if vcpu < MinVCPU || vcpu > MaxVCPU || gib < MinMemGiB || gib > MaxMemGiB {
+		return SizeSpec{}, false
+	}
+	disk := Sizes[len(Sizes)-1].DiskGiB
+	for _, s := range Sizes {
+		if s.VCPU == vcpu && s.MemoryMiB == gib*1024 {
+			return s, true
+		}
+		if s.VCPU >= vcpu && s.MemoryMiB >= gib*1024 {
+			disk = min(disk, s.DiskGiB)
+		}
+	}
+	return shape(fmt.Sprintf("%dc%dg", vcpu, gib), vcpu, gib, disk), true
+}
+
+// Within reports whether s needs no more vCPU and RAM than limit.
+func (s SizeSpec) Within(limit SizeSpec) bool {
+	return s.VCPU <= limit.VCPU && s.MemoryMiB <= limit.MemoryMiB
 }
 
 // Sandbox API states (the CLI shows "stopped" for "archived").

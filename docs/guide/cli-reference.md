@@ -1812,7 +1812,7 @@ Flags:
       --node string              placement: run on this node (id or name, see: crowdvm nodes)
       --node-label stringArray   placement: node label KEY=VALUE that must match (repeatable)
       --ttl int                  seconds until auto-stop, counted from start (default 3600)
-      --type string              machine size: small, default, large or xlarge
+      --type string              machine size: small, default, large, xlarge, or custom <vcpu>c<GiB>g like 8c10g
       --wait                     wait until the fork is ready
 ```
 
@@ -2150,7 +2150,7 @@ Flags:
       --personal                 bill your personal account even when an org is active
       --setup-file string        local shell script to run once after the sandbox is ready (64KB)
       --ttl int                  seconds until auto-stop, counted from start (default 3600)
-      --type string              machine size: small, default, large or xlarge
+      --type string              machine size: small, default, large, xlarge, or custom <vcpu>c<GiB>g like 8c10g
       --visibility string        org sandboxes: private or shared
 ```
 
@@ -2778,7 +2778,7 @@ Flags:
       --node string              placement: run on this node (id or name, see: crowdvm nodes)
       --node-label stringArray   placement: node label KEY=VALUE that must match (repeatable)
       --ttl int                  seconds until auto-stop, counted from start (default 3600)
-      --type string              machine size: small, default, large or xlarge
+      --type string              machine size: small, default, large, xlarge, or custom <vcpu>c<GiB>g like 8c10g
 ```
 
 ## crowdvm run
@@ -2813,7 +2813,7 @@ Flags:
       --personal                 bill your personal account
       --push string              copy this local directory in first and run there
       --timeout int              stop after this many seconds and exit 124 (0 = no limit)
-      --type string              machine size: small, default, large or xlarge
+      --type string              machine size: small, default, large, xlarge, or custom <vcpu>c<GiB>g like 8c10g
 ```
 
 ## crowdvm scp

@@ -75,7 +75,8 @@ crowdvm stop "$id"                                        # or: crowdvm delete "
   results with `crowdvm scp`. To commit or push from the sandbox, clone the repository
   there instead.
 - Sizes: `small` (2 vCPU / 4 GB), `default` (4 / 8), `large` (8 / 16), `xlarge`
-  (16 / 32). `crowdvm limits` shows what you may start, `crowdvm nodes` the pool.
+  (16 / 32), or a custom shape `<vcpu>c<GB>g` such as `8c10g` when a named size doesn't
+  fit the free machines. `crowdvm limits` shows what you may start, `crowdvm nodes` the pool.
 - A sandbox stops itself 1 hour after create or resume, and a job that runs longer
   dies with it. Pass `--ttl SECONDS` or `--no-auto-stop`, or run
   `crowdvm extend "$id" --hours 4`. Commands, SSH and services do not move the

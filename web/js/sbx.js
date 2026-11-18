@@ -38,7 +38,7 @@ export const SIZES = [
   { name: 'small', vcpu: 2, memoryMiB: 4096, diskGiB: 51, multiplier: 0.5 },
   { name: 'default', vcpu: 4, memoryMiB: 8192, diskGiB: 51, multiplier: 1 },
   { name: 'large', vcpu: 8, memoryMiB: 16384, diskGiB: 111, multiplier: 2 },
-  { name: 'xlarge', vcpu: 16, memoryMiB: 32768, diskGiB: 251, multiplier: 5.5 },
+  { name: 'xlarge', vcpu: 16, memoryMiB: 32768, diskGiB: 251, multiplier: 4 },
 ];
 const TTLS = [['1800', '30m'], ['3600', '1h'], ['14400', '4h'], ['86400', '1d'], ['never', 'Never'], ['custom', 'Custom']];
 export const sizeText = (sb) => {
@@ -46,10 +46,24 @@ export const sizeText = (sb) => {
   return s ? `${s.vcpu} vCPU · ${mib(s.memoryMiB)}` : `${sb.vcpu ?? '?'} vCPU · ${sb.memoryGB ?? '?'} GB`;
 };
 
+// Custom shapes are "<vcpu>c<GB>g"; price = 0.125/vCPU + 0.0625/GB (internal/api Sizes).
 function sizePicker(value = 'default') {
+  const isCustom = !SIZES.some((s) => s.name === value);
+  const radio = h('input', { type: 'radio', name: 'size', value: isCustom ? value : '', checked: isCustom });
+  const price = h('span.m', 'any vCPU / GB mix');
+  const shape = h('input.input.sm', { placeholder: '8c10g', value: isCustom ? value : '', 'aria-label': 'Custom size, vCPU c GB g', style: { maxWidth: '96px' } });
+  const sync = () => {
+    const m = /^(\d+)c(\d+)g$/i.exec(shape.value.trim());
+    radio.value = shape.value.trim().toLowerCase();
+    price.textContent = m ? `${+m[1] * 0.125 + +m[2] * 0.0625}× credits` : 'any vCPU / GB mix';
+  };
+  shape.addEventListener('focus', () => { radio.checked = true; });
+  shape.addEventListener('input', sync);
+  sync();
   return h('div.size-picker', { role: 'radiogroup', 'aria-label': 'Machine size' }, SIZES.map((s) =>
     h('label.size-opt', h('input', { type: 'radio', name: 'size', value: s.name, checked: s.name === value }),
-      h('span.n', s.name), h('span.s', `${s.vcpu} vCPU · ${mib(s.memoryMiB)}`), h('span.m', `${s.diskGiB} GB disk · ${s.multiplier}× credits`))));
+      h('span.n', s.name), h('span.s', `${s.vcpu} vCPU · ${mib(s.memoryMiB)}`), h('span.m', `${s.diskGiB} GB disk · ${s.multiplier}× credits`))),
+    h('label.size-opt', radio, h('span.n', 'custom'), h('span.s', shape), price));
 }
 
 function ttlControl(initial = '3600') {

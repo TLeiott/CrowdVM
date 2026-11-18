@@ -244,7 +244,7 @@ func (s *Server) handleCredits(c *Ctx) error {
 	_ = s.DB.QueryRow(`SELECT COALESCE(SUM(delta),0) FROM credit_ledger WHERE wallet_id=? AND kind='earn'`, w).Scan(&earned)
 	_ = s.DB.QueryRow(`SELECT COALESCE(-SUM(delta),0) FROM credit_ledger WHERE wallet_id=? AND kind='usage'`, w).Scan(&spent)
 	out := map[string]any{"wallet": s.walletJSON(w), "ledger": ledger, "earnedCredits": round6(earned), "spentCredits": round6(spent),
-		"rates": map[string]any{"creditsPerDefaultHour": 1, "nodeEarnRate": s.Cfg.NodeEarnRate, "multipliers": sizeMultipliers()}}
+		"rates": map[string]any{"creditsPerDefaultHour": 1, "nodeEarnRate": s.Cfg.NodeEarnRate, "multipliers": sizeMultipliers(), "perVCPU": api.PerVCPU, "perGiB": api.PerGiB}}
 	if org != nil {
 		out["teamId"] = org.ID
 	}

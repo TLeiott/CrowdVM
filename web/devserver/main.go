@@ -223,7 +223,7 @@ var (
 	newPrivate = false
 )
 
-var sizes = map[string][3]float64{"small": {2, 4, 0.5}, "default": {4, 8, 1}, "large": {8, 16, 2}, "xlarge": {16, 32, 5.5}}
+var sizes = map[string][3]float64{"small": {2, 4, 0.5}, "default": {4, 8, 1}, "large": {8, 16, 2}, "xlarge": {16, 32, 4}}
 
 func ip(n int) *int { return &n }
 

@@ -810,7 +810,7 @@ func (s *Server) handleCreateSandbox(c *Ctx) error {
 	}
 	if req.Type != "" {
 		if _, ok := api.SizeByName(req.Type); !ok {
-			return Err(400, "invalid_type", "type must be small, default, large or xlarge.")
+			return Err(400, "invalid_type", api.InvalidTypeMsg)
 		}
 	}
 	if req.Visibility != "" && req.Visibility != "shared" && req.Visibility != "private" {

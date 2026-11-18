@@ -118,7 +118,13 @@ picks one; `--no-env` passes nothing in.
 | small | 2 | 4 GB | 0.5 |
 | default | 4 | 8 GB | 1 |
 | large | 8 | 16 GB | 2 |
-| xlarge | 16 | 32 GB | about 5.6 |
+| xlarge | 16 | 32 GB | 4 |
+| custom, e.g. `8c10g` | 1–64 | 2–256 GB | 0.125 per vCPU + 0.0625 per GB |
+
+A custom shape is `<vCPU>c<GB>g`: `crowdvm new --type 8c10g` asks for 8 vCPU and 10 GB of RAM.
+Every size is priced by the same formula. A custom shape gets the disk of the smallest named
+size that covers it (`8c10g` gets large's 111 GB). An admin size policy that allows `large`
+also allows any custom shape up to 8 vCPU and 16 GB. CI labels take shapes too: `crowdvm-8c10g`.
 
 Each size also has a disk size; `GET /api/v1/server` lists the sizes this server
 offers. Change the size of a stopped sandbox with `crowdvm resume ID --type large`. A

@@ -884,7 +884,7 @@ func (s *Server) policyGuard(c *Ctx) error {
 			}
 			if t != "" {
 				sz, _ := api.SizeByName(t)
-				if !slices.Contains(p.AllowedSizes, sz.Name) && !slices.Contains(p.AllowedSizes, t) {
+				if !sizeAllowed(p.AllowedSizes, sz) && !slices.Contains(p.AllowedSizes, t) {
 					// Boat gates sizes on the plan (403 machine_class_plan_required);
 					// CrowdVM gates them on the admin's size policy for the wallet.
 					return ErrD(403, "machine_class_plan_required", "The "+sz.Name+" size is not allowed for this account: the administrator's size policy allows only "+strings.Join(p.AllowedSizes, ", ")+". Pick one of those, or ask an administrator to allow "+sz.Name+".",
@@ -1004,4 +1004,14 @@ func (s *Server) planNudge(wallet string, out map[string]any) any {
 		}
 	}
 	return nil
+}
+
+// sizeAllowed: sz is listed, or it is a custom shape no bigger than a
+// listed size in vCPU and RAM (so "large" also allows 8c10g).
+func sizeAllowed(allowed []string, sz api.SizeSpec) bool {
+	custom := !slices.ContainsFunc(api.Sizes, func(c api.SizeSpec) bool { return c.Name == sz.Name })
+	return slices.ContainsFunc(allowed, func(a string) bool {
+		as, ok := api.SizeByName(a)
+		return ok && (as.Name == sz.Name || custom && sz.Within(as))
+	})
 }

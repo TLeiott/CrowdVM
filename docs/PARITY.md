@@ -125,7 +125,7 @@ Row format: `| ID | Feature | Boat source page(s) | Classification | CrowdVM map
 
 | ID | Feature | Boat source | Class | CrowdVM mapping / note |
 |---|---|---|---|---|
-| SIZE-001 | Four sizes `small` 2vCPU/4GB/51GB, `default` 4/8/51, `large` 8/16/111, `xlarge` 16/32/251; no custom sizes | machines, pricing | REQUIRED | Scheduler places only on nodes whose advertised capacity fits; disk = qcow2 virtual size. |
+| SIZE-001 | Four sizes `small` 2vCPU/4GB/51GB, `default` 4/8/51, `large` 8/16/111, `xlarge` 16/32/251; no custom sizes | machines, pricing | ADAPTED | Same four named sizes, plus custom `<vcpu>c<GiB>g` shapes (1–64 vCPU, 2–256 GiB) that take the disk of the smallest covering named size. Scheduler places only on nodes whose advertised capacity fits; disk = qcow2 virtual size. |
 | SIZE-002 | Default type `default` when `--type` omitted | machines | REQUIRED | |
 | SIZE-003 | Per-size hourly price | machines, pricing | ADAPTED | Credit multiplier per size (`billingMultiplier`: 0.5/1/2/5.55). |
 | SIZE-004 | `large` gated on first payment, `xlarge` on $100 plan | machines | ADAPTED | Optional per-wallet allowed-sizes policy set by an admin (off by default); a disallowed size answers Boat's `403 machine_class_plan_required` with `details.policy: "admin"` and `allowedSizes`; `GET /limits` marks it `not_allowed_by_policy`. |
@@ -534,7 +534,7 @@ Row format: `| ID | Feature | Boat source page(s) | Classification | CrowdVM map
 
 | ID | Feature | Boat source | Class | CrowdVM mapping / note |
 |---|---|---|---|---|
-| BILL-001 | Per-second metering while running (from `provisioned`), size multiplier small 0.5 / default 1 / large 2 / xlarge 5.56 | pricing, billing | ADAPTED | Credits ledger: running sandbox debits `seconds × multiplier`; nodes earn credits for hosted VM-seconds; admin grants. Enforcement optional, off by default (ARCHITECTURE). |
+| BILL-001 | Per-second metering while running (from `provisioned`), size multiplier small 0.5 / default 1 / large 2 / xlarge 5.56 | pricing, billing | ADAPTED | Every size costs 0.125/vCPU + 0.0625/GiB per hour (xlarge 4, not 5.56, so custom shapes have no price cliff). Credits ledger: running sandbox debits `seconds × multiplier`; nodes earn credits for hosted VM-seconds; admin grants. Enforcement optional, off by default (ARCHITECTURE). |
 | BILL-002 | Plans ($20/$100/$500/$2000) with included VM time, Stripe subscription | pricing, billing | ADAPTED | Replaced by per-account/org credit quotas (admin-set). No subscriptions. |
 | BILL-003 | Wallet in USD paying overage; can go negative during grace | billing | ADAPTED | Credit balance; may go negative during grace. |
 | BILL-004 | Wallet pay ($15–$100 000), bonus table, auto top-up (cards, 10% trigger, 3-decline disable), card management | billing | N/A | Real-money payments are out of scope (no Stripe/cards). Admin credit grants replace them (BILL-005). |

@@ -86,7 +86,7 @@ func (s *Server) couldEverPlace(req schedReq) bool {
 // that are available instead of a retryable out_of_capacity.
 func (s *Server) neverFitsErr(req schedReq, orig error) error {
 	small := req
-	small.Size = api.Sizes[0]
+	small.Size, _ = api.SizeByName(fmt.Sprintf("%dc%dg", api.MinVCPU, api.MinMemGiB))
 	if !s.couldEverPlace(small) {
 		return orig // not about the size: no usable node at all (its own error says why)
 	}

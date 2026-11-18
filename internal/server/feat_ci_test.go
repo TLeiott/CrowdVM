@@ -328,7 +328,7 @@ func TestCI(t *testing.T) {
 
 func TestCILabels(t *testing.T) {
 	for label, ok := range map[string]bool{"crowdvm": true, "crowdvm-small": true, "crowdvm-xlarge/from=base/debug": true, "crowdvm/kvm": true,
-		"crowdvm-huge": false, "crowdvm/turbo": false, "crowdvm-": false, "crowdvm/from=": false,
+		"crowdvm-huge": false, "crowdvm-8c10g/debug": true, "crowdvm-8c999g": false, "crowdvm/turbo": false, "crowdvm-": false, "crowdvm/from=": false,
 		"boat": true, "boat-large/debug": true, "boatx": false, "boat-huge": false} {
 		r := server.CILabelOK(label)
 		if r != ok {

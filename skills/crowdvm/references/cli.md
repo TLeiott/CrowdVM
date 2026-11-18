@@ -50,7 +50,7 @@ crowdvm usage ID [--since T] [--until T]  # machine time and credits used
 
 | Flag | Meaning |
 |---|---|
-| `--type small\|default\|large\|xlarge` | Machine size |
+| `--type small\|default\|large\|xlarge\|8c10g` | Machine size; `<vcpu>c<GB>g` is a custom shape |
 | `--ttl SECONDS` | Auto-stop after this many seconds from start (default 3600) |
 | `--no-auto-stop` | Never stop automatically |
 | `--name NAME` | Display name |
