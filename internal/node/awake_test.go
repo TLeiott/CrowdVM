@@ -34,7 +34,8 @@ func TestKeepAwakeWhileHosting(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { n.keepAwakeLoop(ctx); close(done) }()
-	held := func() bool { _, err := os.Stat(mark); return err == nil }
+	// The shell creates the file before it writes the arguments: held = written.
+	held := func() bool { b, err := os.ReadFile(mark); return err == nil && len(b) > 0 }
 	wait := func(what string, cond func() bool) {
 		t.Helper()
 		for end := time.Now().Add(5 * time.Second); !cond(); time.Sleep(10 * time.Millisecond) {
