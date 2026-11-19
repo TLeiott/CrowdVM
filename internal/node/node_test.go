@@ -954,7 +954,10 @@ func TestUploadInFlightAndGone(t *testing.T) {
 		t.Fatalf("in flight right after the snapshot: %+v", l)
 	}
 	close(hold)
-	waitFor(t, "snapshot.failed", func() bool { return len(h.srv.eventsOf(proto.EvSnapshotFailed)) > 0 })
+	waitQuietUpload(t, h.node, "snap_g1")
+	if evs := h.srv.eventsOf(proto.EvSnapshotFailed); len(evs) != 0 {
+		t.Fatalf("deleted upload reported failure: %+v", evs)
+	}
 	for _, ns := range list("") {
 		if ns.ID == "snap_g1" {
 			t.Fatalf("node kept a snapshot the server deleted: %+v", ns)

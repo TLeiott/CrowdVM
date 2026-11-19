@@ -72,8 +72,8 @@ type Node struct {
 	fetches   map[string]*fetchCall
 	uploads   map[string]*fetchCall
 	// uploading: snapshots taken here whose upload has not ended yet
-	// (id -> sandbox), reported in GET /v1/snapshots so the server does not
-	// erase or forget them mid-upload.
+	// (id -> sandbox), reported in GET /v1/snapshots so the server can
+	// track and cancel uploads of deleted data.
 	uploading map[string]string
 
 	events   []proto.Event

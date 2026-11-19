@@ -257,13 +257,16 @@ func (n *Node) uploadAsync(sandboxID string, ref proto.SnapshotRef, periodic boo
 			if err = n.UploadSnapshot(ctx, sandboxID, ref.ID); err == nil {
 				return
 			}
+			if errors.Is(err, errSnapshotMissing) || !n.drv.Store().HasSnapshot(ref.ID) {
+				return // deleted or merged away locally: nothing left to upload
+			}
 			var ge *goneError
 			if errors.As(err, &ge) && ge.id == ref.ID {
 				// Its sandbox or the snapshot was deleted meanwhile: the
 				// server keeps nothing of it, so neither do we.
 				n.log.Info("snapshot deleted on the server during its upload; erasing it here", "snapshot", ref.ID, "sandbox", sandboxID)
 				_ = n.drv.Store().DeleteSnapshot(ref.ID)
-				break
+				return
 			}
 			n.log.Warn("snapshot upload failed", "snapshot", ref.ID, "attempt", attempt+1, "err", err)
 			if !sleepCtx(ctx, time.Duration(1<<attempt)*2*time.Second) {
@@ -344,6 +347,8 @@ func (n *Node) serverStored(ctx context.Context, id string) (bool, error) {
 	return meta.Uploaded == nil || *meta.Uploaded, nil
 }
 
+var errSnapshotMissing = errors.New("snapshot not in local store")
+
 // goneError: the server refused an upload (410) because the snapshot or its
 // sandbox was deleted.
 type goneError struct{ id string }
@@ -395,7 +400,7 @@ func (n *Node) UploadSnapshot(ctx context.Context, sandboxID, id string) error {
 	return n.once(ctx, n.uploads, "snapshot/"+id, func(ctx context.Context) error {
 		ref, ok := n.drv.Store().SnapshotRef(id)
 		if !ok {
-			return fmt.Errorf("snapshot %s not in local store", id)
+			return fmt.Errorf("snapshot %s: %w", id, errSnapshotMissing)
 		}
 		if _, err := n.waitConnected(ctx); err != nil {
 			return err
