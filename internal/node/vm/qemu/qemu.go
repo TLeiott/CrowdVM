@@ -1289,7 +1289,11 @@ func sandboxPolicy(p *proto.NetPolicy) (*netstack.Sandbox, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sandbox net policy: %w", err)
 	}
-	return &netstack.Sandbox{Allow: allow, Deny: deny, NoDNS: p.NoDNS}, nil
+	udp, err := netstack.ParseDests(p.UDP)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox net policy: %w", err)
+	}
+	return &netstack.Sandbox{Allow: allow, Deny: deny, NoDNS: p.NoDNS, UDP: udp}, nil
 }
 
 // hostArgs returns the -machine value and whether to add the free-page

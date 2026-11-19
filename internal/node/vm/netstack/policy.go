@@ -200,6 +200,45 @@ type Sandbox struct {
 	Allow []netip.Prefix // if non-empty, only these destinations are reachable
 	Deny  []netip.Prefix
 	NoDNS bool // the 10.0.2.3 resolver does not answer
+	// UDP: destinations this VM may send UDP to although Allow/Deny refuse
+	// them (the server's --egress-allow-udp). The node policy still applies.
+	UDP []Dest
+}
+
+// Dest is a destination network and port (0 = any port).
+type Dest struct {
+	Net  netip.Prefix
+	Port uint16
+}
+
+// ParseDests parses "ip:port", CIDRs or bare addresses.
+func ParseDests(list []string) ([]Dest, error) {
+	var out []Dest
+	for _, s := range list {
+		if ap, err := netip.ParseAddrPort(strings.TrimSpace(s)); err == nil {
+			a := ap.Addr().Unmap()
+			out = append(out, Dest{netip.PrefixFrom(a, a.BitLen()), ap.Port()})
+			continue
+		}
+		p, err := ParsePrefixes([]string{s})
+		if err != nil {
+			return nil, err
+		}
+		for _, n := range p {
+			out = append(out, Dest{Net: n})
+		}
+	}
+	return out, nil
+}
+
+// udpOK: sb lets dst have UDP whatever its Allow/Deny say.
+func (sb *Sandbox) udpOK(dst netip.AddrPort) bool {
+	for _, d := range sb.UDP {
+		if d.Net.Contains(dst.Addr().Unmap()) && (d.Port == 0 || d.Port == dst.Port()) {
+			return true
+		}
+	}
+	return false
 }
 
 // Check reports whether a guest may connect to dst, and why not.

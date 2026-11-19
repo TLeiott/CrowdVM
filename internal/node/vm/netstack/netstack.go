@@ -364,7 +364,11 @@ func (n *Network) handleFrame(frame []byte) {
 // ---------------------------------------------------------------------------
 
 func (n *Network) check(proto string, dst netip.AddrPort) bool {
-	ok, why := n.cfg.Rules.Check(dst, n.cfg.Sandbox)
+	sb := n.cfg.Sandbox
+	if proto == "udp" && sb != nil && sb.udpOK(dst) {
+		sb = nil // only the node policy decides
+	}
+	ok, why := n.cfg.Rules.Check(dst, sb)
 	if a := dst.Addr(); !ok && !a.IsMulticast() && a != netip.AddrFrom4([4]byte{255, 255, 255, 255}) { // no mDNS/SSDP noise
 		key := proto + " " + dst.String()
 		n.lmu.Lock()

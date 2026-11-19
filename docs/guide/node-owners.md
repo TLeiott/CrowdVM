@@ -109,6 +109,10 @@ crowdvm-node config set net.deny "203.0.113.0/24"           # block parts of the
 matching prefix wins. Your machine's own addresses only open with an exact `/32`.
 The change applies after a restart. Prefer opening one host over `net.allow-lan`.
 
+If the server lets sandboxes send UDP to listed destinations (`--egress-allow-udp`),
+that UDP leaves from your machine and your policy still decides: a LAN destination
+needs your `net.allow`.
+
 ## GPUs
 
 The benchmark lists your GPUs, but a sandbox only gets one you pass through to it.

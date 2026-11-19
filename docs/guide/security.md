@@ -98,7 +98,11 @@ A sandbox reaches the internet through the server, not through the node that hos
   reachable, and the server operator can open more on the server's networks, such
   as an internal git server: `crowdvm-server serve --egress-allow 10.0.5.0/24,192.168.1.20:22`.
 - UDP other than DNS (QUIC, for example) is refused, and `ping` does not work.
-  Programs fall back to TCP.
+  Programs fall back to TCP. The server operator can let UDP to listed destinations out,
+  for example to a game server under load test:
+  `crowdvm-server serve --egress-allow-udp 192.168.1.10:27015`. That UDP leaves from the
+  node, not the server: the node sees it, and the node owner's network policy still
+  applies (a LAN address needs their `net.allow`).
 - If root in the sandbox removes CrowdVM's firewall rules, the sandbox only cuts itself
   off: the node lets it reach nothing but the server.
 - Direct ports (`direct-host` nodes) enter the sandbox through the node, which sees

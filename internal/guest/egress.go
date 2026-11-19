@@ -63,7 +63,7 @@ func (a *Agent) startEgress(ctx context.Context) error {
 	go a.serveEgressProxy(tl)
 	go a.serveDNSUDP(ul)
 	go a.serveDNSTCP(dl)
-	err = egressRules()
+	err = egressRules(a.cfg.EgressUDP)
 	go func() { // re-apply when something (dockerd, ufw reset) dropped the jump rules
 		t := time.NewTicker(10 * time.Second)
 		defer t.Stop()
@@ -73,7 +73,7 @@ func (a *Agent) startEgress(ctx context.Context) error {
 				return
 			case <-t.C:
 				if !egressRulesPresent() {
-					if err := egressRules(); err != nil {
+					if err := egressRules(a.cfg.EgressUDP); err != nil {
 						a.log.Printf("egress: rules: %v", err)
 					}
 				}
@@ -85,6 +85,21 @@ func (a *Agent) startEgress(ctx context.Context) error {
 	}
 	a.log.Printf("egress: through the server (proxy :%d, dns :%d)", egressProxyPort, egressDNSPort)
 	return nil
+}
+
+// udpAllowRules: an iptables RETURN for each IPv4 "ip:port", CIDR or IP.
+func udpAllowRules(list []string) [][]string {
+	var out [][]string
+	for _, e := range list {
+		if ap, err := netip.ParseAddrPort(e); err == nil && ap.Addr().Unmap().Is4() {
+			out = append(out, []string{"-d", ap.Addr().Unmap().String(), "-p", "udp", "--dport", strconv.Itoa(int(ap.Port())), "-j", "RETURN"})
+		} else if p, err := netip.ParsePrefix(e); err == nil && p.Addr().Is4() {
+			out = append(out, []string{"-d", p.Masked().String(), "-p", "udp", "-j", "RETURN"})
+		} else if a, err := netip.ParseAddr(e); err == nil && a.Unmap().Is4() {
+			out = append(out, []string{"-d", a.Unmap().String(), "-p", "udp", "-j", "RETURN"})
+		}
+	}
+	return out
 }
 
 func ipt(args ...string) error {
@@ -119,8 +134,10 @@ func firstRule(table, chain string) string {
 	return ""
 }
 
-// egressRules (re)builds the chains and puts their jumps first.
-func egressRules() error {
+// egressRules (re)builds the chains and puts their jumps first. udp lists
+// the destinations (--egress-allow-udp) whose UDP leaves through the NIC;
+// the node relays it.
+func egressRules(udp []string) error {
 	mark := "0x" + strconv.FormatInt(channelMark, 16)
 	// Private destinations: UDP and DNS stay inside the VM (containers,
 	// docker bridges, pod networks, local resolvers; the node's kill switch
@@ -154,6 +171,7 @@ func egressRules() error {
 	for _, p := range private {
 		filter = append(filter, []string{"-d", p, "-j", "RETURN"})
 	}
+	filter = append(filter, udpAllowRules(udp)...)
 	filter = append(filter, []string{"-p", "udp", "-m", "addrtype", "!", "--dst-type", "LOCAL", "-j", "REJECT", "--reject-with", "icmp-port-unreachable"})
 	// Redirected traffic of containers arrives on INPUT, which ufw drops by
 	// default: let it reach the proxy and the resolver. Never from the

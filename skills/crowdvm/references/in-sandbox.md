@@ -33,6 +33,9 @@ variable is missing (cron jobs, services without the sandbox env).
 - Outbound: internet is allowed. The node's LAN, RFC 1918 ranges, Tailscale
   (`100.64.0.0/10`), link-local and multicast are blocked by default; the CrowdVM server
   is always reachable. Only the node owner can open more.
+- UDP: only DNS goes out; other UDP (QUIC, game protocols, WireGuard) gets "port
+  unreachable", and `ping` does not work. A server admin can open UDP to listed
+  destinations (`crowdvm-server serve --egress-allow-udp HOST:PORT`).
 - Inbound: `ufw` denies everything except `22/tcp` (SSH) and the guest agent port
   (`7070/tcp`). The rules are reset at every boot, so a resume or fork never keeps your
   `ufw allow` lines. Docker-published ports bypass ufw, as usual.

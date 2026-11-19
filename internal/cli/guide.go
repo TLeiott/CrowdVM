@@ -26,6 +26,7 @@ commands local. Details: the ` + "`" + `crowdvm` + "`" + ` skill (` + "`" + `cro
 - Run: ` + "`" + `crowdvm exec "$id" --push . --timeout 0 -- npm test` + "`" + ` (copies this folder to /home/user/<folder> and runs there; ` + "`" + `--timeout 0` + "`" + ` = no limit, the default cuts a command after 30 s)
 - Long job or server: ` + "`" + `pid=$(crowdvm exec "$id" --detach --json=false "npm run dev")` + "`" + `, then ` + "`" + `crowdvm exec "$id" --status "$pid"` + "`" + `
 - Files: ` + "`" + `crowdvm push "$id" .` + "`" + ` sends git-tracked and new, not-ignored files one way; ` + "`" + `crowdvm scp -r "$id":/home/user/<folder>/dist ./dist` + "`" + ` copies results back
+- Network: sandboxes reach the internet over TCP and DNS; other UDP is refused unless the server admin opened its destination
 - URL for a port: ` + "`" + `crowdvm host "$id" 3000` + "`" + ` (opens on the team's LAN or Tailscale)
 - Untrusted code or other people's work: add ` + "`" + `--no-env` + "`" + `; one sandbox per end user
 - As availability allows: ` + "`" + `crowdvm limits --json` + "`" + ` gives ` + "`" + `machineTypes[].fitsNow` + "`" + ` (how many of each size you can start now); send out at most that many pieces, start each with ` + "`" + `--fail-fast` + "`" + `, and run a piece locally on ` + "`" + `no_ready_machine` + "`" + ` instead of waiting

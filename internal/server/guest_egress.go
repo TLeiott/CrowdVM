@@ -209,7 +209,7 @@ func ParseEgressAllow(list []string) ([]string, error) {
 		} else if a, err := netip.ParseAddr(e); err == nil {
 			out = append(out, netip.PrefixFrom(a, a.BitLen()).String())
 		} else {
-			return nil, fmt.Errorf("--egress-allow %q: want ip:port, a CIDR or an IP", e)
+			return nil, fmt.Errorf("%q: want ip:port, a CIDR or an IP", e)
 		}
 	}
 	return out, nil

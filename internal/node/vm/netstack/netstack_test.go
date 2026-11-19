@@ -470,3 +470,49 @@ func TestPacketAttachAndGatewayService(t *testing.T) {
 		t.Fatal("an unserved gateway port answered")
 	}
 }
+
+// Issue 8: a server-egress VM (Deny all) may send UDP to the destinations
+// the server lists, and nothing else; TCP to them stays refused.
+func TestSandboxUDPAllow(t *testing.T) {
+	own := hostIP(t)
+	tcpEcho := netip.MustParseAddrPort(echoServer(t, "tcp", "0.0.0.0:0")).Port()
+	udpEcho := netip.MustParseAddrPort(echoServer(t, "udp", "0.0.0.0:0")).Port()
+	other := netip.MustParseAddrPort(echoServer(t, "udp", "0.0.0.0:0")).Port()
+	allow, _ := ParsePrefixes([]string{own.String()}) // the node owner opens it
+	rules, err := NewRules(Policy{Allow: allow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deny, _ := ParsePrefixes([]string{"0.0.0.0/0"})
+	udp, err := ParseDests([]string{netip.AddrPortFrom(own, udpEcho).String()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := New(Config{Rules: rules, MTU: 9000, Sandbox: &Sandbox{Deny: deny, NoDNS: true, UDP: udp}, Logf: func(string, ...any) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(n.Close)
+	q, nodeSide := streamPair(t)
+	n.Attach(nodeSide)
+	g := fakeGuest(t, q, 9000)
+
+	send := func(port uint16) (string, error) {
+		uc, err := gonet.DialUDP(g, nil, &tcpip.FullAddress{NIC: 1, Addr: tcpAddr(own), Port: port}, ipv4.ProtocolNumber)
+		if err != nil {
+			return "", err
+		}
+		defer uc.Close()
+		return roundTrip(uc, "udp")
+	}
+	if got, err := send(udpEcho); got != "echo:udp" {
+		t.Fatalf("listed udp: %q %v", got, err)
+	}
+	if got, err := send(other); err == nil {
+		t.Fatalf("unlisted udp port answered: %q", got)
+	}
+	if c, err := dialTCP(g, netip.AddrPortFrom(own, tcpEcho)); err == nil {
+		c.Close()
+		t.Fatal("tcp to a udp-listed address reachable")
+	}
+}

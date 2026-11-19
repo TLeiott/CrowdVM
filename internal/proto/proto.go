@@ -159,6 +159,10 @@ type GuestConfig struct {
 	// through the guest channel and out of the server; the node's netstack
 	// then lets the VM reach only the server. "" = out through the node.
 	Egress string `json:"egress,omitempty"`
+	// EgressUDP (Egress "server"): UDP destinations ("ip:port", a CIDR or an
+	// IP) the guest lets out through its NIC instead of refusing; the node
+	// relays them (NetPolicy.UDP). The server's --egress-allow-udp.
+	EgressUDP []string `json:"egressUdp,omitempty"`
 	// ZeroDataRetention: the owner's account has zero data retention on.
 	// Implies NoMonitoring (the server sets both); in addition the guest
 	// keeps no prompt transcripts/events on disk after a turn ends.
@@ -458,6 +462,10 @@ type NetPolicy struct {
 	// NoDNS: the node's resolver (10.0.2.3) does not answer this VM (its
 	// DNS goes through the server; a node resolver would be a side channel).
 	NoDNS bool `json:"noDns,omitempty"`
+	// UDP: destinations ("ip:port", a CIDR or an IP) this VM may send UDP
+	// to although Allow/Deny refuse them. The node's own policy still
+	// applies (a LAN address needs the node owner's net.allow-lan or allow).
+	UDP []string `json:"udp,omitempty"`
 }
 
 type VMStatus struct {

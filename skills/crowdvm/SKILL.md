@@ -34,8 +34,9 @@ Move work to a sandbox entirely only when it:
 - needs a browser or desktop, or a URL that other people can open.
 
 Keep quick edits and short commands local, and work that needs files, devices or
-services only this machine or its LAN has. A sandbox reaches the internet, not your
-LAN or localhost (`crowdvm forward --reverse` lends it one local port).
+services only this machine or its LAN has. A sandbox reaches the internet over TCP and
+DNS (other UDP only where the server admin opened it, no `ping`), not your LAN or
+localhost (`crowdvm forward --reverse` lends it one local port).
 
 ## Sign in
 
