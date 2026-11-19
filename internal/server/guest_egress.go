@@ -202,7 +202,7 @@ func ParseEgressAllow(list []string) ([]string, error) {
 	out := make([]string, 0, len(list))
 	for _, e := range list {
 		e = strings.TrimSpace(e)
-		if _, err := netip.ParseAddrPort(e); err == nil {
+		if ap, err := netip.ParseAddrPort(e); err == nil && ap.Port() != 0 {
 			out = append(out, e)
 		} else if _, err := netip.ParsePrefix(e); err == nil {
 			out = append(out, e)

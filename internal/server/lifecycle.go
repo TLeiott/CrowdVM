@@ -832,15 +832,20 @@ func (s *Server) onNodeOffline(nodeID string) {
 		}
 	}
 	rows.Close()
-	now := store.Now()
+	// Down since the node was last seen, not since the grace ran out: the
+	// rebuild grace counts from it, and the run ends there.
+	at := store.Now()
+	if seen, ok := s.seenAt(nodeID); ok && seen > 0 && seen < at {
+		at = seen
+	}
 	for _, id := range ids {
 		from := append(append([]string{}, startingStates...), usableStates...)
 		// Still on this node: a boot the node died under may have been
 		// placed again meanwhile (requeueBoot).
 		if _, ok := s.transitionIf(id, func(st, n string) bool { return n == nodeID && slices.Contains(from, st) }, api.StateError,
-			map[string]any{"error": "node_offline", "health": "degraded", "health_reason": "node_offline", "degraded_since": now},
+			map[string]any{"error": "node_offline", "health": "degraded", "health_reason": "node_offline", "degraded_since": at},
 			Event{Type: EvSandboxDegraded, Reason: "node_offline"}, Event{Type: EvSandboxError, Reason: "node_offline"}); ok {
-			s.closeRun(id)
+			s.closeRunAt(id, at)
 		}
 	}
 }

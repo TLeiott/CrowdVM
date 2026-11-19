@@ -126,8 +126,11 @@ func (s *Server) openRun(sb *Sandbox) {
 }
 
 // closeRun stops metering sb.
-func (s *Server) closeRun(sbID string) {
-	_, _ = s.DB.Exec(`UPDATE sandbox_runs SET ended_at=? WHERE sandbox_id=? AND ended_at IS NULL`, store.Now(), sbID)
+func (s *Server) closeRun(sbID string) { s.closeRunAt(sbID, store.Now()) }
+
+// closeRunAt ends sbID's open run at at, but not before what is billed.
+func (s *Server) closeRunAt(sbID string, at int64) {
+	_, _ = s.DB.Exec(`UPDATE sandbox_runs SET ended_at=MAX(?,billed_until) WHERE sandbox_id=? AND ended_at IS NULL`, at, sbID)
 }
 
 func (s *Server) billingLoop(ctx context.Context) {

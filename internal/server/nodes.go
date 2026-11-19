@@ -1263,7 +1263,11 @@ func (s *Server) handleDeleteNode(c *Ctx) error {
 		// are rebuilt elsewhere from their last stored snapshot.
 		s.destroyNodeVMs(c.R.Context(), conn)
 		kept = s.eraseNodeCopies(c.R.Context(), conn)
+		// Removed, not restarting: no grace for it to come back.
+		s.nodes.remove(n.ID, conn)
 		_ = conn.sess.Close()
+		s.Bus.Publish(Event{Type: EvNodeOffline, NodeID: n.ID})
+		s.onNodeOffline(n.ID)
 	} else {
 		_ = s.DB.QueryRow(`SELECT COUNT(*) FROM snapshot_locations WHERE node_id=?`, n.ID).Scan(&kept)
 	}

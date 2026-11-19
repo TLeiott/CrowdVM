@@ -13,7 +13,7 @@ import (
 // turned error node_offline at once and an agent deleted one. A node back
 // within the grace period leaves them alone; one that stays away does not.
 func TestNodeOfflineGrace(t *testing.T) {
-	env := servertest.New(t, func(c *server.Config) { c.NodeOfflineGrace = time.Second })
+	env := servertest.New(t, func(c *server.Config) { c.NodeOfflineGrace = 3 * time.Second })
 	var mu sync.Mutex
 	var errs int
 	env.S.Bus.Subscribe(func(e server.Event) {
@@ -35,9 +35,9 @@ func TestNodeOfflineGrace(t *testing.T) {
 	if err := node.Connect(); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(400 * time.Millisecond)
+	time.Sleep(1300 * time.Millisecond)
 	node.Disconnect()
-	time.Sleep(700 * time.Millisecond) // 1.3 s after the first disconnect
+	time.Sleep(1800 * time.Millisecond) // past the first timer, 1.2 s before the second
 	if r := env.Do(key, "GET", "/api/v1/sandboxes/"+id, nil); r.Str("sandbox.state") != "ready" {
 		t.Fatalf("a node within its grace period failed its sandbox: %s", r)
 	}
@@ -52,5 +52,20 @@ func TestNodeOfflineGrace(t *testing.T) {
 	r := env.WaitState(key, id, "error")
 	if r.Str("sandbox.error") != "node_offline" {
 		t.Fatalf("after the grace period: %s", r)
+	}
+}
+
+// A node removed by force is not coming back: no grace for it.
+func TestForceRemovedNodeSkipsGrace(t *testing.T) {
+	env := servertest.New(t, func(c *server.Config) { c.NodeOfflineGrace = time.Hour })
+	node := env.StartNode(servertest.NodeOptions{})
+	key := env.AdminKey
+	id := createSandbox(t, env, key, nil)
+	env.WaitState(key, id, "ready")
+	if r := env.Do(key, "DELETE", "/api/v1/nodes/"+node.ID+"?force=true", nil); r.Status != 200 {
+		t.Fatalf("remove: %s", r)
+	}
+	if r := env.WaitState(key, id, "error"); r.Str("sandbox.error") != "node_offline" {
+		t.Fatalf("after removal: %s", r)
 	}
 }
