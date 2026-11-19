@@ -41,14 +41,14 @@ func (a *App) billingCmd() *cobra.Command {
 		}
 		return a.result(b, func() {
 			if w := mapOf(b["wallet"]); len(w) > 0 {
-				a.printf("balance:      %v credits", w["balanceCredits"])
+				a.printf("balance:      %s credits", fmtCredits(w["balanceCredits"]))
 				if w["enforced"] == false {
 					a.printf(" (not enforced on this server)")
 				}
 				a.printf("\n")
 			}
 			if v, ok := b["spentThisMonth"]; ok {
-				a.printf("spent (month): %v credits\n", v)
+				a.printf("spent (month): %s credits\n", fmtCredits(v))
 			}
 			if g := mapOf(b["grace"]); g["active"] == true {
 				a.printf("GRACE:        out of credits since %v; sandboxes stop at %v\n", g["since"], g["until"])

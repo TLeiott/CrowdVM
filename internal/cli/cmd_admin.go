@@ -414,7 +414,7 @@ Your personal credit balance stays on your account unless you pass
 				}
 				a.printf(" into %s", org)
 				if v, ok := r["transferredCredits"].(float64); ok && v != 0 {
-					a.printf("; %v credits transferred", v)
+					a.printf("; %s credits transferred", fmtCredits(v))
 				}
 				a.printf("\n")
 			})

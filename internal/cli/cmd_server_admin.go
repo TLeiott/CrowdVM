@@ -30,7 +30,7 @@ func (a *App) adminCmd() *cobra.Command {
 	}
 	userLine := func(r client.Object) {
 		u := mapOf(r["user"])
-		a.printf("%s %s admin=%v suspended=%v credits=%v\n", s(u["id"]), firstNonEmpty(s(u["login"]), s(u["username"])), u["isAdmin"], u["suspended"], u["credits"])
+		a.printf("%s %s admin=%v suspended=%v credits=%s\n", s(u["id"]), firstNonEmpty(s(u["login"]), s(u["username"])), u["isAdmin"], u["suspended"], fmtCredits(u["credits"]))
 	}
 
 	users := &cobra.Command{
@@ -148,7 +148,7 @@ func (a *App) adminCmd() *cobra.Command {
 			setObj(body, "reason", reason)
 			return objOut(func(r client.Object) {
 				w := mapOf(r["wallet"])
-				a.printf("%s: balance %v credits\n", firstNonEmpty(gUser, gOrg), w["balanceCredits"])
+				a.printf("%s: balance %s credits\n", firstNonEmpty(gUser, gOrg), fmtCredits(w["balanceCredits"]))
 			})(c.AdminGrant(cmd.Context(), body))
 		}),
 	}

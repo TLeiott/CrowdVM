@@ -294,7 +294,7 @@ func (a *App) onboardSteps(cmd *cobra.Command, purpose string) error {
 	}
 	return a.result(out, func() {
 		if v, ok := out["credits"]; ok {
-			a.printf("credits: %v (see `crowdvm credits`)\n", v)
+			a.printf("credits: %s (see `crowdvm credits`)\n", fmtCredits(v))
 		}
 		a.printf("Ready. Create a sandbox with: crowdvm new\n")
 	})
@@ -493,7 +493,7 @@ func (a *App) statusCmd() *cobra.Command {
 					a.printf("account:  not signed in\n")
 				}
 				if v, ok := account["credits"]; ok {
-					a.printf("credits:  %v", v)
+					a.printf("credits:  %s", fmtCredits(v))
 					if account["creditsEnforced"] == false {
 						a.printf(" (not enforced on this server)")
 					}
@@ -578,7 +578,7 @@ with --fail-fast to learn at once when there is no room after all.`,
 					}
 				}
 				if b, ok := l["creditBalance"]; ok {
-					a.printf(" · credits: %v", b)
+					a.printf(" · credits: %s", fmtCredits(b))
 				}
 				a.printf("\n")
 				if mt, ok := l["machineTypes"].([]any); ok {
@@ -686,7 +686,7 @@ they host. Admins grant credits on the server.`,
 			if err != nil {
 				return err
 			}
-			return a.result(r, func() { a.printf("moved %g credits to %s\n", amount, to) })
+			return a.result(r, func() { a.printf("moved %s credits to %s\n", fmtCredits(amount), to) })
 		},
 	}
 	transfer.Flags().StringVar(&from, "from", "", "source wallet (default: the one in scope: --org, CROWDVM_ORG or the active org; \"personal\" for your own)")
@@ -702,11 +702,11 @@ func (a *App) printCredits(cr client.Object) {
 		prettyObject(a.Out, cr, "")
 		return
 	}
-	a.printf("balance: %v credits", w["balanceCredits"])
+	a.printf("balance: %s credits", fmtCredits(w["balanceCredits"]))
 	if w["enforced"] == false {
 		a.printf(" (not enforced on this server)")
 	}
-	a.printf("\nearned:  %v (hosting VMs on your nodes)\nspent:   %v\n", cr["earnedCredits"], cr["spentCredits"])
+	a.printf("\nearned:  %s (hosting VMs on your nodes)\nspent:   %s\n", fmtCredits(cr["earnedCredits"]), fmtCredits(cr["spentCredits"]))
 	if rates, ok := cr["rates"].(map[string]any); ok {
 		a.printf("rate:    %v credit per default-size hour\n", rates["creditsPerDefaultHour"])
 		for _, k := range sortedKeys(mapOf(rates["multipliers"])) {

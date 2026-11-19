@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"sort"
 	"strconv"
@@ -16,6 +17,15 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
+
+// fmtCredits prints a credit amount as a plain decimal (never 1e+06),
+// rounded to 4 places.
+func fmtCredits(v any) string {
+	if f, ok := v.(float64); ok {
+		return strconv.FormatFloat(math.Round(f*1e4)/1e4, 'f', -1, 64)
+	}
+	return fmt.Sprint(v)
+}
 
 // displayState maps API states to the CLI's words.
 func displayState(s string) string {
