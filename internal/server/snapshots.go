@@ -404,27 +404,20 @@ func (s *Server) chainSize(id string) int64 {
 }
 
 // gcSnapshots purges deleted snapshots that nothing depends on any more.
-func (s *Server) gcSnapshots(ctx context.Context) { s.gcSnapshotsNeeded(ctx, nil) }
+func (s *Server) gcSnapshots(ctx context.Context) { s.gcSnapshotsNeeded(ctx) }
 
 // gcSnapshotsNeeded is gcSnapshots that also returns the snapshots still
 // needed by a head, saved snapshot or fork. A snapshot counts as purged only
 // once the server's blob and every node's copy are confirmed gone (nodes
-// that are offline keep it pending until they reconnect). Snapshots a node
-// is still uploading (up; nil = ask the nodes) wait until the upload ended:
-// purging earlier would let the upload store the data afterwards.
-func (s *Server) gcSnapshotsNeeded(ctx context.Context, up map[string]flight) map[string]bool {
+// that are offline keep it pending until they reconnect). Deleting a node's
+// copy cancels its upload; uploads that land after purging are refused.
+func (s *Server) gcSnapshotsNeeded(ctx context.Context) map[string]bool {
 	needed, deleted := s.snapshotsNeeded(true)
 	if needed == nil {
 		return nil
 	}
 	for _, id := range deleted {
 		if needed[id] {
-			continue
-		}
-		if up == nil {
-			up = s.uploadsInFlight(ctx)
-		}
-		if _, ok := up[id]; ok {
 			continue
 		}
 		var nodes []string
@@ -490,7 +483,7 @@ func (s *Server) deletionOpJSON(id string) (map[string]any, error) {
 	return map[string]any{"id": id, "kind": kind, "targetId": target, "reason": reason, "status": status, "stage": stage,
 		"expectedBy": nil, "attemptCount": attempts, "requestedAt": tsMs(req), "completedAt": tsNull(done),
 		// CrowdVM extension: why it is not completed yet (node offline,
-		// uploads in flight, node removed), null once completed.
+		// node removed), null once completed.
 		"lastError": nz(lastErr.String)}, nil
 }
 

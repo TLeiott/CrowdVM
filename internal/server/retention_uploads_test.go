@@ -12,8 +12,7 @@ import (
 	"github.com/crowdvm/crowdvm/internal/server/servertest"
 )
 
-// B1: a deletion must not complete while a snapshot of the sandbox is still
-// uploading, and nothing of it may stay once it completes.
+// Deletion cancels unneeded uploads, and nothing may stay once it completes.
 
 // assertErased checks that no snapshot of sandbox sb is left: every row is
 // purged, no blob is on the server and the node holds none of them.
@@ -56,27 +55,21 @@ func deleteSandbox(t *testing.T, env *servertest.Env, key, id string) string {
 	return r.Str("operation.id")
 }
 
-// waitUploadsStage: the operation waits for the upload, not completed.
-func waitUploadsStage(t *testing.T, env *servertest.Env, key, op string) {
+// Deletion must finish before held uploads are released.
+func waitUploadDeletion(t *testing.T, env *servertest.Env, key, op string) {
 	t.Helper()
 	env.S.GCNow()
-	r := env.WaitFor(key, "/api/v1/deletion-operations/"+op, "operation.stage", 5*time.Second, "waiting_for_uploads")
-	if r.Str("operation.status") != "processing" || r.Get("operation.completedAt") != nil || !strings.Contains(r.Str("operation.lastError"), "uploading") {
-		t.Fatalf("operation while the upload runs: %s", r)
-	}
-	env.S.GCNow() // more passes change nothing while it uploads
-	if r := env.Do(key, "GET", "/api/v1/deletion-operations/"+op, nil); r.Str("operation.status") == "completed" {
-		t.Fatalf("completed during the upload: %s", r)
-	}
+	env.WaitFor(key, "/api/v1/deletion-operations/"+op, "operation.status", 5*time.Second, "completed")
 }
 
-func TestDeleteWaitsForStopUpload(t *testing.T) {
+func TestDeleteCancelsStopUpload(t *testing.T) {
 	env := servertest.New(t)
 	node := env.StartNode(servertest.NodeOptions{})
 	key := env.AdminKey
 	id := createSandbox(t, env, key, nil)
 	env.WaitState(key, id, "ready")
 	node.HoldUploads()
+	defer node.ReleaseUploads()
 	env.Do(key, "POST", "/api/v1/sandboxes/"+id+"/stop", nil)
 	env.WaitState(key, id, "archived")
 	var stopSnap string
@@ -85,31 +78,28 @@ func TestDeleteWaitsForStopUpload(t *testing.T) {
 		t.Fatalf("stop snapshot %q should still be uploading", stopSnap)
 	}
 	op := deleteSandbox(t, env, key, id)
-	waitUploadsStage(t, env, key, op)
-	node.ReleaseUploads()
-	env.WaitFor(key, "/api/v1/deletion-operations/"+op, "operation.status", 5*time.Second, "completed")
+	waitUploadDeletion(t, env, key, op)
 	assertErased(t, env, node, id, stopSnap)
 }
 
-func TestDeleteRunningWaitsForPeriodicUpload(t *testing.T) {
+func TestDeleteRunningCancelsPeriodicUpload(t *testing.T) {
 	env := servertest.New(t)
 	node := env.StartNode(servertest.NodeOptions{})
 	key := env.AdminKey
 	id := createSandbox(t, env, key, nil)
 	env.WaitState(key, id, "ready")
 	node.HoldUploads()
+	defer node.ReleaseUploads()
 	snap, err := node.PeriodicSnapshot(id) // the server has no row for it yet
 	if err != nil {
 		t.Fatal(err)
 	}
 	op := deleteSandbox(t, env, key, id)
-	waitUploadsStage(t, env, key, op)
+	waitUploadDeletion(t, env, key, op)
 	var deleted bool
 	if err := env.S.DB.QueryRow(`SELECT deleted_at IS NOT NULL FROM snapshots WHERE id=?`, snap).Scan(&deleted); err != nil || !deleted {
 		t.Fatalf("the upload in flight is not tracked as deleted data: %v %v", err, deleted)
 	}
-	node.ReleaseUploads()
-	env.WaitFor(key, "/api/v1/deletion-operations/"+op, "operation.status", 5*time.Second, "completed")
 	assertErased(t, env, node, id, snap)
 }
 
@@ -123,14 +113,13 @@ func TestZDRStopLeavesNothing(t *testing.T) {
 	id := createSandbox(t, env, key, nil)
 	env.WaitState(key, id, "ready")
 	node.HoldUploads()
+	defer node.ReleaseUploads()
 	env.Do(key, "POST", "/api/v1/sandboxes/"+id+"/stop", nil)
 	var op string
 	env.Eventually("zdr deletion op", func() bool {
 		return env.S.DB.QueryRow(`SELECT id FROM deletion_ops WHERE target_id=? AND reason='zdr'`, id).Scan(&op) == nil
 	})
-	waitUploadsStage(t, env, key, op)
-	node.ReleaseUploads()
-	env.WaitFor(key, "/api/v1/deletion-operations/"+op, "operation.status", 5*time.Second, "completed")
+	waitUploadDeletion(t, env, key, op)
 	assertErased(t, env, node, id)
 }
 

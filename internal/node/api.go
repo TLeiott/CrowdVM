@@ -126,7 +126,14 @@ func (n *Node) Handler() http.Handler {
 		api.WriteJSON(w, 200, map[string]any{"snapshots": n.LocalSnapshots(r.URL.Query().Get("uploading") == "true")})
 	})
 	m.HandleFunc("DELETE /v1/snapshots/{id}", func(w http.ResponseWriter, r *http.Request) {
-		err := n.drv.Store().DeleteSnapshot(r.PathValue("id"))
+		id := r.PathValue("id")
+		n.mu.Lock()
+		if c := n.uploads["snapshot/"+id]; c != nil {
+			c.cancel()
+			c.abandoned = true
+		}
+		n.mu.Unlock()
+		err := n.drv.Store().DeleteSnapshot(id)
 		reply(w, map[string]bool{"ok": true}, err)
 	})
 	n.inspectRoutes(m)

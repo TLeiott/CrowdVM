@@ -10,13 +10,10 @@ package server
 //     node that held a copy, or is still read by a newer snapshot, fork or
 //     saved snapshot (Boat: completed; that data goes with its last user).
 //
-// A snapshot a node is still uploading is never purged mid-upload: the
-// operation shows stage "waiting_for_uploads" until the upload ended and
-// what it stored is erased. Periodic layers are recorded when the node takes
-// them (recordTaken), with their parent and the node as location; an upload
-// in flight that still has no row (its report failed) gets a deleted row
-// the same way, so GC erases it like any other copy and keeps what it
-// builds on. Uploads that land for deleted data are refused (410) or erased
+// Deleting an unneeded snapshot on its node cancels its upload. Periodic
+// layers are recorded when taken (recordTaken); an unreported upload of
+// deleted data gets a deleted row so GC erases it and keeps its ancestors
+// while needed. Uploads that land after purging are refused (410) or erased
 // (onSnapshotUploaded).
 //
 // A node that is offline or fails keeps the operation "processing"/
@@ -113,23 +110,20 @@ func (s *Server) processDeletionOps(ctx context.Context) {
 	for id, f := range up {
 		s.trackDeletedUpload(id, f)
 	}
-	needed := s.gcSnapshotsNeeded(ctx, up)
+	needed := s.gcSnapshotsNeeded(ctx)
 	now := store.Now()
 	for _, o := range ops {
 		q := `SELECT id, purged_at IS NOT NULL FROM snapshots WHERE id=?`
 		if o.kind == "sandbox" {
 			q = `SELECT id, purged_at IS NOT NULL FROM snapshots WHERE sandbox_id=?`
 		}
-		waiting, uploading := 0, 0
+		waiting := 0
 		if r, err := s.DB.Query(q, o.target); err == nil {
 			for r.Next() {
 				var id string
 				var purged bool
 				if r.Scan(&id, &purged) == nil && !purged && !needed[id] {
 					waiting++
-					if _, ok := up[id]; ok {
-						uploading++
-					}
 				}
 			}
 			r.Close()
@@ -141,9 +135,6 @@ func (s *Server) processDeletionOps(ctx context.Context) {
 		status, stage, problem := "processing", "retrying", o.problem
 		switch removed := s.copiesOnRemovedNodes(o.kind, o.target); {
 		case problem != "":
-		case uploading > 0:
-			stage = "waiting_for_uploads"
-			problem = fmt.Sprintf("waiting_for_uploads: %d snapshot(s) of it are still uploading from their node; they are erased once the upload ends", uploading)
 		case removed > 0:
 			// m5: nothing can reach a removed node any more.
 			status = "blocked"
@@ -160,7 +151,7 @@ func (s *Server) processDeletionOps(ctx context.Context) {
 }
 
 // kickDeletions advances unfinished deletion operations in the background
-// (e.g. when an upload they wait for ended).
+// (e.g. when a node reports snapshot progress).
 func (s *Server) kickDeletions() {
 	var n int
 	if s.DB.QueryRow(`SELECT COUNT(*) FROM deletion_ops WHERE status<>'completed'`).Scan(&n) == nil && n > 0 {
