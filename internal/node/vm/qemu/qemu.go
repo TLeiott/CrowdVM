@@ -249,6 +249,7 @@ func New(opt Options) (*Driver, error) {
 	if err := os.MkdirAll(filepath.Join(opt.DataDir, "vms"), 0o700); err != nil {
 		return nil, err
 	}
+	st.logf = opt.Logf
 	d := &Driver{opt: opt, qemu: qemuBin, accel: opt.Accel, rules: rules, store: st, vms: map[string]*machine{}, changed: make(chan struct{})}
 	d.fds = openFDStore() // first: marks the passed-back sockets close-on-exec before anything forks
 	if d.accel == "" {
@@ -624,7 +625,7 @@ func (d *Driver) Snapshot(ctx context.Context, id, snapID string) (proto.Snapsho
 		}
 	}
 	if err != nil {
-		removeFile(d.store.abs(newRel))
+		d.discardOverlay(newRel, rec.Parent, rec.ImageID)
 		return proto.SnapshotRef{}, err
 	}
 	ref, err := d.addLayer(m.id, snapID, rec.Disk, step.parent, rec.ImageID, step.level, step.supersedes)
@@ -959,14 +960,15 @@ func (d *Driver) remove(m *machine) {
 	if d.vms[m.id] == m {
 		delete(d.vms, m.id)
 	}
-	disk, qnet, qaddr, nsock, pid := m.rec.Disk, m.rec.QMPNet, m.rec.QMPAddr, m.rec.NetSock, m.rec.PID
+	rec := m.rec
+	disk, qnet, qaddr, nsock, pid := rec.Disk, rec.QMPNet, rec.QMPAddr, rec.NetSock, rec.PID
 	m.rec.Disk = ""
 	d.mu.Unlock()
 	if pid > 0 {
 		d.forgetFDs(pid) // bugs-r15-sonnet 3
 	}
 	if disk != "" {
-		removeFile(d.store.abs(disk))
+		d.discardOverlay(disk, rec.Parent, rec.ImageID)
 	}
 	if qnet == "unix" {
 		os.Remove(qaddr)
@@ -975,6 +977,14 @@ func (d *Driver) remove(m *machine) {
 		os.Remove(nsock)
 	}
 	os.RemoveAll(d.vmDir(m.id))
+}
+
+// discardOverlay keeps failed removals as hidden snapshots for GC to retry.
+func (d *Driver) discardOverlay(rel, parent, imageID string) {
+	if err := removeFile(d.store.abs(rel)); err != nil && !os.IsNotExist(err) {
+		d.opt.Logf("qemu: remove overlay %s: %v; keeping it for GC to retry", rel, err)
+		d.hideLayer(rel, parent, imageID)
+	}
 }
 
 func (d *Driver) guest(m *machine) guestconn.Guest {

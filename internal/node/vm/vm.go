@@ -66,6 +66,12 @@ type Store interface {
 	Snapshots() []proto.SnapshotRef
 }
 
+// OrphanSweeper is optionally implemented by stores that can reclaim old,
+// unreferenced files and retry pending deletions while the node runs.
+type OrphanSweeper interface {
+	SweepOrphans()
+}
+
 // Compactor is optionally implemented by Stores whose snapshot files can be
 // sparse (a guest's discards punch holes in them). CompactSnapshot writes a
 // copy of snapshot id into dir that holds only its allocated data, with the

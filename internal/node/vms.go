@@ -716,16 +716,25 @@ func (n *Node) DestroyVM(ctx context.Context, id string) error {
 	return err
 }
 
-// snapshotLoop takes periodic live snapshots of running VMs.
+var orphanSweepInterval = 30 * time.Minute
+
+// snapshotLoop takes periodic live snapshots and reclaims orphaned disk files.
 func (n *Node) snapshotLoop(ctx context.Context) {
 	t := time.NewTicker(snapshotTick)
 	defer t.Stop()
+	sweep := time.NewTicker(orphanSweepInterval)
+	defer sweep.Stop()
 	var wg sync.WaitGroup
 	defer wg.Wait() // bugs-r11-opus 7: the node's stop waits for snapshots in flight, as before
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-sweep.C:
+			if st, ok := n.drv.Store().(vm.OrphanSweeper); ok {
+				st.SweepOrphans()
+			}
+			continue
 		case <-t.C:
 		}
 		every := n.snapshotInterval()

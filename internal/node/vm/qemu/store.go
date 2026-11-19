@@ -28,6 +28,7 @@ import (
 type store struct {
 	dir  string
 	qimg string
+	logf func(string, ...any)
 
 	mu     sync.Mutex
 	images map[string]*imageMeta
@@ -72,7 +73,7 @@ type layer struct {
 }
 
 func openStore(dir, qimg string) (*store, error) {
-	s := &store{dir: dir, qimg: qimg, images: map[string]*imageMeta{}, snaps: map[string]*snapMeta{}}
+	s := &store{dir: dir, qimg: qimg, logf: func(string, ...any) {}, images: map[string]*imageMeta{}, snaps: map[string]*snapMeta{}}
 	for _, d := range []string{"images", "snapshots", "disks"} {
 		if err := os.MkdirAll(filepath.Join(dir, d), 0o755); err != nil {
 			return nil, err
@@ -440,9 +441,9 @@ func (s *store) saveSnap(m *snapMeta) error {
 	return writeJSON(filepath.Join(s.dir, "snapshots", m.Ref.ID+".json"), m)
 }
 
-// gc removes deleted snapshots nothing builds on. With orphans set (only at
-// driver start, when no operation is in flight) it also removes disk files
-// no image, snapshot or VM references.
+// gc removes deleted snapshots nothing builds on. With orphans set it also
+// removes unreferenced disk files older than an hour, leaving time for
+// operations in flight to record newly created files.
 func (s *store) gcOrphans(orphans bool) {
 	var parents, disks []string
 	if s.inUse != nil {
@@ -472,8 +473,14 @@ func (s *store) gcOrphans(orphans bool) {
 	}
 	for id, m := range s.snaps {
 		if m.Deleted && !keep[id] {
-			removeFile(s.abs(m.File))
-			os.Remove(filepath.Join(s.dir, "snapshots", id+".json"))
+			if err := removeFile(s.abs(m.File)); err != nil && !os.IsNotExist(err) {
+				s.logf("qemu: remove snapshot %s (%s): %v; retrying on the next GC", id, m.File, err)
+				continue
+			}
+			if err := os.Remove(filepath.Join(s.dir, "snapshots", id+".json")); err != nil && !os.IsNotExist(err) {
+				s.logf("qemu: remove snapshot record %s: %v; retrying on the next GC", id, err)
+				continue
+			}
 			delete(s.snaps, id)
 		}
 	}
@@ -493,12 +500,21 @@ func (s *store) gcOrphans(orphans bool) {
 	ents, _ := os.ReadDir(filepath.Join(s.dir, "disks"))
 	for _, e := range ents {
 		if rel := "disks/" + e.Name(); !used[rel] {
-			removeFile(s.abs(rel))
+			info, err := e.Info()
+			if err != nil || time.Since(info.ModTime()) < time.Hour {
+				continue
+			}
+			if err := removeFile(s.abs(rel)); err != nil && !os.IsNotExist(err) {
+				s.logf("qemu: remove orphan %s: %v; retrying on the next sweep", rel, err)
+			}
 		}
 	}
 }
 
 func (s *store) gc() { s.gcOrphans(false) }
+
+// SweepOrphans implements vm.OrphanSweeper and retries pending deletions.
+func (s *store) SweepOrphans() { s.gcOrphans(true) }
 
 // CompactSnapshot (vm.Compactor): a layer whose file is mostly holes (the
 // guest discarded what it wrote, e.g. fstrim after a disk re-encryption)
@@ -621,9 +637,9 @@ func moveFile(src, dst string) error {
 }
 
 // removeFile deletes a file, also a read-only one (undeletable on Windows).
-func removeFile(p string) {
+func removeFile(p string) error {
 	os.Chmod(p, 0o644)
-	os.Remove(p)
+	return os.Remove(p)
 }
 
 func fileSize(p string) int64 {
