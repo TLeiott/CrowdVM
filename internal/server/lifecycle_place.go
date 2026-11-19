@@ -198,7 +198,8 @@ func (s *Server) abortBoot(sb *Sandbox, kind proto.BootKind, parent, msg string)
 	}
 	if kind == proto.BootResume {
 		if _, ok := s.transition(sb.ID, startingStates, api.StateArchived,
-			map[string]any{"error": msg, "stopped_at": store.Now(), "archive_after": nil}); ok {
+			map[string]any{"error": msg, "stopped_at": store.Now(), "archive_after": nil,
+				"health": "ok", "health_reason": nil, "degraded_since": nil}); ok {
 			s.closeRun(sb.ID)
 		}
 		return

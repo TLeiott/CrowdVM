@@ -459,6 +459,9 @@ snapshots (it is deleted anyway); with --keep it snapshots as usual.`,
 			}
 			id := res.Sandbox.ID
 			a.info("%s: created\n", id)
+			if keep && res.Sandbox.Snapshots != nil && !*res.Sandbox.Snapshots {
+				a.info("  snapshots off: stopping it (also the TTL auto-stop) erases it\n")
+			}
 			cleanup := func() bool {
 				if keep {
 					return false

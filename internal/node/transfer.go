@@ -263,7 +263,7 @@ func (n *Node) uploadAsync(sandboxID string, ref proto.SnapshotRef, periodic boo
 			if errors.Is(err, errSnapshotMissing) {
 				// The snapshot is here but a parent is not: no retry helps.
 				n.log.Warn("snapshot upload stopped: a parent layer is gone from this node", "snapshot", ref.ID, "sandbox", sandboxID, "err", err)
-				return
+				return // no event: these are merged-away layers (#11), not failures
 			}
 			var ge *goneError
 			if errors.As(err, &ge) && ge.id == ref.ID {

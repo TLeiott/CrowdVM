@@ -81,7 +81,7 @@ Every sandbox `new`, `run` and `fork` create gets the `CROWDVM_LABEL` labels. `s
 `delete` refuse a sandbox that lacks them with `label_mismatch`, so an agent cleaning up
 leftovers cannot remove another agent's work. `snapshot delete --all` checks the same way.
 To go ahead anyway, unset the variable for one command:
-`CROWDVM_LABEL= crowdvm delete "$id" --yes`. Without `CROWDVM_LABEL` nothing is checked.
+`CROWDVM_LABEL= crowdvm delete "$id" --yes` (PowerShell: `$env:CROWDVM_LABEL=''` first). Without `CROWDVM_LABEL` nothing is checked.
 
 ## Hand a turn to an agent in the sandbox
 
