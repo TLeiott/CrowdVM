@@ -55,9 +55,10 @@ func (a *App) configCmd() *cobra.Command {
   profile   the profile used when --profile and CROWDVM_PROFILE are not set
   current   the "current" sandbox (of this shell, with the shell function)
   user      the signed-in login (read-only)
-  snapshots on or off: whether your new sandboxes take periodic snapshots. This
-            one is an account setting on the server, so it covers every client
-            (CLI, SDKs, agents); new and fork --snapshots/--no-snapshots override it`,
+  snapshots on or off: whether your new sandboxes take snapshots. Off means
+            stopping one (also the TTL auto-stop) erases it. This one is an
+            account setting on the server, so it covers every client (CLI,
+            SDKs, agents); new and fork --snapshots/--no-snapshots override it`,
 		Example: `  crowdvm config set server http://10.0.0.5:8420
   crowdvm config get server
   crowdvm --profile work config set server http://work-box:8420

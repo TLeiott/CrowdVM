@@ -79,9 +79,9 @@ crowdvm list --label agent=fix-login     # only this agent's sandboxes
 
 Every sandbox `new`, `run` and `fork` create gets the `CROWDVM_LABEL` labels. `stop` and
 `delete` refuse a sandbox that lacks them with `label_mismatch`, so an agent cleaning up
-leftovers cannot remove another agent's work. To go ahead anyway, pass
-`crowdvm delete "$id" --yes --force`, or unset the variable for one command:
-`CROWDVM_LABEL= crowdvm stop "$id"`. Without `CROWDVM_LABEL` nothing is checked.
+leftovers cannot remove another agent's work. `snapshot delete --all` checks the same way.
+To go ahead anyway, unset the variable for one command:
+`CROWDVM_LABEL= crowdvm delete "$id" --yes`. Without `CROWDVM_LABEL` nothing is checked.
 
 ## Hand a turn to an agent in the sandbox
 

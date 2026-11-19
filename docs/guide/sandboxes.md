@@ -78,6 +78,9 @@ snapshots off for all your new sandboxes once:
 crowdvm config set snapshots off      # on again: crowdvm config set snapshots on
 ```
 
+Like `--no-snapshots`, this means stopping such a sandbox, also by the TTL auto-stop,
+erases it. `new` and `fork` print a reminder when a sandbox starts with snapshots off.
+
 This is an account setting on the server (`PATCH /api/v1/account-settings` with
 `{"newSandboxSnapshots": false}`), so it covers the CLI, the SDKs and agents alike.
 `new --snapshots` or `"snapshots": true` in a request still turns them on for one sandbox,

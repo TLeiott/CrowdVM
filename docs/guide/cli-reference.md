@@ -1195,9 +1195,10 @@ Show or change settings. All keys but snapshots live in the local config file:
   profile   the profile used when --profile and CROWDVM_PROFILE are not set
   current   the "current" sandbox (of this shell, with the shell function)
   user      the signed-in login (read-only)
-  snapshots on or off: whether your new sandboxes take periodic snapshots. This
-            one is an account setting on the server, so it covers every client
-            (CLI, SDKs, agents); new and fork --snapshots/--no-snapshots override it
+  snapshots on or off: whether your new sandboxes take snapshots. Off means
+            stopping one (also the TTL auto-stop) erases it. This one is an
+            account setting on the server, so it covers every client (CLI,
+            SDKs, agents); new and fork --snapshots/--no-snapshots override it
 
 Usage:
   crowdvm config [flags]
@@ -1394,7 +1395,8 @@ Flags:
 ```text
 Permanently delete a sandbox and the snapshots only it uses. This cannot be
 undone; to keep the data, use 'crowdvm stop'. Scripts must pass --yes.
-With CROWDVM_LABEL set, it refuses a sandbox without those labels unless --force.
+With CROWDVM_LABEL set, it refuses a sandbox without those labels
+(CROWDVM_LABEL= crowdvm delete ID goes ahead anyway).
 
 Usage:
   crowdvm delete ID [flags]
@@ -1403,7 +1405,6 @@ Aliases:
   delete, rm
 
 Flags:
-      --force     delete even when the sandbox lacks the CROWDVM_LABEL labels
   -h, --help      help for delete
       --no-wait   do not follow the deletion operation
   -y, --yes       do not ask for confirmation

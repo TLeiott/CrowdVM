@@ -416,6 +416,9 @@ func (a *App) snapshotDeleteCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
+				if err := a.guardLabels(cmd.Context(), c, id, "To delete them anyway: CROWDVM_LABEL= crowdvm snapshot delete --all "+id+" --yes"); err != nil {
+					return err
+				}
 				if err := a.confirm(yes, "Delete every ordinary snapshot of "+id+"?"); err != nil {
 					return err
 				}

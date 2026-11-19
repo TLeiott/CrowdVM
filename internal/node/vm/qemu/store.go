@@ -201,6 +201,8 @@ func (s *store) ImportImage(id, path string) error {
 		return err
 	}
 	os.Chmod(s.abs(rel), 0o444)
+	now := time.Now() // a moved file keeps its old mtime: the orphan sweep must see it as new
+	os.Chtimes(s.abs(rel), now, now)
 	m := &imageMeta{ID: id, File: rel, Format: info.Format, VirtualSize: info.VirtualSize, DataBytes: s.dataBytes(s.abs(rel))}
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -263,6 +263,9 @@ func (a *App) announce(cmd *cobra.Command, c *client.Client, sb *client.Sandbox,
 	} else {
 		a.printf("%s\n", sb.ID)
 		a.info("created %s (%s)\n", sb.ID, displayState(sb.State))
+		if sb.Snapshots != nil && !*sb.Snapshots {
+			a.info("  snapshots off: stopping it (also the TTL auto-stop) erases it\n")
+		}
 		for _, p := range ports {
 			if p.URL != "" {
 				a.info("  port %d → %s\n", p.Port, p.URL)
@@ -839,24 +842,23 @@ func (a *App) simpleAction(use, short, word string, fn func(*client.Client, *cob
 }
 
 func (a *App) deleteCmd() *cobra.Command {
-	var yes, noWait, force bool
+	var yes, noWait bool
 	cmd := &cobra.Command{
 		Use:     "delete ID",
 		Aliases: []string{"rm"},
 		Short:   "Permanently delete a sandbox and its snapshots",
 		Long: `Permanently delete a sandbox and the snapshots only it uses. This cannot be
 undone; to keep the data, use 'crowdvm stop'. Scripts must pass --yes.
-With CROWDVM_LABEL set, it refuses a sandbox without those labels unless --force.`,
+With CROWDVM_LABEL set, it refuses a sandbox without those labels
+(CROWDVM_LABEL= crowdvm delete ID goes ahead anyway).`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, id, err := a.clientAndID(args[0])
 			if err != nil {
 				return err
 			}
-			if !force {
-				if err := a.guardLabels(cmd.Context(), c, id, "To delete it anyway: crowdvm delete "+id+" --yes --force"); err != nil {
-					return err
-				}
+			if err := a.guardLabels(cmd.Context(), c, id, "To delete it anyway: CROWDVM_LABEL= crowdvm delete "+id+" --yes"); err != nil {
+				return err
 			}
 			if err := a.confirm(yes, fmt.Sprintf("Permanently delete %s and its snapshots?", id)); err != nil {
 				return err
@@ -879,7 +881,6 @@ With CROWDVM_LABEL set, it refuses a sandbox without those labels unless --force
 	}
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "do not ask for confirmation")
 	cmd.Flags().BoolVar(&noWait, "no-wait", false, "do not follow the deletion operation")
-	cmd.Flags().BoolVar(&force, "force", false, "delete even when the sandbox lacks the CROWDVM_LABEL labels")
 	return cmd
 }
 

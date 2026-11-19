@@ -72,6 +72,28 @@ func TestResumeCapacityRefusalStaysStopped(t *testing.T) {
 	}
 }
 
+// A resume aborted after its run opened (node dropped mid-boot) closes that
+// run, so an archived sandbox is not billed.
+func TestRefusedResumeClosesRun(t *testing.T) {
+	env := servertest.New(t)
+	env.StartNode(servertest.NodeOptions{})
+	key := env.AdminKey
+	id := createSandbox(t, env, key, nil)
+	env.WaitState(key, id, "ready")
+	if r := env.Do(key, "POST", "/api/v1/sandboxes/"+id+"/stop", nil); r.Status != 202 {
+		t.Fatalf("stop: %s", r)
+	}
+	env.WaitState(key, id, "archived")
+	if err := env.S.AbortResumeWithOpenRun(id, "out_of_capacity: test"); err != nil {
+		t.Fatal(err)
+	}
+	var open int
+	_ = env.S.DB.QueryRow(`SELECT COUNT(*) FROM sandbox_runs WHERE sandbox_id=? AND ended_at IS NULL`, id).Scan(&open)
+	if sb, _ := env.S.SandboxByID(id); sb.State != "archived" || open != 0 {
+		t.Fatalf("state %s, %d open runs", sb.State, open)
+	}
+}
+
 // Nodes drop their copy of a stopped sandbox's disk once the server stores
 // all of it and the node cache TTL passed; a resume downloads it again.
 func TestNodeCacheEvictsStoppedDisks(t *testing.T) {

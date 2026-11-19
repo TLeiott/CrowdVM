@@ -61,14 +61,17 @@ func TestLabelGuard(t *testing.T) {
 		t.Fatal("the guard must refuse before the request")
 	}
 	r := e.run("delete", theirs, "--yes", "--json=false")
-	if !strings.Contains(r.err, "agent=b") || !strings.Contains(r.err, "--force") {
+	if !strings.Contains(r.err, "agent=b") || !strings.Contains(r.err, "CROWDVM_LABEL= crowdvm delete") {
 		t.Fatalf("message: %s", r.err)
 	}
 
 	e.mustRun("stop", mine)
 	e.mustRun("delete", mine, "--yes")
-	e.mustRun("delete", theirs, "--yes", "--force")
+	if r := e.run("snapshot", "delete", "--all", theirs, "--yes"); r.last(t)["code"] != "label_mismatch" {
+		t.Fatalf("snapshot delete --all: %d %s", r.code, r.out)
+	}
 	e.vars["CROWDVM_LABEL"] = ""
+	e.mustRun("delete", theirs, "--yes")
 	e.mustRun("stop", bare)
 }
 

@@ -18,7 +18,7 @@ sessions always pass the id.
 | `--org ORG` | `CROWDVM_ORG` | Run against this organization |
 | `--profile NAME` | `CROWDVM_PROFILE` | Config profile |
 | `--no-update` | `CROWDVM_NO_UPDATE=1` | Skip the newer-CLI check |
-| | `CROWDVM_LABEL=K=V[,K=V]` | Labels every sandbox `new`, `run` and `fork` create. `stop` and `delete` then refuse a sandbox without these labels (`delete --force`, or `CROWDVM_LABEL= crowdvm stop ID`, goes ahead anyway) |
+| | `CROWDVM_LABEL=K=V[,K=V]` | Labels every sandbox `new`, `run` and `fork` create. `stop` and `delete` then refuse a sandbox without these labels (`CROWDVM_LABEL= crowdvm stop|delete ID` goes ahead anyway) |
 
 The API key comes from `CROWDVM_API_KEY`, else the profile, else `CROWDVM_TOKEN` /
 `ASCII_TOKEN`.
@@ -36,7 +36,7 @@ crowdvm list [--all] [--filter rsp] [--label K=V] # alias ls; groups: r up, s st
 crowdvm info [ID]                   # state, size, IP, desktop, TTL
 crowdvm stop ID [--wait] [--force] [--status OP_ID] [-y]   # returns at once; --wait waits for stopped
 crowdvm resume ID [flags]           # --type/--environment/--no-env change a stopped sandbox
-crowdvm delete ID [-y] [--no-wait] [--force]  # alias rm; scripts must pass --yes; --force skips the CROWDVM_LABEL check
+crowdvm delete ID [-y] [--no-wait]  # alias rm; scripts must pass --yes
 crowdvm deletion status OPERATION_ID
 crowdvm fork ID [flags]             # copy of the disk (a running sandbox is copied live); --wait waits until ready
 crowdvm extend ID (--hours H | --ttl SECONDS | --no-auto-stop)
@@ -281,7 +281,7 @@ crowdvm api-key create NAME [--preset read-only|full-sandbox|ci|admin | --action
 crowdvm api-key list [--all] | revoke ID | rotate ID | usage ID [--verbose]
 crowdvm org [list|status|switch ORG|create NAME|members|invite [EMAIL] [--role R]|join CODE|...]
 crowdvm config list | get KEY | set KEY VALUE | unset KEY | path   # keys: server, profile, current, user, snapshots
-crowdvm config set snapshots off     # account default: new sandboxes take no periodic snapshots
+crowdvm config set snapshots off     # account default: new sandboxes take no snapshots, so stopping (or auto-stop) erases them
 crowdvm webhook create URL [--event E]... [--name N] | list | get ID | update ID | rotate ID | remove ID
 crowdvm data-retention [status | enable -y]
 crowdvm telemetry [set ENDPOINT [-H k=v]... | unset]

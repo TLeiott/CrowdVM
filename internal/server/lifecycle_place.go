@@ -197,8 +197,10 @@ func (s *Server) abortBoot(sb *Sandbox, kind proto.BootKind, parent, msg string)
 		return
 	}
 	if kind == proto.BootResume {
-		s.transition(sb.ID, startingStates, api.StateArchived,
-			map[string]any{"error": msg, "stopped_at": store.Now(), "archive_after": nil})
+		if _, ok := s.transition(sb.ID, startingStates, api.StateArchived,
+			map[string]any{"error": msg, "stopped_at": store.Now(), "archive_after": nil}); ok {
+			s.closeRun(sb.ID)
+		}
 		return
 	}
 	s.failSandbox(sb.ID, msg)
