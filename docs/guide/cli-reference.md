@@ -2786,7 +2786,8 @@ Flags:
 ```text
 Create a sandbox, optionally push a directory, run the command with live
 output, print time and credits, and delete the sandbox. Exits with the exit
-code of the command. Ctrl-C deletes the sandbox.
+code of the command. Ctrl-C deletes the sandbox. The sandbox takes no periodic
+snapshots (it is deleted anyway); with --keep it snapshots as usual.
 
 Usage:
   crowdvm run [flags] [--] COMMAND...

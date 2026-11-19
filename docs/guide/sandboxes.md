@@ -67,7 +67,9 @@ matched by a `.crowdvmignore` file (gitignore syntax; `.boatignore` and `.boxign
 work too). Everything else on the disk is saved, including Docker images, volumes and
 changes under `/etc` and `/usr`.
 
-`--no-snapshots` turns snapshots off: stopping such a sandbox erases it.
+`--no-snapshots` turns snapshots off: stopping such a sandbox erases it. `crowdvm run`
+sandboxes take no periodic snapshots, since they are deleted when the command exits
+(with `--keep` they snapshot like `new` sandboxes).
 
 Read files from a stopped sandbox without resuming it:
 

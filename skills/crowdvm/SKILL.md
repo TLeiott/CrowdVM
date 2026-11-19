@@ -55,7 +55,8 @@ crowdvm run --push . --type large -- make -j8 test
 ```
 
 This creates a sandbox, copies this folder, runs the command there with live output,
-deletes the sandbox and exits with the command's exit code.
+deletes the sandbox and exits with the command's exit code. It takes no periodic
+snapshots, so parallel `run` jobs upload no disk backups.
 
 ## A sandbox you keep
 

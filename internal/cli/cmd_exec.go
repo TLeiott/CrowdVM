@@ -417,7 +417,8 @@ func (a *App) runCmd() *cobra.Command {
 		Short: "Run one command in a new sandbox, then delete it",
 		Long: `Create a sandbox, optionally push a directory, run the command with live
 output, print time and credits, and delete the sandbox. Exits with the exit
-code of the command. Ctrl-C deletes the sandbox.`,
+code of the command. Ctrl-C deletes the sandbox. The sandbox takes no periodic
+snapshots (it is deleted anyway); with --keep it snapshots as usual.`,
 		Example: `  crowdvm run -- npm test
   crowdvm run --from ci-base --type xlarge --push . -- make -j16 test`,
 		Args: cobra.MinimumNArgs(1),

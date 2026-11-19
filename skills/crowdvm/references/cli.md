@@ -102,9 +102,10 @@ with `--detach`.
 
 `run` creates a sandbox, optionally pushes, runs with live output, prints time and
 credits, deletes the sandbox, and exits with the command's exit code. Ctrl-C deletes the
-sandbox. Flags: `--push DIR`, `--cwd DIR`, `--timeout N`, `--keep` (keep it; it stops 15
-minutes later), `--from`, `--type`, `-e/--env`, `--environment`, `--no-env`,
-`--personal`, placement flags.
+sandbox. It takes no periodic snapshots, so it uploads no backups. Flags: `--push DIR`,
+`--cwd DIR`, `--timeout N`, `--keep` (keep it; it stops 15 minutes later and snapshots
+as usual), `--from`, `--type`, `-e/--env`, `--environment`, `--no-env`, `--personal`,
+placement flags.
 
 `history --mode` takes `commands`, `process`, `sync`, `stream` or `detached`.
 `--limit` max 100 (default 20).
