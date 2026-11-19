@@ -66,6 +66,23 @@ crowdvm stop "$id"                                       # keeps the disk; crowd
 Stop or delete sandboxes when the work is done. A running sandbox holds CPU and RAM on
 someone's machine and spends credits.
 
+## Several agents on one account
+
+Agents that share an account see each other's sandboxes in `crowdvm list`. Give each
+agent a label of its own:
+
+```sh
+export CROWDVM_LABEL=agent=fix-login     # KEY=VALUE, comma-separated for several
+crowdvm new --type large                 # labeled agent=fix-login; --label adds more
+crowdvm list --label agent=fix-login     # only this agent's sandboxes
+```
+
+Every sandbox `new`, `run` and `fork` create gets the `CROWDVM_LABEL` labels. `stop` and
+`delete` refuse a sandbox that lacks them with `label_mismatch`, so an agent cleaning up
+leftovers cannot remove another agent's work. To go ahead anyway, pass
+`crowdvm delete "$id" --yes --force`, or unset the variable for one command:
+`CROWDVM_LABEL= crowdvm stop "$id"`. Without `CROWDVM_LABEL` nothing is checked.
+
 ## Hand a turn to an agent in the sandbox
 
 `crowdvm prompt "$id" "…"` runs a coding agent (Claude Code, Codex, OpenCode, pi)

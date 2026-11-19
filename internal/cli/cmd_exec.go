@@ -434,7 +434,11 @@ snapshots (it is deleted anyway); with --keep it snapshots as usual.`,
 			}
 			ctx := cmd.Context()
 			start := time.Now()
-			req := &client.CreateSandboxRequest{Type: sf.typ, Env: env, Environment: sf.environment, NoEnv: sf.noEnv,
+			labels, err := a.newLabels(sf.labels)
+			if err != nil {
+				return err
+			}
+			req := &client.CreateSandboxRequest{Type: sf.typ, Env: env, Labels: labels, Environment: sf.environment, NoEnv: sf.noEnv,
 				FailFast: sf.failFast, From: from, TTLSeconds: client.TTLSeconds(900), Name: "crowdvm run"}
 			if req.Placement, err = sf.placement(); err != nil {
 				return err
@@ -525,6 +529,7 @@ snapshots (it is deleted anyway); with --keep it snapshots as usual.`,
 	}
 	cmd.Flags().SetInterspersed(false)
 	sf.bind(cmd, false)
+	sf.bindLabels(cmd)
 	f := cmd.Flags()
 	f.StringVar(&from, "from", "", "start from a saved snapshot or share code")
 	f.StringVar(&pushDir, "push", "", "copy this local directory in first and run there")

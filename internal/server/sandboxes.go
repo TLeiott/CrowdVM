@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/crowdvm/crowdvm/internal/api"
@@ -403,8 +404,8 @@ func validateLabels(l map[string]string) error {
 		return Err(400, "invalid_labels", "At most 20 labels.")
 	}
 	for k, v := range l {
-		if !labelKeyRe.MatchString(k) || len(v) > 256 {
-			return Err(400, "invalid_labels", "Label keys match [A-Za-z0-9][A-Za-z0-9._/-]{0,62} and values have at most 256 bytes: "+k)
+		if !labelKeyRe.MatchString(k) || len(v) > 256 || strings.ContainsFunc(v, unicode.IsControl) {
+			return Err(400, "invalid_labels", "Label keys match [A-Za-z0-9][A-Za-z0-9._/-]{0,62} and values have at most 256 bytes and no control characters: "+k)
 		}
 	}
 	return nil

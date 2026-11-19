@@ -1394,6 +1394,7 @@ Flags:
 ```text
 Permanently delete a sandbox and the snapshots only it uses. This cannot be
 undone; to keep the data, use 'crowdvm stop'. Scripts must pass --yes.
+With CROWDVM_LABEL set, it refuses a sandbox without those labels unless --force.
 
 Usage:
   crowdvm delete ID [flags]
@@ -1402,6 +1403,7 @@ Aliases:
   delete, rm
 
 Flags:
+      --force     delete even when the sandbox lacks the CROWDVM_LABEL labels
   -h, --help      help for delete
       --no-wait   do not follow the deletion operation
   -y, --yes       do not ask for confirmation
@@ -1805,6 +1807,7 @@ Flags:
       --fail-fast                fail with no_ready_machine instead of waiting for capacity
       --gpu                      placement: run on a node that passes a GPU through (VFIO); the sandbox gets that GPU to itself
   -h, --help                     help for fork
+      --label stringArray        label KEY=VALUE (repeatable; added to CROWDVM_LABEL)
       --min-tier string          placement: minimum node tier: bronze, silver, gold or platinum
       --name string              display name of the fork
       --nested                   placement: run on a node with nested virtualization (KVM inside the sandbox)
@@ -2063,9 +2066,10 @@ Aliases:
   list, ls
 
 Flags:
-      --all             include every state
-      --filter string   state groups: r, s, p, t, e (combine letters)
-  -h, --help            help for list
+      --all                 include every state
+      --filter string       state groups: r, s, p, t, e (combine letters)
+  -h, --help                help for list
+      --label stringArray   only sandboxes with label KEY=VALUE (repeatable)
 ```
 
 ## crowdvm login
@@ -2141,6 +2145,7 @@ Flags:
       --gpu                      placement: run on a node that passes a GPU through (VFIO); the sandbox gets that GPU to itself
   -h, --help                     help for new
       --host stringArray         host PORT (private URL) or PORT:public (repeatable)
+      --label stringArray        label KEY=VALUE (repeatable; added to CROWDVM_LABEL)
       --min-tier string          placement: minimum node tier: bronze, silver, gold or platinum
       --name string              display name
       --nested                   placement: run on a node with nested virtualization (KVM inside the sandbox)
@@ -2812,6 +2817,7 @@ Flags:
       --gpu                      placement: run on a node that passes a GPU through (VFIO); the sandbox gets that GPU to itself
   -h, --help                     help for run
       --keep                     keep the sandbox afterwards (it stops 15 minutes later)
+      --label stringArray        label KEY=VALUE (repeatable; added to CROWDVM_LABEL)
       --min-tier string          placement: minimum node tier: bronze, silver, gold or platinum
       --nested                   placement: run on a node with nested virtualization (KVM inside the sandbox)
       --no-env                   give the sandbox none of your secrets
@@ -3301,7 +3307,9 @@ Flags:
 ## crowdvm stop
 
 ```text
-Stop a sandbox: snapshot its disk, then free the machine
+Stop a sandbox: snapshot its disk, then free the machine.
+With CROWDVM_LABEL set, it refuses a sandbox without those labels; run it as
+'CROWDVM_LABEL= crowdvm stop ID' to stop such a sandbox anyway.
 
 Usage:
   crowdvm stop ID [flags]

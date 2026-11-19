@@ -18,6 +18,7 @@ sessions always pass the id.
 | `--org ORG` | `CROWDVM_ORG` | Run against this organization |
 | `--profile NAME` | `CROWDVM_PROFILE` | Config profile |
 | `--no-update` | `CROWDVM_NO_UPDATE=1` | Skip the newer-CLI check |
+| | `CROWDVM_LABEL=K=V[,K=V]` | Labels every sandbox `new`, `run` and `fork` create. `stop` and `delete` then refuse a sandbox without these labels (`delete --force`, or `CROWDVM_LABEL= crowdvm stop ID`, goes ahead anyway) |
 
 The API key comes from `CROWDVM_API_KEY`, else the profile, else `CROWDVM_TOKEN` /
 `ASCII_TOKEN`.
@@ -31,11 +32,11 @@ text mode it is `error: MESSAGE (CODE, HTTP STATUS)` on stderr.
 
 ```sh
 crowdvm new [flags]                 # create and wait until ready; --json=false prints only the id
-crowdvm list [--all] [--filter rsp] # alias ls; groups: r up, s stopped, p pending, t stopping, e error
+crowdvm list [--all] [--filter rsp] [--label K=V] # alias ls; groups: r up, s stopped, p pending, t stopping, e error
 crowdvm info [ID]                   # state, size, IP, desktop, TTL
 crowdvm stop ID [--wait] [--force] [--status OP_ID] [-y]   # returns at once; --wait waits for stopped
 crowdvm resume ID [flags]           # --type/--environment/--no-env change a stopped sandbox
-crowdvm delete ID [-y] [--no-wait]  # alias rm; scripts must pass --yes
+crowdvm delete ID [-y] [--no-wait] [--force]  # alias rm; scripts must pass --yes; --force skips the CROWDVM_LABEL check
 crowdvm deletion status OPERATION_ID
 crowdvm fork ID [flags]             # copy of the disk (a running sandbox is copied live); --wait waits until ready
 crowdvm extend ID (--hours H | --ttl SECONDS | --no-auto-stop)
@@ -54,6 +55,7 @@ crowdvm usage ID [--since T] [--until T]  # machine time and credits used
 | `--ttl SECONDS` | Auto-stop after this many seconds from start (default 3600) |
 | `--no-auto-stop` | Never stop automatically |
 | `--name NAME` | Display name |
+| `--label KEY=VALUE` | Label (repeatable), added to the `CROWDVM_LABEL` labels |
 | `--from NAME\|CODE` | Start from a saved snapshot or share code |
 | `--count N` | With `--from`: create N sandboxes at once (prints the ids, does not wait until they are ready) |
 | `-e, --env KEY=VALUE` | Per-sandbox variable (repeatable) |
@@ -70,9 +72,9 @@ crowdvm usage ID [--since T] [--until T]  # machine time and credits used
 | `--visibility private\|shared` | Org sandboxes |
 | placement flags | See [Placement](#nodes-and-placement) |
 
-`fork` takes `--name`, `--wait`, `-e/--env`, `--environment`, `--no-env`, `--ttl`,
+`fork` takes `--name`, `--wait`, `--label`, `-e/--env`, `--environment`, `--no-env`, `--ttl`,
 `--no-auto-stop`, `--snapshots`, `--no-snapshots`, `--no-monitoring`, `--type` and the
-placement flags.
+placement flags. `run` also takes `--label`.
 `resume` takes `--no-wait`, `-e/--env`, `--environment`, `--no-env`, `--ttl`,
 `--no-auto-stop`, `--type` and the placement flags.
 

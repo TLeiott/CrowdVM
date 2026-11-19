@@ -70,6 +70,11 @@ crowdvm stop "$id"                                        # or: crowdvm delete "
 
 - Always pass the id. Without one the CLI uses the profile's `current` sandbox, which
   another session may have changed.
+- Other agents may share this account and see the same `crowdvm list`. Set
+  `export CROWDVM_LABEL=agent=<unique name>` before you create anything: every sandbox
+  you create gets that label, `crowdvm list --label agent=<name>` shows only yours,
+  and `stop` and `delete` refuse a sandbox without it (`label_mismatch`). Never stop
+  or delete a sandbox you did not create.
 - `--push DIR` and `crowdvm push "$id" DIR` copy to `/home/user/<folder>` (the local
   directory's name; `--to PATH` changes it). In a git repo only tracked and untracked,
   not-ignored files go: no `.git`, no `node_modules`, no ignored `.env`. The copy is

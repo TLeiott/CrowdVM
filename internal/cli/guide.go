@@ -30,6 +30,7 @@ commands local. Details: the ` + "`" + `crowdvm` + "`" + ` skill (` + "`" + `cro
 - URL for a port: ` + "`" + `crowdvm host "$id" 3000` + "`" + ` (opens on the team's LAN or Tailscale)
 - Untrusted code or other people's work: add ` + "`" + `--no-env` + "`" + `; one sandbox per end user
 - As availability allows: ` + "`" + `crowdvm limits --json` + "`" + ` gives ` + "`" + `machineTypes[].fitsNow` + "`" + ` (how many of each size you can start now); send out at most that many pieces, start each with ` + "`" + `--fail-fast` + "`" + `, and run a piece locally on ` + "`" + `no_ready_machine` + "`" + ` instead of waiting
+- Other agents may share this account: set ` + "`" + `export CROWDVM_LABEL=agent=<unique name>` + "`" + ` first. Every sandbox you create gets that label, ` + "`" + `crowdvm list --label agent=<name>` + "`" + ` shows yours, and stop and delete refuse sandboxes without it. Never stop or delete a sandbox you did not create
 - Always pass the sandbox id. When done: ` + "`" + `crowdvm stop "$id"` + "`" + ` (keeps the disk; ` + "`" + `crowdvm resume "$id"` + "`" + ` later) or ` + "`" + `crowdvm delete "$id" --yes` + "`" + ` (erases it)
 `
 

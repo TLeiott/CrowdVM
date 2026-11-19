@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -20,7 +21,7 @@ type sandboxFlags struct {
 	snapshots, noSnapshots bool
 	noMonitor              bool
 	failFast, newKey       bool
-	env                    []string
+	env, labels            []string
 	// placement (CrowdVM extension)
 	gpu, nested            bool
 	node, minTier          string
@@ -80,6 +81,11 @@ func (s *sandboxFlags) bind(cmd *cobra.Command, lifecycle bool) {
 	}
 }
 
+// bindLabels: --label on the commands that create a sandbox.
+func (s *sandboxFlags) bindLabels(cmd *cobra.Command) {
+	cmd.Flags().StringArrayVar(&s.labels, "label", nil, "label KEY=VALUE (repeatable; added to CROWDVM_LABEL)")
+}
+
 // bindNewKey: --new-key on the commands that copy a sandbox's disk.
 func (s *sandboxFlags) bindNewKey(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&s.newKey, "new-key", false, "give the copy a disk key of its own instead of the source's (see the security guide): "+
@@ -125,8 +131,12 @@ func (a *App) newCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			labels, err := a.newLabels(sf.labels)
+			if err != nil {
+				return err
+			}
 			req := &client.CreateSandboxRequest{
-				Type: sf.typ, TTLSeconds: ttlFor(cmd, sf.ttl, sf.noAutoStop), Env: env, Environment: sf.environment,
+				Type: sf.typ, TTLSeconds: ttlFor(cmd, sf.ttl, sf.noAutoStop), Env: env, Environment: sf.environment, Labels: labels,
 				NoEnv: sf.noEnv, FailFast: sf.failFast, Name: name, Visibility: visibility, From: from, NewDiskKey: sf.newKey,
 			}
 			if sf.newKey && from == "" {
@@ -208,6 +218,7 @@ func (a *App) newCmd() *cobra.Command {
 	sf.bind(cmd, true)
 	sf.bindData(cmd)
 	sf.bindNewKey(cmd)
+	sf.bindLabels(cmd)
 	f := cmd.Flags()
 	f.StringVar(&setupFile, "setup-file", "", "local shell script to run once after the sandbox is ready (64KB)")
 	f.StringVar(&from, "from", "", "start from a saved snapshot name or share code")
@@ -276,6 +287,7 @@ func (a *App) announce(cmd *cobra.Command, c *client.Client, sb *client.Sandbox,
 func (a *App) listCmd() *cobra.Command {
 	var filter string
 	var all bool
+	var labels []string
 	cmd := &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
@@ -292,7 +304,15 @@ func (a *App) listCmd() *cobra.Command {
 			if filter == "" {
 				filter = "r"
 			}
-			list, err := c.ListAllSandboxes(cmd.Context(), client.ListSandboxesOptions{})
+			lm, err := parseKV("--label", labels)
+			if err != nil {
+				return err
+			}
+			var opts client.ListSandboxesOptions
+			for k, v := range lm {
+				opts.Label = append(opts.Label, k+"="+v)
+			}
+			list, err := c.ListAllSandboxes(cmd.Context(), opts)
 			if err != nil {
 				return err
 			}
@@ -328,12 +348,21 @@ func (a *App) listCmd() *cobra.Command {
 				return nil
 			}
 			var t [][]string
+			header := "ID\tSTATE\tTYPE\tNAME\tCREATED\t"
+			showLabels := slices.ContainsFunc(rows, func(s client.Sandbox) bool { return len(s.Labels) > 0 })
+			if showLabels {
+				header = "ID\tSTATE\tTYPE\tNAME\tCREATED\tLABELS\t"
+			}
 			for _, s := range rows {
 				vis := ""
 				if s.Visibility != "" && s.Team != nil {
 					vis = s.Visibility
 				}
-				t = append(t, []string{s.ID, displayState(s.State), s.Type, s.Name, ago(s.CreatedAt), vis})
+				row := []string{s.ID, displayState(s.State), s.Type, s.Name, ago(s.CreatedAt)}
+				if showLabels {
+					row = append(row, formatLabels(s.Labels))
+				}
+				t = append(t, append(row, vis))
 			}
 			if len(t) == 0 {
 				if all {
@@ -343,12 +372,13 @@ func (a *App) listCmd() *cobra.Command {
 				}
 				return nil
 			}
-			table(a.Out, "ID\tSTATE\tTYPE\tNAME\tCREATED\t", t)
+			table(a.Out, header, t)
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&filter, "filter", "", "state groups: r, s, p, t, e (combine letters)")
 	cmd.Flags().BoolVar(&all, "all", false, "include every state")
+	cmd.Flags().StringArrayVar(&labels, "label", nil, "only sandboxes with label KEY=VALUE (repeatable)")
 	return cmd
 }
 
@@ -427,6 +457,7 @@ func (a *App) printSandbox(s *client.Sandbox) {
 		size += fmt.Sprintf(" (%d vCPU, %d GB)", s.VCPU, s.MemoryGB)
 	}
 	line("type", size)
+	line("labels", formatLabels(s.Labels))
 	line("node", s.Node)
 	line("ip", s.IP)
 	line("ssh", s.SSHEndpoint)
@@ -556,7 +587,10 @@ func (a *App) stopCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "stop ID",
 		Short: "Stop a sandbox: snapshot its disk, then free the machine",
-		Args:  cobra.ExactArgs(1),
+		Long: `Stop a sandbox: snapshot its disk, then free the machine.
+With CROWDVM_LABEL set, it refuses a sandbox without those labels; run it as
+'CROWDVM_LABEL= crowdvm stop ID' to stop such a sandbox anyway.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, id, err := a.clientAndID(args[0])
 			if err != nil {
@@ -574,6 +608,9 @@ func (a *App) stopCmd() *cobra.Command {
 					}
 					a.printf("\n")
 				})
+			}
+			if err := a.guardLabels(cmd.Context(), c, id, "To stop it anyway: CROWDVM_LABEL= crowdvm stop "+id); err != nil {
+				return err
 			}
 			res, err := c.StopSandbox(cmd.Context(), id, force)
 			if err != nil {
@@ -717,7 +754,11 @@ func (a *App) forkCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			req := &client.ForkRequest{FailFast: sf.failFast, Env: env, Type: sf.typ, Environment: sf.environment,
+			labels, err := a.newLabels(sf.labels)
+			if err != nil {
+				return err
+			}
+			req := &client.ForkRequest{FailFast: sf.failFast, Env: env, Labels: labels, Type: sf.typ, Environment: sf.environment,
 				NoEnv: sf.noEnv, TTLSeconds: ttlFor(cmd, sf.ttl, sf.noAutoStop), Name: name, NewDiskKey: sf.newKey}
 			req.Snapshots = sf.snapshotsReq()
 			if sf.noMonitor {
@@ -744,6 +785,7 @@ func (a *App) forkCmd() *cobra.Command {
 	sf.bind(cmd, true)
 	sf.bindData(cmd)
 	sf.bindNewKey(cmd)
+	sf.bindLabels(cmd)
 	cmd.Flags().BoolVar(&wait, "wait", false, "wait until the fork is ready")
 	cmd.Flags().StringVar(&name, "name", "", "display name of the fork")
 	return cmd
@@ -797,18 +839,24 @@ func (a *App) simpleAction(use, short, word string, fn func(*client.Client, *cob
 }
 
 func (a *App) deleteCmd() *cobra.Command {
-	var yes, noWait bool
+	var yes, noWait, force bool
 	cmd := &cobra.Command{
 		Use:     "delete ID",
 		Aliases: []string{"rm"},
 		Short:   "Permanently delete a sandbox and its snapshots",
 		Long: `Permanently delete a sandbox and the snapshots only it uses. This cannot be
-undone; to keep the data, use 'crowdvm stop'. Scripts must pass --yes.`,
+undone; to keep the data, use 'crowdvm stop'. Scripts must pass --yes.
+With CROWDVM_LABEL set, it refuses a sandbox without those labels unless --force.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, id, err := a.clientAndID(args[0])
 			if err != nil {
 				return err
+			}
+			if !force {
+				if err := a.guardLabels(cmd.Context(), c, id, "To delete it anyway: crowdvm delete "+id+" --yes --force"); err != nil {
+					return err
+				}
 			}
 			if err := a.confirm(yes, fmt.Sprintf("Permanently delete %s and its snapshots?", id)); err != nil {
 				return err
@@ -831,6 +879,7 @@ undone; to keep the data, use 'crowdvm stop'. Scripts must pass --yes.`,
 	}
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "do not ask for confirmation")
 	cmd.Flags().BoolVar(&noWait, "no-wait", false, "do not follow the deletion operation")
+	cmd.Flags().BoolVar(&force, "force", false, "delete even when the sandbox lacks the CROWDVM_LABEL labels")
 	return cmd
 }
 
