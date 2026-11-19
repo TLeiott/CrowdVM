@@ -131,6 +131,9 @@ Other HTTP clients (curl, browsers) send no generation and are never refused.
   import it and restart the server with its new binary in one step: nodes that are
   told to update must find the new build in the downloads.
 - `--node-update-grace 72h` sets how long an outdated node keeps its sandboxes.
+- A node that restarts (`crowdvm-node update`) keeps its sandboxes running, and the
+  server waits `--node-offline-grace` (1 minute) for it to reconnect before it reports
+  them as `error` (`node_offline`).
 - `GET /api/v1/server` reports the server's `gen`, the API generations it accepts
   (`apiGen`, `requiredApiGen`, `minApiGen`) and the `latest` release.
 - The dashboard's Nodes page marks nodes that need an update.

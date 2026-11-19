@@ -66,10 +66,14 @@ type Config struct {
 	// NodeCacheTTL: nodes keep a stopped sandbox's disk this long once the
 	// server stores all of it (0 = DefaultNodeCacheTTL, <0 = forever).
 	NodeCacheTTL time.Duration
-	DefaultImage string        // base image id ("" = newest known)
-	StartWait    time.Duration // guest calls wait this long while starting (60 s)
-	SessionTTL   time.Duration
-	RetryAfter   int // retryAfterSeconds for out_of_capacity
+	// NodeOfflineGrace: a node that disconnects has this long to come back
+	// (a restart for an update) before its sandboxes turn error node_offline
+	// (0 = DefaultNodeOfflineGrace, <0 = at once).
+	NodeOfflineGrace time.Duration
+	DefaultImage     string        // base image id ("" = newest known)
+	StartWait        time.Duration // guest calls wait this long while starting (60 s)
+	SessionTTL       time.Duration
+	RetryAfter       int // retryAfterSeconds for out_of_capacity
 
 	SMTP SMTPConfig
 
@@ -118,6 +122,10 @@ type Config struct {
 	// reach through server egress anyway: CIDRs ("10.0.5.0/24") or exact
 	// "ip:port" (an internal git server). Cloud metadata stays refused.
 	EgressAllow []string
+	// EgressAllowUDP: UDP destinations sandboxes with server egress may
+	// send to ("ip:port", CIDRs, IPs). These datagrams leave from the node,
+	// not the server, under the node's own policy (issue 8: load tests).
+	EgressAllowUDP []string
 
 	// Loop intervals (tests shorten them). Zero = the package defaults
 	// (OTelMetricsInterval, WebhookBackoff, CIPollInterval, CIRetryInterval).
@@ -278,6 +286,8 @@ type Server struct {
 	router *Router
 	nodes  *nodeRegistry
 	nodeH  http.Handler
+	// leaving: node id -> the token of its pending offline timer (nodeLeft).
+	leaving sync.Map
 
 	schedMu  sync.Mutex
 	limitMu  sync.Mutex // lockLimits

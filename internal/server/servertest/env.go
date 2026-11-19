@@ -63,6 +63,7 @@ func NewEmpty(t testing.TB, cfg ...func(*server.Config)) *Env {
 		DataDir: t.TempDir(), PublicURL: url, SignupCredits: 100, NodeEarnRate: 1,
 		StartWait: 5 * time.Second, ReaperInterval: 50 * time.Millisecond, BillingInterval: time.Hour,
 		NodeTimeout: 10 * time.Second, RetryAfter: 1,
+		NodeOfflineGrace:  -1,   // tests of a lost node expect it at once
 		WebhookAllowLocal: true, // receivers are httptest servers on 127.0.0.1
 		Logger:            slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})),
 	}

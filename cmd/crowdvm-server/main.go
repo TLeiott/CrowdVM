@@ -114,6 +114,7 @@ func serve(args []string) error {
 	maxActive := fl.Int("max-active", server.DefaultLimits.Active, "sandboxes at once per wallet, 0 = unlimited")
 	ipLimit := fl.Int("ip-rate-limit", server.DefaultLimits.IP, "API requests per 60 s per IP, 0 = unlimited")
 	snapSec := fl.Int("snapshot-interval", 0, "periodic live snapshot interval pushed to nodes, seconds (0 = 60, -1 = off)")
+	offlineGrace := fl.Duration("node-offline-grace", 0, "a disconnected node has this long to reconnect before its sandboxes turn error node_offline (0 = 1m, -1s = at once)")
 	nodeCache := fl.Duration("node-cache", 0, "nodes keep a stopped sandbox's disk this long once the server stores it (0 = 24h, -1s = forever)")
 	image := fl.String("default-image", "", "base image id for new sandboxes (default: newest known)")
 	startWait := fl.Duration("start-wait", 60*time.Second, "how long guest calls wait while a sandbox starts")
@@ -132,6 +133,7 @@ func serve(args []string) error {
 	minGuest := fl.String("min-guest-version", server.MinGuestVersion, "oldest guest agent version calls into a sandbox accept (older: 409 agent_outdated; dev builds always pass)")
 	noChannel := fl.Bool("no-guest-channel", false, "boot sandboxes the legacy way: the node gets their whole config (secrets included) and proxies their API (default: guests fetch their config from this server over a pinned channel)")
 	nodeEgress := fl.Bool("node-egress", os.Getenv("CROWDVM_NODE_EGRESS") == "1", "let sandboxes reach the internet through their node (default: through the guest channel and out of this server; or CROWDVM_NODE_EGRESS=1)")
+	egressAllowUDP := fl.String("egress-allow-udp", "", "comma-separated ip:port, CIDRs or IPs sandboxes may send UDP to (e.g. a game server under load test); it leaves from the node, under the node's own LAN policy; other non-DNS UDP stays refused")
 	egressAllow := fl.String("egress-allow", "", "comma-separated CIDRs or ip:port on this server's networks that sandboxes may reach through server egress (e.g. an internal git server); LAN, loopback and tailnet addresses are refused otherwise")
 	hooksLocal := fl.Bool("webhook-allow-local", false, "let webhook and OTel export URLs point at loopback, link-local and cloud metadata addresses (LAN and Tailscale addresses are always allowed)")
 	aiPrivate := fl.Bool("ai-custom-api-allow-private", os.Getenv("CROWDVM_AI_CUSTOM_API_ALLOW_PRIVATE") == "1", "let custom AI API base URLs use http://, ports, LAN hosts and IPs (or CROWDVM_AI_CUSTOM_API_ALLOW_PRIVATE=1)")
@@ -156,7 +158,7 @@ func serve(args []string) error {
 		DataDir: *dataDir, PublicURL: strings.TrimRight(*publicURL, "/"), PublicDomain: *publicDomain, OpenSignup: *openSignup, OpenNodes: *openNodes,
 		EnforceCredits: *enforce, SignupCredits: *signupCredits, NodeEarnRate: *earn,
 		StartsPerMinute: *perMin, StartsPerHour: *perHour, StartsPerDay: *perDay, MaxActive: *maxActive, IPRateLimit: *ipLimit,
-		SnapshotInterval: time.Duration(*snapSec) * time.Second, NodeCacheTTL: *nodeCache, DefaultImage: *image, StartWait: *startWait,
+		SnapshotInterval: time.Duration(*snapSec) * time.Second, NodeCacheTTL: *nodeCache, NodeOfflineGrace: *offlineGrace, DefaultImage: *image, StartWait: *startWait,
 		SMTP:  server.SMTPConfig{Addr: *smtpAddr, From: *smtpFrom, Username: *smtpUser, Password: *smtpPass},
 		WebFS: webFS, Logger: log, TrustProxy: *trustProxy, DownloadsDir: *downloadsDir, MinGuestVersion: *minGuest, NodeUpdateGrace: *nodeGrace,
 		SavedSnapshotsIncluded: *savedIncl, SavedSnapshotExtraDollarsPerDay: *savedDaily, OutputCapPerHour: *outputCap,
@@ -164,12 +166,15 @@ func serve(args []string) error {
 		NoGuestChannel:    *noChannel,
 		NodeEgress:        *nodeEgress,
 		EgressAllow:       splitList(*egressAllow),
+		EgressAllowUDP:    splitList(*egressAllowUDP),
 	}
-	allow, err := server.ParseEgressAllow(cfg.EgressAllow)
-	if err != nil {
-		return err
+	var err error
+	if cfg.EgressAllow, err = server.ParseEgressAllow(cfg.EgressAllow); err != nil {
+		return fmt.Errorf("--egress-allow %w", err)
 	}
-	cfg.EgressAllow = allow
+	if cfg.EgressAllowUDP, err = server.ParseEgressAllow(cfg.EgressAllowUDP); err != nil {
+		return fmt.Errorf("--egress-allow-udp %w", err)
+	}
 	srv, err := server.New(cfg)
 	if err != nil {
 		return err

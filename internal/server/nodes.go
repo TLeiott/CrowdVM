@@ -531,7 +531,7 @@ func (s *Server) handleNodeConnect(w http.ResponseWriter, r *http.Request) {
 		_, _ = s.DB.Exec(`UPDATE nodes SET connected_at=NULL, last_seen_at=? WHERE id=?`, store.Now(), n.ID)
 		s.Bus.Publish(Event{Type: EvNodeOffline, NodeID: n.ID})
 		if s.ctx.Err() == nil {
-			s.onNodeOffline(n.ID)
+			s.nodeLeft(n.ID)
 		}
 	}
 }

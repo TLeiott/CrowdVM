@@ -490,8 +490,8 @@ func (s *Server) boot(ctx context.Context, id string, o bootOpts) (err error) {
 		// Internet through the server; the node's netstack lets the VM
 		// reach nothing but the server (a kill switch if the guest drops
 		// its egress rules).
-		g.Egress = "server"
-		vs.Net = &proto.NetPolicy{Deny: []string{"0.0.0.0/0"}, NoDNS: true}
+		g.Egress, g.EgressUDP = "server", s.Cfg.EgressAllowUDP
+		vs.Net = &proto.NetPolicy{Deny: []string{"0.0.0.0/0"}, NoDNS: true, UDP: s.Cfg.EgressAllowUDP}
 	}
 	vs.Guest = g
 	if useChannel {
@@ -793,6 +793,32 @@ func (s *Server) reconcileVM(nodeID string, st proto.VMStatus, fromEvent bool) {
 	}
 }
 
+// DefaultNodeOfflineGrace: how long a disconnected node has to reconnect
+// before its sandboxes turn error node_offline (Config.NodeOfflineGrace 0).
+// A node restarting for an update is back within seconds and its machines
+// keep running; turning them error made agents delete them (issue 7).
+const DefaultNodeOfflineGrace = time.Minute
+
+// nodeLeft runs onNodeOffline once the node has stayed away for the grace
+// period. A reconnect in time cancels it; another disconnect restarts it.
+func (s *Server) nodeLeft(nodeID string) {
+	g := s.Cfg.NodeOfflineGrace
+	if g == 0 {
+		g = DefaultNodeOfflineGrace
+	}
+	if g < 0 {
+		s.onNodeOffline(nodeID)
+		return
+	}
+	tok := new(byte)
+	s.leaving.Store(nodeID, tok)
+	time.AfterFunc(g, func() {
+		if s.leaving.CompareAndDelete(nodeID, tok) && s.ctx.Err() == nil && s.nodes.get(nodeID) == nil {
+			s.onNodeOffline(nodeID)
+		}
+	})
+}
+
 func (s *Server) onNodeOffline(nodeID string) {
 	rows, err := s.DB.Query(`SELECT id FROM sandboxes WHERE node_id=? AND deleted_at IS NULL AND state IN ('provisioning','provisioned','cloning','ready','idle','running')`, nodeID)
 	if err != nil {
@@ -1085,7 +1111,7 @@ func (s *Server) markUnconnected() {
 	}
 	rows.Close()
 	for _, id := range ids {
-		if s.nodes.get(id) == nil {
+		if _, grace := s.leaving.Load(id); !grace && s.nodes.get(id) == nil {
 			s.onNodeOffline(id)
 		}
 	}
