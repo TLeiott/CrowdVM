@@ -191,6 +191,18 @@ func TestResumeFailsOnOtherError(t *testing.T) {
 	}
 }
 
+func TestResumeReportsCapacityRefusalWhileStopped(t *testing.T) {
+	e := newEnv(t)
+	id := e.f.AddSandbox("archived")
+	sandboxStates(e, id,
+		map[string]any{"state": "provisioning"},
+		map[string]any{"state": "archived", "error": "no_ready_machine: the node had no room for this sandbox"})
+	r := e.run("resume", id, "--fail-fast", "--json=false")
+	if r.code == 0 || !strings.Contains(r.err, "no_ready_machine") {
+		t.Fatalf("%d %q %q", r.code, r.out, r.err)
+	}
+}
+
 // A node that never comes back: after the normal timeout the wait fails with
 // the node_offline error.
 func TestResumeNodeOfflineTimesOut(t *testing.T) {

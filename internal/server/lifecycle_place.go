@@ -184,7 +184,7 @@ func (s *Server) tryPlace(id string) bool {
 }
 
 // abortBoot ends a boot that found no node: an aborted create or fork never
-// had a disk, so it is cancelled (LIFE-025); a resume fails into error.
+// had a disk, so it is cancelled (LIFE-025); a resume keeps its saved disk stopped.
 func (s *Server) abortBoot(sb *Sandbox, kind proto.BootKind, parent, msg string) {
 	if !sb.FirstBootDone && (kind == proto.BootCreate || kind == proto.BootFork) {
 		sets := map[string]any{"error": msg, "stopped_at": store.Now()}
@@ -194,6 +194,11 @@ func (s *Server) abortBoot(sb *Sandbox, kind proto.BootKind, parent, msg string)
 		if _, ok := s.transition(sb.ID, startingStates, api.StateCancelled, sets); ok {
 			s.closeRun(sb.ID)
 		}
+		return
+	}
+	if kind == proto.BootResume {
+		s.transition(sb.ID, startingStates, api.StateArchived,
+			map[string]any{"error": msg, "stopped_at": store.Now(), "archive_after": nil})
 		return
 	}
 	s.failSandbox(sb.ID, msg)
