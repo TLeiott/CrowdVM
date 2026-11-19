@@ -123,7 +123,7 @@ func round2(f float64) float64 { return float64(int(f*100+0.5)) / 100 }
 func assess(c proto.Capacity, used proto.Usage, sz api.SizeSpec, ll *liveLoad) (score float64, hot bool, why string) {
 	if c.VCPU <= 0 || c.MemoryMiB <= 0 ||
 		used.VCPU+sz.VCPU > c.VCPU || used.MemoryMiB+sz.MemoryMiB > c.MemoryMiB ||
-		(c.DiskGiB > 0 && used.DiskGiB+sz.DiskGiB > c.DiskGiB) ||
+		used.DiskGiB+sz.DiskGiB > c.DiskGiB ||
 		(c.MaxSandboxes > 0 && used.VMs+1 > c.MaxSandboxes) {
 		return 0, false, "full"
 	}

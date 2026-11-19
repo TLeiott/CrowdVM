@@ -226,3 +226,30 @@ func TestLimitsFitsNow(t *testing.T) {
 		t.Fatalf("host low on memory: %v", f)
 	}
 }
+
+// A full node with no running VMs advertises zero disk, not unlimited disk.
+func TestSchedulerFullDiskWithoutVMs(t *testing.T) {
+	env := servertest.New(t)
+	key := env.AdminKey
+	full := env.StartNode(servertest.NodeOptions{Name: "full", Capacity: proto.Capacity{VCPU: 16, MemoryMiB: 65536, MaxSandboxes: 20}})
+	r := env.Do(key, "GET", "/api/v1/limits", nil)
+	if r.Status != 200 {
+		t.Fatalf("limits: %s", r)
+	}
+	for i, mt := range r.Get("machineTypes").([]any) {
+		if r.Str(fmt.Sprintf("machineTypes.%d.fitsNow", i)) != "0" {
+			t.Fatalf("full node reports room: %v", mt)
+		}
+	}
+	if r := env.Do(key, "POST", "/api/v1/sandboxes", map[string]any{"failFast": true}); r.Status != 503 || r.Code() != "no_ready_machine" {
+		t.Fatalf("full node picked: %s", r)
+	}
+	room := env.StartNode(servertest.NodeOptions{Name: "room"})
+	id := createSandbox(t, env, key, map[string]any{"failFast": true})
+	if r := env.WaitState(key, id, "ready"); r.Str("sandbox.nodeId") != room.ID {
+		t.Fatalf("placed on full node: %s", r)
+	}
+	if full.Called("POST /v1/vms") {
+		t.Fatal("full node was asked to boot a sandbox")
+	}
+}
