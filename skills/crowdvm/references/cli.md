@@ -63,6 +63,7 @@ crowdvm usage ID [--since T] [--until T]  # machine time and credits used
 | `--setup-file SCRIPT` | Local shell script run once after ready (64 KB) |
 | `--host PORT` / `--host PORT:public` | Host a port (repeatable) |
 | `--no-snapshots` | Never snapshot; stopping erases the sandbox |
+| `--snapshots` | Snapshot even when the account default is off (`crowdvm config set snapshots off`) |
 | `--no-monitoring` | Keep no command output, process list or metrics |
 | `--no-wait` | Return once the create is accepted |
 | `--personal` | Bill your personal account even when an org is active |
@@ -70,7 +71,8 @@ crowdvm usage ID [--since T] [--until T]  # machine time and credits used
 | placement flags | See [Placement](#nodes-and-placement) |
 
 `fork` takes `--name`, `--wait`, `-e/--env`, `--environment`, `--no-env`, `--ttl`,
-`--no-auto-stop`, `--no-snapshots`, `--no-monitoring`, `--type` and the placement flags.
+`--no-auto-stop`, `--snapshots`, `--no-snapshots`, `--no-monitoring`, `--type` and the
+placement flags.
 `resume` takes `--no-wait`, `-e/--env`, `--environment`, `--no-env`, `--ttl`,
 `--no-auto-stop`, `--type` and the placement flags.
 
@@ -276,7 +278,8 @@ crowdvm dashboard [--no-open]       # one-time 15-minute signed-in link
 crowdvm api-key create NAME [--preset read-only|full-sandbox|ci|admin | --actions A,B] [--ttl 90d] [--sandbox ID]... [--env ENV_ID]...
 crowdvm api-key list [--all] | revoke ID | rotate ID | usage ID [--verbose]
 crowdvm org [list|status|switch ORG|create NAME|members|invite [EMAIL] [--role R]|join CODE|...]
-crowdvm config list | get KEY | set KEY VALUE | unset KEY | path   # keys: server, profile, current, user
+crowdvm config list | get KEY | set KEY VALUE | unset KEY | path   # keys: server, profile, current, user, snapshots
+crowdvm config set snapshots off     # account default: new sandboxes take no periodic snapshots
 crowdvm webhook create URL [--event E]... [--name N] | list | get ID | update ID | rotate ID | remove ID
 crowdvm data-retention [status | enable -y]
 crowdvm telemetry [set ENDPOINT [-H k=v]... | unset]

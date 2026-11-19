@@ -19,7 +19,19 @@ import (
 )
 
 // configKeys are the settings `crowdvm config` reads and writes.
-var configKeys = []string{"server", "profile", "current", "user"}
+var configKeys = []string{"server", "profile", "current", "user", "snapshots"}
+
+// setSnapshotsDefault sets the account's newSandboxSnapshots ("on" or "off").
+func (a *App) setSnapshotsDefault(cmd *cobra.Command, v string) error {
+	c, err := a.client()
+	if err != nil {
+		return err
+	}
+	if _, err := c.UpdateAccountSettings(cmd.Context(), client.Object{"newSandboxSnapshots": v == "on"}); err != nil {
+		return err
+	}
+	return a.result(map[string]any{"key": "snapshots", "value": v}, func() { a.printf("snapshots: %s (new sandboxes of this account)\n", v) })
+}
 
 func (a *App) configCmd() *cobra.Command {
 	show := func(cmd *cobra.Command, args []string) error {
@@ -37,15 +49,19 @@ func (a *App) configCmd() *cobra.Command {
 	}
 	cmd := &cobra.Command{
 		Use:   "config",
-		Short: "Show or change local settings (server URL, default profile)",
-		Long: `Show or change the settings in the config file. Keys:
+		Short: "Show or change settings (server URL, default profile, snapshot default)",
+		Long: `Show or change settings. All keys but snapshots live in the local config file:
   server    the CrowdVM server URL of the active profile
   profile   the profile used when --profile and CROWDVM_PROFILE are not set
   current   the "current" sandbox (of this shell, with the shell function)
-  user      the signed-in login (read-only)`,
+  user      the signed-in login (read-only)
+  snapshots on or off: whether your new sandboxes take periodic snapshots. This
+            one is an account setting on the server, so it covers every client
+            (CLI, SDKs, agents); new and fork --snapshots/--no-snapshots override it`,
 		Example: `  crowdvm config set server http://10.0.0.5:8420
   crowdvm config get server
-  crowdvm --profile work config set server http://work-box:8420`,
+  crowdvm --profile work config set server http://work-box:8420
+  crowdvm config set snapshots off`,
 		Args: cobra.NoArgs,
 		RunE: show,
 	}
@@ -62,6 +78,16 @@ func (a *App) configCmd() *cobra.Command {
 				v = a.current()
 			case "user":
 				v = a.prof().User
+			case "snapshots":
+				c, err := a.client()
+				if err != nil {
+					return err
+				}
+				st, err := c.AccountSettings(cmd.Context())
+				if err != nil {
+					return err
+				}
+				v = onOff(st["newSandboxSnapshots"] != false)
 			default:
 				return usagef("unknown key %q (want %s)", args[0], strings.Join(configKeys, ", "))
 			}
@@ -91,8 +117,13 @@ func (a *App) configCmd() *cobra.Command {
 				}
 				a.setCurrent(id)
 				return a.result(map[string]any{"key": "current", "value": id}, func() { a.printf("current: %s\n", id) })
+			case "snapshots":
+				if v != "on" && v != "off" {
+					return usagef("snapshots wants on or off")
+				}
+				return a.setSnapshotsDefault(cmd, v)
 			default:
-				return usagef("cannot set %q (want server, profile or current)", args[0])
+				return usagef("cannot set %q (want server, profile, current or snapshots)", args[0])
 			}
 			if err := a.saveConfig(); err != nil {
 				return err
@@ -112,6 +143,8 @@ func (a *App) configCmd() *cobra.Command {
 			case "current":
 				a.setCurrent("")
 				return a.result(map[string]any{"key": "current", "value": ""}, func() { a.printf("current: -\n") })
+			case "snapshots":
+				return a.setSnapshotsDefault(cmd, "on")
 			default:
 				return usagef("cannot unset %q", args[0])
 			}

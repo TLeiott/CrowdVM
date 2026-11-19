@@ -17,7 +17,8 @@ type sandboxFlags struct {
 	typ, environment       string
 	ttl                    int
 	noAutoStop, noEnv      bool
-	noSnapshots, noMonitor bool
+	snapshots, noSnapshots bool
+	noMonitor              bool
 	failFast, newKey       bool
 	env                    []string
 	// placement (CrowdVM extension)
@@ -85,8 +86,18 @@ func (s *sandboxFlags) bindNewKey(cmd *cobra.Command) {
 		"its first start re-encrypts the whole disk, which takes a while. Encrypted disks only; ignored for others")
 }
 
+// snapshotsReq: nil leaves snapshots to the account default.
+func (s *sandboxFlags) snapshotsReq() *bool {
+	if s.snapshots || s.noSnapshots {
+		return boolPtr(s.snapshots)
+	}
+	return nil
+}
+
 func (s *sandboxFlags) bindData(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&s.noSnapshots, "no-snapshots", false, "never snapshot; stopping erases the sandbox")
+	cmd.Flags().BoolVar(&s.snapshots, "snapshots", false, "snapshot even when your account default is off (crowdvm config get snapshots)")
+	cmd.MarkFlagsMutuallyExclusive("snapshots", "no-snapshots")
 	cmd.Flags().BoolVar(&s.noMonitor, "no-monitoring", false, "keep no command output, process list or metrics")
 }
 
@@ -121,9 +132,7 @@ func (a *App) newCmd() *cobra.Command {
 			if sf.newKey && from == "" {
 				return usagef("--new-key needs --from (a new sandbox from the base image always gets its own key)")
 			}
-			if sf.noSnapshots {
-				req.Snapshots = boolPtr(false)
-			}
+			req.Snapshots = sf.snapshotsReq()
 			if sf.noMonitor {
 				req.Monitoring = boolPtr(false)
 			}
@@ -710,9 +719,7 @@ func (a *App) forkCmd() *cobra.Command {
 			}
 			req := &client.ForkRequest{FailFast: sf.failFast, Env: env, Type: sf.typ, Environment: sf.environment,
 				NoEnv: sf.noEnv, TTLSeconds: ttlFor(cmd, sf.ttl, sf.noAutoStop), Name: name, NewDiskKey: sf.newKey}
-			if sf.noSnapshots {
-				req.Snapshots = boolPtr(false)
-			}
+			req.Snapshots = sf.snapshotsReq()
 			if sf.noMonitor {
 				req.Monitoring = boolPtr(false)
 			}

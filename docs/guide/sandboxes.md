@@ -71,6 +71,18 @@ changes under `/etc` and `/usr`.
 sandboxes take no periodic snapshots, since they are deleted when the command exits
 (with `--keep` they snapshot like `new` sandboxes).
 
+Snapshot uploads can fill a slow server uplink. If your sandboxes are throwaway, turn
+snapshots off for all your new sandboxes once:
+
+```sh
+crowdvm config set snapshots off      # on again: crowdvm config set snapshots on
+```
+
+This is an account setting on the server (`PATCH /api/v1/account-settings` with
+`{"newSandboxSnapshots": false}`), so it covers the CLI, the SDKs and agents alike.
+`new --snapshots` or `"snapshots": true` in a request still turns them on for one sandbox,
+and `--no-snapshots` turns them off when the default is on.
+
 Read files from a stopped sandbox without resuming it:
 
 ```sh

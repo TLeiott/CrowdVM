@@ -85,7 +85,7 @@ Settings and administration:
   api-key            Create and manage API keys (cvm_...)
   ci                 GitHub Actions on CrowdVM: setup, problems, stats and last jobs
   completions        Print a shell completion script
-  config             Show or change local settings (server URL, default profile)
+  config             Show or change settings (server URL, default profile, snapshot default)
   data-retention     Show or enable zero data retention
   env                Manage environments (repos, secrets, credentials new sandboxes start from)
   help               Help about any command
@@ -1190,11 +1190,14 @@ Flags:
 ## crowdvm config
 
 ```text
-Show or change the settings in the config file. Keys:
+Show or change settings. All keys but snapshots live in the local config file:
   server    the CrowdVM server URL of the active profile
   profile   the profile used when --profile and CROWDVM_PROFILE are not set
   current   the "current" sandbox (of this shell, with the shell function)
   user      the signed-in login (read-only)
+  snapshots on or off: whether your new sandboxes take periodic snapshots. This
+            one is an account setting on the server, so it covers every client
+            (CLI, SDKs, agents); new and fork --snapshots/--no-snapshots override it
 
 Usage:
   crowdvm config [flags]
@@ -1204,6 +1207,7 @@ Examples:
   crowdvm config set server http://10.0.0.5:8420
   crowdvm config get server
   crowdvm --profile work config set server http://work-box:8420
+  crowdvm config set snapshots off
 
 Available Commands:
   get         Print one setting
@@ -1811,6 +1815,7 @@ Flags:
       --no-snapshots             never snapshot; stopping erases the sandbox
       --node string              placement: run on this node (id or name, see: crowdvm nodes)
       --node-label stringArray   placement: node label KEY=VALUE that must match (repeatable)
+      --snapshots                snapshot even when your account default is off (crowdvm config get snapshots)
       --ttl int                  seconds until auto-stop, counted from start (default 3600)
       --type string              machine size: small, default, large, xlarge, or custom <vcpu>c<GiB>g like 8c10g
       --wait                     wait until the fork is ready
@@ -2149,6 +2154,7 @@ Flags:
       --node-label stringArray   placement: node label KEY=VALUE that must match (repeatable)
       --personal                 bill your personal account even when an org is active
       --setup-file string        local shell script to run once after the sandbox is ready (64KB)
+      --snapshots                snapshot even when your account default is off (crowdvm config get snapshots)
       --ttl int                  seconds until auto-stop, counted from start (default 3600)
       --type string              machine size: small, default, large, xlarge, or custom <vcpu>c<GiB>g like 8c10g
       --visibility string        org sandboxes: private or shared

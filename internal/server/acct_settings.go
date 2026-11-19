@@ -4,7 +4,9 @@ package server
 //
 //   - GET/PATCH /account-settings: default harness/model/fast for prompts
 //     (AGT-004/006), the onboarding answer "own work" vs "platform for third
-//     parties" (AUTH-009), the notification address (AUTH-005).
+//     parties" (AUTH-009), the notification address (AUTH-005), and
+//     newSandboxSnapshots: whether new sandboxes take periodic snapshots when
+//     the create or fork request does not say (issue #18).
 //   - Connections (AUTH-005): GET /account/connections, DELETE
 //     /account/connections/{method} (at least one remains), PUT
 //     /account/connections/primary.
@@ -42,6 +44,7 @@ CREATE TABLE account_settings (
 		s.API("POST /admin/service-accounts", ActionAdmin, s.handleAdminCreateServiceAccount)
 		s.API("POST /admin/users/{userId}/merge", ActionAdmin, s.handleAdminMerge)
 		s.Hooks.UserJSON = append(s.Hooks.UserJSON, s.acctUserJSON)
+		s.Hooks.NewSandbox = append(s.Hooks.NewSandbox, s.snapshotsDefault)
 		return nil
 	})
 }
@@ -55,6 +58,18 @@ type acctSettings struct {
 	// sandboxes for third parties: the safe default environment).
 	UseCase     string `json:"useCase,omitempty"`
 	NotifyEmail string `json:"notifyEmail,omitempty"`
+	// NoSnapshots: new sandboxes take no periodic snapshots unless the
+	// request asks for them (newSandboxSnapshots false).
+	NoSnapshots bool `json:"noSnapshots,omitempty"`
+}
+
+// snapshotsDefault applies newSandboxSnapshots to a create or fork that
+// does not set snapshots itself.
+func (s *Server) snapshotsDefault(c *Ctx, p *SandboxPolicy) error {
+	if !p.SnapshotsReq.Set && s.accountSettings(p.Owner.ID).NoSnapshots {
+		p.Snapshots = false
+	}
+	return nil
 }
 
 func (s *Server) accountSettings(uid string) acctSettings {
@@ -77,6 +92,7 @@ func (st acctSettings) json() map[string]any {
 		"agentDefaults": map[string]any{"provider": nz(st.DefaultProvider), "model": nz(st.DefaultModel), "fast": st.FastDefault},
 		"useCase":       nz(st.UseCase), "onboarded": st.UseCase != "", "notifyEmail": nz(st.NotifyEmail),
 		"safeForThirdPartiesDefault": st.UseCase != "own",
+		"newSandboxSnapshots":        !st.NoSnapshots,
 	}
 }
 
@@ -101,8 +117,9 @@ func (s *Server) handlePatchAccountSettings(c *Ctx) error {
 			Model    *string `json:"model"`
 			Fast     *bool   `json:"fast"`
 		} `json:"agentDefaults"`
-		UseCase     *string `json:"useCase"`
-		NotifyEmail *string `json:"notifyEmail"`
+		UseCase             *string `json:"useCase"`
+		NotifyEmail         *string `json:"notifyEmail"`
+		NewSandboxSnapshots *bool   `json:"newSandboxSnapshots"`
 	}
 	if err := c.BindStrict(&req); err != nil {
 		return err
@@ -151,6 +168,9 @@ func (s *Server) handlePatchAccountSettings(c *Ctx) error {
 			return Err(400, "invalid_email", "notifyEmail must be an email address.")
 		}
 		st.NotifyEmail = e
+	}
+	if req.NewSandboxSnapshots != nil {
+		st.NoSnapshots = !*req.NewSandboxSnapshots
 	}
 	if err := s.saveAccountSettings(c.P.User.ID, st); err != nil {
 		return err
