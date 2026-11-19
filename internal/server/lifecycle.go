@@ -618,11 +618,14 @@ func (s *Server) ensureChain(ctx context.Context, sbID string, node *NodeConn, p
 }
 
 func (s *Server) takeLiveSnapshot(ctx context.Context, sb *Sandbox) (string, error) {
+	return s.takeLiveSnapshotID(ctx, sb, api.NewID(api.PrefixSnapshot, 20))
+}
+
+func (s *Server) takeLiveSnapshotID(ctx context.Context, sb *Sandbox, id string) (string, error) {
 	node := s.nodes.get(sb.NodeID)
 	if node == nil || !sb.Usable() {
 		return "", errors.New("the source sandbox is not running")
 	}
-	id := api.NewID(api.PrefixSnapshot, 20)
 	cctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	var ref proto.SnapshotRef

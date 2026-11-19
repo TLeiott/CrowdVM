@@ -793,6 +793,24 @@ func (s *Server) handleBlobPut(w http.ResponseWriter, r *http.Request) {
 		writeRawJSON(w, 200, old) // a retry of the same upload
 		return
 	}
+	if kind == store.BlobSnapshot {
+		size := r.ContentLength
+		if size < 0 {
+			size = ref.SizeBytes
+			if size <= 0 {
+				writeRawJSON(w, http.StatusLengthRequired, map[string]any{"ok": false, "error": "snapshot upload requires Content-Length or snapshot sizeBytes"})
+				return
+			}
+		}
+		if err := s.Blobs.CheckSpace(kind, size); err != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(err, store.ErrBlobStoreFull) {
+				status = http.StatusInsufficientStorage
+			}
+			writeRawJSON(w, status, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+	}
 	bi, err := s.Blobs.Put(kind, id, r.Body, blobSHA(r))
 	if err != nil {
 		status := 500
@@ -1231,7 +1249,7 @@ func (s *Server) snapshotTakenOn(id, nodeID string) bool {
 	var n int
 	_ = s.DB.QueryRow(`SELECT COUNT(*) FROM snapshots WHERE id=? AND node_id=?`, id, nodeID).Scan(&n)
 	if n == 0 {
-		_ = s.DB.QueryRow(`SELECT COUNT(*) FROM saved_snapshots ss JOIN sandboxes b ON b.id=ss.source_sandbox_id WHERE ss.pending_snapshot_id=? AND b.node_id=?`, id, nodeID).Scan(&n)
+		_ = s.DB.QueryRow(`SELECT COUNT(*) FROM saved_snapshots ss JOIN sandboxes b ON b.id=COALESCE(json_extract(ss.pending_meta,'$.sourceSandboxId'),ss.source_sandbox_id) WHERE ss.pending_snapshot_id=? AND b.node_id=?`, id, nodeID).Scan(&n)
 	}
 	return n > 0
 }

@@ -25,6 +25,11 @@ var ErrBlobNotFound = errors.New("blob not found")
 // ErrChecksum is returned when an upload does not match its declared sha256.
 var ErrChecksum = errors.New("sha256 mismatch")
 
+// ErrBlobStoreFull means an upload would consume the store's free-space reserve.
+var ErrBlobStoreFull = errors.New("server blob store is full")
+
+const blobReserveBytes = 1 << 30
+
 var blobIDRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
 // Blobs stores immutable files under Dir/<kind>/<id> with a sidecar
@@ -48,6 +53,26 @@ func (b *Blobs) path(kind, id string) (string, error) {
 		return "", fmt.Errorf("invalid blob %s/%s", kind, id)
 	}
 	return filepath.Join(b.Dir, kind, id), nil
+}
+
+// CheckSpace leaves 1 GiB for the database and other server writes.
+func (b *Blobs) CheckSpace(kind string, size int64) error {
+	p, err := b.path(kind, "x")
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(p)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	free, err := diskFree(dir)
+	if err != nil {
+		return err
+	}
+	if free < blobReserveBytes || uint64(size) > free-blobReserveBytes {
+		return fmt.Errorf("%w: %.2f GiB free, upload needs %.2f GiB (1 GiB reserve)", ErrBlobStoreFull, float64(free)/(1<<30), float64(size)/(1<<30))
+	}
+	return nil
 }
 
 // Put streams r into the store. When wantSHA is non-empty the upload is

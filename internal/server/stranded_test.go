@@ -22,7 +22,7 @@ func headOf(env *servertest.Env, id string) string {
 
 func pendingOf(env *servertest.Env, name string) string {
 	var p string
-	_ = env.S.DB.QueryRow(`SELECT COALESCE(pending_snapshot_id,'') FROM saved_snapshots WHERE name=?`, name).Scan(&p)
+	_ = env.S.DB.QueryRow(`SELECT ss.pending_snapshot_id FROM saved_snapshots ss JOIN snapshots sn ON sn.id=ss.pending_snapshot_id WHERE ss.name=?`, name).Scan(&p)
 	return p
 }
 

@@ -48,6 +48,8 @@ type NodeOptions struct {
 	HeartbeatInterval time.Duration
 	// NoUpload: do not upload snapshots taken by stop/snapshot.
 	NoUpload bool
+	// SnapshotUploadError reports a failed upload before the snapshot call returns.
+	SnapshotUploadError string
 	// NoSnapshotReport: PeriodicSnapshot does not report the layer before
 	// its upload (POST /node/v1/snapshots), like an older node or one whose
 	// report failed.
@@ -676,6 +678,11 @@ func (n *FakeNode) handler() http.Handler {
 		ref, err := n.snapshot(id, req.SnapshotID, false)
 		if err != nil {
 			writeJSON(w, 404, map[string]string{"error": err.Error()})
+			return
+		}
+		if n.opts.SnapshotUploadError != "" {
+			n.sendEvent(proto.Event{SandboxID: id, Type: proto.EvSnapshotFailed, Data: mustRaw(map[string]string{"snapshotId": ref.ID, "error": n.opts.SnapshotUploadError})})
+			writeJSON(w, 200, ref)
 			return
 		}
 		writeJSON(w, 200, ref)

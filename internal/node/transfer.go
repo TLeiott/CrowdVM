@@ -269,6 +269,9 @@ func (n *Node) uploadAsync(sandboxID string, ref proto.SnapshotRef, periodic boo
 				return
 			}
 			n.log.Warn("snapshot upload failed", "snapshot", ref.ID, "attempt", attempt+1, "err", err)
+			if isStatus(err, http.StatusInsufficientStorage) {
+				break // retry once the server has room, not five full uploads now
+			}
 			if !sleepCtx(ctx, time.Duration(1<<attempt)*2*time.Second) {
 				break
 			}
@@ -488,6 +491,7 @@ func (n *Node) upload(ctx context.Context, sandboxID, kind, id, path string, siz
 	req.ContentLength = size
 	req.Header = hdr.Clone()
 	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("Expect", "100-continue")
 	resp, err := c.Do(req)
 	if err == nil {
 		if resp.StatusCode/100 != 2 {

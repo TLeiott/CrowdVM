@@ -365,7 +365,7 @@ func (s *Server) afterSnapshotStored(snapID string) {
 		s.Bus.Publish(Event{Type: EvSnapshotStored, SandboxID: sb.ID, SandboxName: sb.Name, OwnerID: sb.OwnerID, OrgID: sb.OrgID, Data: map[string]any{"snapshotId": snapID}})
 	}
 	// Saved snapshots waiting for this upload.
-	s.savedSnapshotStored(snapID)
+	s.completeSaves()
 }
 
 // abandonedLayer (bugs-r2-sol 1): sn was taken before sb's current machine
@@ -401,6 +401,16 @@ func (s *Server) chainSize(id string) int64 {
 		total += n
 	}
 	return total
+}
+
+func (s *Server) snapshotChainStored(id string) bool {
+	for _, layer := range s.snapshotChain(id) {
+		var stored bool
+		if s.DB.QueryRow(`SELECT uploaded_at IS NOT NULL AND purged_at IS NULL FROM snapshots WHERE id=?`, layer).Scan(&stored) != nil || !stored {
+			return false
+		}
+	}
+	return id != ""
 }
 
 // gcSnapshots purges deleted snapshots that nothing depends on any more.
@@ -860,10 +870,10 @@ func (s *Server) savedSnapshotFailed(snapID, msg string) {
 		"snapshot_failed: "+msg, store.Now(), snapID)
 }
 
-// savedSnapshotStored completes saves waiting for snapID: the new disk and
-// the metadata of that save replace the old ones together.
-func (s *Server) savedSnapshotStored(snapID string) {
-	rows, err := s.DB.Query(`SELECT `+savedCols+` FROM saved_snapshots WHERE pending_snapshot_id=? AND status='saving'`, snapID)
+// completeSaves completes saves whose whole chain is stored, including
+// saves whose ancestors arrived after their own layer.
+func (s *Server) completeSaves() {
+	rows, err := s.DB.Query(`SELECT ` + savedCols + ` FROM saved_snapshots WHERE pending_snapshot_id IS NOT NULL AND status='saving'`)
 	if err != nil {
 		return
 	}
@@ -874,8 +884,12 @@ func (s *Server) savedSnapshotStored(snapID string) {
 		}
 	}
 	rows.Close()
-	size := s.chainSize(snapID)
 	for _, v := range list {
+		snapID := v.PendingID
+		if !s.snapshotChainStored(snapID) {
+			continue
+		}
+		size := s.chainSize(snapID)
 		m := v.Pending
 		if m == nil {
 			m = &savedMeta{SourceSandboxID: v.SourceSandboxID, Size: v.Size, Env: v.Env, NoEnv: v.NoEnv, SavedBy: v.SavedBy}
@@ -924,6 +938,9 @@ func (s *Server) handleListSaved(c *Ctx) error {
 	rows.Close()
 	out := []map[string]any{}
 	for _, v := range list {
+		if v.Status == "failed" && v.SnapshotID == "" {
+			continue // keep failure details for info/polling, not the saved list
+		}
 		if s.keySeesSaved(c.P, v, "snapshot.read") {
 			out = append(out, s.savedJSON(v))
 		}
@@ -1015,14 +1032,18 @@ func (s *Server) handleSaveSaved(c *Ctx) error {
 	finish := func(snapID string) {
 		_, _ = s.DB.Exec(`UPDATE saved_snapshots SET pending_snapshot_id=? WHERE id=? AND status='saving'`, snapID, id)
 		if sn, err := s.SnapshotByID(snapID); err == nil && sn.UploadedAt != nil {
-			s.savedSnapshotStored(snapID)
+			s.completeSaves()
 		}
 	}
 	if live {
+		// Register before the node starts: an early upload refusal may
+		// report snapshot.failed before the snapshot call returns.
+		snapID := api.NewID(api.PrefixSnapshot, 20)
+		_, _ = s.DB.Exec(`UPDATE saved_snapshots SET pending_snapshot_id=? WHERE id=? AND status='saving'`, snapID, id)
 		s.Go(func(ctx context.Context) {
-			snap, err := s.takeLiveSnapshot(ctx, sb)
+			snap, err := s.takeLiveSnapshotID(ctx, sb, snapID)
 			if err != nil {
-				_, _ = s.DB.Exec(`UPDATE saved_snapshots SET status='failed', error=?, pending_meta=NULL, saving_since=NULL, updated_at=? WHERE id=? AND status='saving'`, "snapshot_failed: "+err.Error(), store.Now(), id)
+				_, _ = s.DB.Exec(`UPDATE saved_snapshots SET status='failed', error=?, pending_snapshot_id=NULL, pending_meta=NULL, saving_since=NULL, updated_at=? WHERE id=? AND status='saving'`, "snapshot_failed: "+err.Error(), store.Now(), id)
 				return
 			}
 			finish(snap)
@@ -1176,6 +1197,9 @@ func (s *Server) resolveFrom(u *User, from string, org *Org) (*sourceSnap, error
 			return nil, Err(409, "snapshot_failed", "The saved snapshot "+v.Name+" failed to save: "+v.Error)
 		}
 		return nil, Err(409, "snapshot_not_ready", "The saved snapshot "+v.Name+" is still saving.")
+	}
+	if !s.snapshotChainStored(v.SnapshotID) {
+		return nil, Err(409, "snapshot_not_ready", "The saved snapshot "+v.Name+" has not finished uploading to the server.")
 	}
 	if v.SavedBy != u.ID {
 		src.Env, src.Foreign = nil, true

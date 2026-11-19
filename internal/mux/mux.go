@@ -143,9 +143,10 @@ func Transport(s *yamux.Session) *http.Transport {
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return s.Open()
 		},
-		MaxIdleConnsPerHost: 32,
-		IdleConnTimeout:     25 * time.Second, // below Serve's IdleTimeout: the client lets go first
-		DisableCompression:  true,
+		MaxIdleConnsPerHost:   32,
+		IdleConnTimeout:       25 * time.Second, // below Serve's IdleTimeout: the client lets go first
+		DisableCompression:    true,
+		ExpectContinueTimeout: time.Second,
 	}
 }
 

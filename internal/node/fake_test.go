@@ -430,6 +430,7 @@ type fakeServer struct {
 	holdFull chan struct{} // when set, full blob downloads wait for it
 	holdPut  chan struct{} // when set, blob uploads wait for it
 	failPut  bool          // blob uploads fail (503)
+	fullPut  bool          // blob uploads fail (507)
 	gone     map[string]bool
 	puts     int
 	reported map[string]proto.SnapshotRef // POST /node/v1/snapshots
@@ -479,9 +480,13 @@ func newFakeServer(t *testing.T) *fakeServer {
 	})
 	nodeAPI.HandleFunc("PUT /node/v1/blobs/{kind}/{id}", func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
-		hold, fail := s.holdPut, s.failPut
+		hold, fail, full := s.holdPut, s.failPut, s.fullPut
 		s.puts++
 		s.mu.Unlock()
+		if full {
+			http.Error(w, "server blob store is full", http.StatusInsufficientStorage)
+			return
+		}
 		if fail {
 			http.Error(w, "unavailable", 503)
 			return
